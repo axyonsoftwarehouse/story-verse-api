@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: story-verse-api
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
