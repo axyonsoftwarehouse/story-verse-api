@@ -12,7 +12,7 @@ FROM eclipse-temurin:25-jre-noble
 
 RUN useradd --system --uid 10001 --create-home app
 WORKDIR /app
-COPY --from=build --chown=10001:10001 /root/.story-verse-build/api/*.jar /app/app.jar
+COPY --from=build --chown=10001:10001 /root/.story-verse-build/story-verse-api/*.jar /app/app.jar
 
 USER 10001:10001
 EXPOSE 8080

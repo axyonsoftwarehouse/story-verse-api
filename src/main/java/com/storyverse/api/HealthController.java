@@ -1,4 +1,4 @@
-package com.story_magic.api.system.api;
+package com.storyverse.api;
 
 import java.time.Instant;
 
