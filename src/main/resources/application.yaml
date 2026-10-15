@@ -1,6 +1,14 @@
 spring:
   application:
     name: story-verse-api
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/storyverse}
+    username: ${SPRING_DATASOURCE_USERNAME:storyverse}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
 
 server:
   port: ${PORT:8080}
