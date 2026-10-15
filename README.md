@@ -1,6 +1,6 @@
 # Story Verse API
 
-Template inicial de uma API REST independente usando Spring Boot. O projeto contém apenas a aplicação, um endpoint de health check e um teste de exemplo; não implementa funcionalidades de livros, integração com provedores externos, autenticação ou persistência.
+API REST independente do Story Verse (Spring Boot). Hoje implementa o health check e o **módulo de contas** (cadastro, login, sessão e perfil). As funcionalidades de livros seguem no frontend.
 
 ## Requisitos
 
@@ -23,11 +23,29 @@ No Git Bash ou Linux/macOS:
 
 A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a variável `PORT` no ambiente do processo (por exemplo, `$env:PORT = "8081"` no PowerShell). O arquivo `.env.example` documenta essa variável, mas não é carregado automaticamente pelo Spring Boot.
 
-## Endpoint inicial
+## Endpoints
 
-- `GET /api/v1/health`: confirma que a aplicação está respondendo e retorna o status e horário da verificação. O endpoint pode ser usado como health check pelo container ou por um provedor de hospedagem.
+- `GET /api/v1/health`: confirma que a aplicação está respondendo.
+- `POST /api/v1/auth/signup` — `{ "email", "password", "name?" }` → cria a conta e devolve os tokens.
+- `POST /api/v1/auth/login` — `{ "email", "password" }` → devolve os tokens.
+- `POST /api/v1/auth/refresh` — `{ "refreshToken" }` → rotaciona e devolve tokens novos.
+- `POST /api/v1/auth/logout` — `{ "refreshToken"? }` (ou cabeçalho `Authorization`) → encerra a sessão.
+- `GET /api/v1/auth/me` — cabeçalho `Authorization: Bearer <accessToken>` → dados da conta.
 
-O frontend Story Verse continua responsável pelas funcionalidades de livros. Endpoints de negócio só devem ser adicionados aqui quando houver uma necessidade de backend definida.
+A sessão usa **Bearer token**: access de 30 min + refresh de 30 dias, opacos e guardados apenas como
+hash (SHA-256). O frontend Story Verse continua responsável pelas funcionalidades de livros.
+
+## Banco de dados
+
+Usa o Postgres do stack `storyverse` (schema base em `database/schema.sql`). As sessões do backend
+vivem em `auth.sessions`, criada pela migração Flyway em `src/main/resources/db/migration`. O schema
+base precisa existir antes (ele cria `auth.users`). Configuração por variáveis de ambiente:
+
+```
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/storyverse
+SPRING_DATASOURCE_USERNAME=storyverse
+SPRING_DATASOURCE_PASSWORD=...
+```
 
 ## Testes
 
