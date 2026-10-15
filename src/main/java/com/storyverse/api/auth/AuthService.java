@@ -3,6 +3,7 @@ package com.storyverse.api.auth;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -86,6 +87,12 @@ public class AuthService {
 		User user = users.findById(session.userId())
 				.orElseThrow(() -> new AuthException(401, "Sessão inválida."));
 		return UserResponse.from(user);
+	}
+
+	/** Id do usuário da sessão (Bearer). Usado pelos módulos de dados. */
+	@Transactional(readOnly = true)
+	public UUID authenticate(String accessToken) {
+		return requireSession(accessToken, false).userId();
 	}
 
 	private SessionRow requireSession(String token, boolean refresh) {

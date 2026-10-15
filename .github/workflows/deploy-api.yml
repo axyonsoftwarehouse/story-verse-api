@@ -38,4 +38,9 @@ jobs:
       - name: Atualizar na VPS
         run: |
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'cd /home/deploy/storyverse && docker compose pull api && docker compose up -d api && docker compose ps api'
+            'cd /home/deploy/storyverse && docker compose config --quiet && docker compose pull api && docker compose up -d api && docker compose ps api'
+
+      - name: Conferir o health da API
+        run: |
+          ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.storyverse.2.29.42.104.sslip.io/api/v1/health'

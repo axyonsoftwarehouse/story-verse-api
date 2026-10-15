@@ -31,6 +31,9 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `POST /api/v1/auth/refresh` — `{ "refreshToken" }` → rotaciona e devolve tokens novos.
 - `POST /api/v1/auth/logout` — `{ "refreshToken"? }` (ou cabeçalho `Authorization`) → encerra a sessão.
 - `GET /api/v1/auth/me` — cabeçalho `Authorization: Bearer <accessToken>` → dados da conta.
+- `GET /api/v1/me/reading-state` — dados de leitura da conta (progresso, marcações, conversas…).
+- `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
+  → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
 
 A sessão usa **Bearer token**: access de 30 min + refresh de 30 dias, opacos e guardados apenas como
 hash (SHA-256). O frontend Story Verse continua responsável pelas funcionalidades de livros.
