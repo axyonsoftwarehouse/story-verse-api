@@ -43,4 +43,4 @@ jobs:
       - name: Conferir o health da API
         run: |
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'curl -fsS https://api.storyverse.2.29.42.104.sslip.io/api/v1/health'
+            'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.storyverse.2.29.42.104.sslip.io/api/v1/health'
