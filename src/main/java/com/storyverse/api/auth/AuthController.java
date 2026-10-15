@@ -39,22 +39,11 @@ public class AuthController {
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void logout(@RequestBody(required = false) RefreshRequest request,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
-		service.logout(request == null ? null : request.refreshToken(), bearer(authorization));
+		service.logout(request == null ? null : request.refreshToken(), AuthTokens.bearer(authorization));
 	}
 
 	@GetMapping("/me")
 	public UserResponse me(@RequestHeader(value = "Authorization", required = false) String authorization) {
-		return service.me(bearer(authorization));
-	}
-
-	private static String bearer(String authorization) {
-		if (authorization == null) {
-			return null;
-		}
-		String header = authorization.trim();
-		if (header.regionMatches(true, 0, "Bearer ", 0, 7)) {
-			return header.substring(7).trim();
-		}
-		return null;
+		return service.me(AuthTokens.bearer(authorization));
 	}
 }
