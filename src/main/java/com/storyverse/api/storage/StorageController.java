@@ -72,7 +72,9 @@ public class StorageController {
 		if (!storageBucket.publiclyReadable()) {
 			return ResponseEntity.notFound().build();
 		}
-		return storage.read(storageBucket, path)
+		// No padrão {*path} do Spring, o valor vem com a barra inicial ("/uid/arquivo").
+		String relative = path.startsWith("/") ? path.substring(1) : path;
+		return storage.read(storageBucket, relative)
 				.map(data -> ResponseEntity.ok()
 						.contentType(typeFor(path))
 						.cacheControl(CacheControl.maxAge(java.time.Duration.ofDays(365)).cachePublic())
