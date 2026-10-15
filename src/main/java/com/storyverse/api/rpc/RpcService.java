@@ -170,13 +170,18 @@ public class RpcService {
 		}
 	}
 
-	/** Mensagem do RAISE EXCEPTION do Postgres, sem o prefixo "ERROR:". */
+	/** Mensagem do RAISE EXCEPTION do Postgres: sem o prefixo "ERROR:" nem o rastro "Where: …". */
 	private static String dbMessage(DataAccessException exception) {
 		Throwable cause = exception.getMostSpecificCause();
 		String message = cause.getMessage() != null ? cause.getMessage() : exception.getMessage();
 		if (message == null) {
 			return "Não foi possível concluir a ação.";
 		}
-		return message.replaceFirst("^ERROR:\\s*", "").trim();
+		String cleaned = message.replaceFirst("^ERROR:\\s*", "").trim();
+		int newline = cleaned.indexOf('\n');
+		if (newline >= 0) {
+			cleaned = cleaned.substring(0, newline).trim();
+		}
+		return cleaned.isEmpty() ? "Não foi possível concluir a ação." : cleaned;
 	}
 }
