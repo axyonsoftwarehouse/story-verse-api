@@ -31,8 +31,14 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `POST /api/v1/auth/refresh` — `{ "refreshToken" }` → rotaciona e devolve tokens novos.
 - `POST /api/v1/auth/logout` — `{ "refreshToken"? }` (ou cabeçalho `Authorization`) → encerra a sessão.
 - `GET /api/v1/auth/me` — cabeçalho `Authorization: Bearer <accessToken>` → dados da conta.
-- `POST /api/v1/rpc/{fn}` — chama uma função do banco em nome do usuário (diamantes e ranking),
-  ex.: `my_wallet`, `weekly_ranking`, `report_reading`, `spin_daily_wheel`. Lista branca no servidor.
+- `POST /api/v1/rpc/{fn}` — chama uma função do banco em nome do usuário (diamantes, ranking e
+  acervo), ex.: `my_wallet`, `weekly_ranking`, `spin_daily_wheel`, `is_admin`, `set_submission_cover`.
+  Lista branca no servidor.
+- `GET /api/v1/community/submissions?scope=approved|mine|pending` — acervo da comunidade (aprovados
+  dispensam sessão).
+- `POST /api/v1/community/submissions` — envia um livro (sessão; o `user_id` vem da sessão).
+- `PATCH /api/v1/community/submissions/{id}` — revisa (admin, com `status`) ou troca a capa (dono/admin).
+- `DELETE /api/v1/community/submissions/{id}` — apaga (admin, ou dono enquanto pendente).
 - `POST|GET|DELETE /api/v1/storage/{bucket}/object?path=…` — arquivos (com sessão): `profile-media`
   (fotos e capas), `user-books` (livros importados), `community-books` (texto do acervo). Cada um só
   na própria pasta.
