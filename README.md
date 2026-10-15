@@ -31,6 +31,8 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `POST /api/v1/auth/refresh` — `{ "refreshToken" }` → rotaciona e devolve tokens novos.
 - `POST /api/v1/auth/logout` — `{ "refreshToken"? }` (ou cabeçalho `Authorization`) → encerra a sessão.
 - `GET /api/v1/auth/me` — cabeçalho `Authorization: Bearer <accessToken>` → dados da conta.
+- `POST /api/v1/rpc/{fn}` — chama uma função do banco em nome do usuário (diamantes e ranking),
+  ex.: `my_wallet`, `weekly_ranking`, `report_reading`, `spin_daily_wheel`. Lista branca no servidor.
 - `GET /api/v1/me/reading-state` — dados de leitura da conta (progresso, marcações, conversas…).
 - `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
   → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
