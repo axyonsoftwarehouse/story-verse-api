@@ -13,3 +13,7 @@ spring:
 server:
   port: ${PORT:8080}
   shutdown: graceful
+
+app:
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:https://storyverse.2.29.42.104.sslip.io}
