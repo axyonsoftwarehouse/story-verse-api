@@ -43,6 +43,11 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
   (fotos e capas), `user-books` (livros importados), `community-books` (texto do acervo). Cada um só
   na própria pasta.
 - `GET /api/v1/storage/public/{bucket}/{path}` — leitura **sem sessão** de bucket público (`profile-media`).
+- `GET /api/v1/presence/{room}?key=…` — presença por **SSE** (público): envia `event: count` com
+  `{"count": n}` sempre que a contagem da sala muda. Só o número circula.
+- `GET /api/v1/ai/status` — se a IA está configurada no servidor (público).
+- `POST /api/v1/ai/reply` — gera a resposta do personagem/sugere elenco, com as **chaves no servidor**
+  (exige sessão). Corpo: `{ "system", "messages": [{role, content}], "maxTokens" }` → `{ "text" }`.
 - `GET /api/v1/me/reading-state` — dados de leitura da conta (progresso, marcações, conversas…).
 - `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
   → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
