@@ -29,8 +29,10 @@ public class RequestSecurityFilter extends OncePerRequestFilter {
           limits.check("signup:" + request.getRemoteAddr(), 5, Duration.ofHours(1));
       }
       if (!path.startsWith("/api/v1/storage/")) {
-        if (request.getContentLengthLong() > 1_048_576) throw new AuthException(413, "Requisição grande demais.");
-        request = new LimitedRequest(request);
+        // O estado de leitura carrega o snapshot inteiro da conta (livros, conversas, destaques).
+        long limit = path.equals("/api/v1/me/reading-state") ? 5L * 1024 * 1024 : 1_048_576;
+        if (request.getContentLengthLong() > limit) throw new AuthException(413, "Requisição grande demais.");
+        request = new LimitedRequest(request, limit);
       }
       chain.doFilter(request, response);
     } catch (AuthException error) {
@@ -45,19 +47,20 @@ public class RequestSecurityFilter extends OncePerRequestFilter {
 
   private static class LimitedRequest extends HttpServletRequestWrapper {
     private ServletInputStream stream;
-    LimitedRequest(HttpServletRequest request) { super(request); }
+    private final long limit;
+    LimitedRequest(HttpServletRequest request, long limit) { super(request); this.limit = limit; }
     @Override public ServletInputStream getInputStream() throws IOException {
       if (stream == null) {
         ServletInputStream input = super.getInputStream();
         stream = new ServletInputStream() {
-          int remaining = 1_048_576;
+          long remaining = limit;
           public int read() throws IOException {
             int value = input.read();
             if (value != -1 && --remaining < 0) throw new AuthException(413, "Requisição grande demais.");
             return value;
           }
           public int read(byte[] bytes, int offset, int length) throws IOException {
-            int count = input.read(bytes, offset, Math.min(length, remaining + 1));
+            int count = input.read(bytes, offset, (int) Math.min(length, remaining + 1));
             if (count > 0 && (remaining -= count) < 0) throw new AuthException(413, "Requisição grande demais.");
             return count;
           }

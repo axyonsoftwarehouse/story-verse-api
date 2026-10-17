@@ -48,6 +48,8 @@ public class SessionRepository {
 	}
 
 	public void rotate(UUID id, String accessHash, Instant accessExpiresAt, String refreshHash, Instant refreshExpiresAt) {
+		// Poda o histórico vencido; sem isso a tabela cresceria para sempre (2 linhas por refresh).
+		jdbc.sql("delete from auth.session_token_history where expires_at <= now()").update();
 		jdbc.sql("""
 				insert into auth.session_token_history (token_hash, session_id, expires_at)
 				select access_hash, id, access_expires_at from auth.sessions where id = :id

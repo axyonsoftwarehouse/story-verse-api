@@ -27,7 +27,16 @@ public class StorageAccess {
   public boolean readable(UUID user, StorageBucket bucket, String path) {
     com.storyverse.api.common.DbSession.setUser(jdbc, user);
     if (bucket.publiclyReadable() || path.startsWith(user + "/")) return true;
-    return bucket == StorageBucket.COMMUNITY_BOOKS && (admin(user) || exists(path, "status = 'approved'"));
+    return bucket == StorageBucket.COMMUNITY_BOOKS && (admin(user) || approvedOwnedByAuthor(path));
+  }
+
+  /** Aprovado E o caminho pertence à pasta do autor do envio (bloqueia linhas legadas cruzadas). */
+  private boolean approvedOwnedByAuthor(String path) {
+    return jdbc.sql("""
+        select exists(select 1 from public.book_submissions
+                       where text_path = :path and status = 'approved'
+                         and text_path like user_id::text || '/%')
+        """).param("path", path).query(Boolean.class).single();
   }
 
   public void assertWritable(StorageBucket bucket, String path) {

@@ -95,7 +95,12 @@ public class CommunityService {
 		Map<String, Object> candidate = repository.find(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
 		String textPath = String.valueOf(candidate.get("text_path"));
 		access.lockCommunity(textPath);
-		repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+		textPath = String.valueOf(row.get("text_path"));
+		String authorId = String.valueOf(row.get("user_id"));
+		// Linhas antigas podiam apontar para a pasta de outra pessoa; não aprove um arquivo alheio.
+		if (!textPath.startsWith(authorId + "/"))
+			throw new AuthException(409, "O envio aponta para um arquivo fora da pasta do autor.");
 		if (!storage.exists(StorageBucket.COMMUNITY_BOOKS, textPath)) throw new AuthException(409, "O texto do livro não está disponível.");
 		String status = text(body.get("status"));
 		if (!"approved".equals(status) && !"rejected".equals(status)) {
@@ -130,12 +135,21 @@ public class CommunityService {
 	@Transactional
 	public void delete(String accessToken, UUID id) {
 		UUID userId = requireUser(accessToken);
+		// Mesma ordem de locks de StorageService (dono do arquivo → comunidade → linha), para não
+		// cruzar com review/write e evitar deadlock. Lê sem lock só para saber o caminho.
+		Map<String, Object> candidate = repository.find(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+		String textPath = String.valueOf(candidate.get("text_path"));
+		String fileOwner = textPath.contains("/") ? textPath.split("/", 2)[0] : textPath;
+		access.lock("storage-owner:" + fileOwner);
+		access.lockCommunity(textPath);
 		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
 		boolean pending = "pending".equals(row.get("status"));
 		if (!isAdmin(userId) && !(isOwner(row, userId) && pending)) {
 			throw new AuthException(403, "Sem permissão para remover este envio.");
 		}
 		repository.delete(id);
+		// Apaga o texto no servidor, na mesma transação: se o arquivo falhar, a linha volta.
+		storage.delete(userId, StorageBucket.COMMUNITY_BOOKS, textPath);
 	}
 
 	private boolean isAdmin(UUID userId) {

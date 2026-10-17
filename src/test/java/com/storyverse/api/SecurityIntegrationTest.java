@@ -159,4 +159,29 @@ class SecurityIntegrationTest {
     assertEquals(600,jdbc.sql("select seconds from public.reading_days where user_id=:uid and day=cast(:day as date)").param("uid",uid).param("day",day).query(Integer.class).single());
     assertTrue(jdbc.sql("select count(*) from public.diamond_ledger where user_id=:uid and reason='ranking'").param("uid",uid).query(Integer.class).single()<=1);
   }
+  @Test void approvalRejectsSubmissionPointingToAnotherAuthorsFolder() {
+    AuthResponse author=user(), victim=user(), admin=user();
+    jdbc.sql("insert into public.admins(user_id) values(:id)").param("id",id(admin)).update();
+    String path=id(victim)+"/stolen.txt";
+    storage.write(id(victim),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","victim".getBytes());
+    UUID submissionId=UUID.randomUUID();
+    jdbc.sql("""
+        insert into public.book_submissions(id,user_id,title,rights,text_path,status)
+        values(:id,:uid,'Stolen','own_work',:path,'pending')
+        """).param("id",submissionId).param("uid",id(author)).param("path",path).update();
+    AuthException rejected=assertThrows(AuthException.class,
+        () -> community.review(admin.accessToken(),submissionId,Map.of("status","approved")));
+    assertEquals(409,rejected.status());
+    assertEquals("pending",jdbc.sql("select status from public.book_submissions where id=:id").param("id",submissionId).query(String.class).single());
+  }
+  @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
+    AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";
+    storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","bye".getBytes());
+    var submission=community.create(owner.accessToken(),Map.of("title","Bye","text_path",path,"rights","own_work"));
+    UUID submissionId=UUID.fromString(submission.get("id").toString());
+    assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
+    community.delete(owner.accessToken(),submissionId);
+    assertEquals(0,jdbc.sql("select count(*) from public.book_submissions where id=:id").param("id",submissionId).query(Integer.class).single());
+    assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isEmpty());
+  }
 }
