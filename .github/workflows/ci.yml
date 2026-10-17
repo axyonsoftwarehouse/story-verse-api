@@ -11,6 +11,18 @@ jobs:
   verify:
     name: Verify API
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: local-audit-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      STORYVERSE_TEST_DB_URL: jdbc:postgresql://127.0.0.1:5432/postgres
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -25,4 +37,5 @@ jobs:
       - name: Run tests and package
         run: |
           chmod +x ./mvnw
+          PGPASSWORD=local-audit-test-only psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -f src/test/resources/schema-postgres.sql
           ./mvnw --batch-mode --no-transfer-progress verify

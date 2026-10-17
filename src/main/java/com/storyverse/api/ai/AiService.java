@@ -48,19 +48,19 @@ public class AiService {
 			@Value("${OPENROUTER_MODELS:meta-llama/llama-3.3-70b-instruct:free}") String openRouterModels) {
 		List<Provider> providers = new ArrayList<>();
 		if (!groqKey.isBlank()) {
-			for (String model : split(groqModels)) {
+			for (String model : split(groqModels.isBlank() ? "openai/gpt-oss-120b,openai/gpt-oss-20b" : groqModels)) {
 				providers.add(new Provider("groq:" + model, false,
 						"https://api.groq.com/openai/v1/chat/completions", groqKey, model));
 			}
 		}
 		if (!geminiKey.isBlank()) {
-			for (String model : split(geminiModels)) {
+			for (String model : split(geminiModels.isBlank() ? "gemini-3.5-flash-lite,gemini-flash-lite-latest" : geminiModels)) {
 				providers.add(new Provider("gemini:" + model, true,
 						"https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent", geminiKey, model));
 			}
 		}
 		if (!openRouterKey.isBlank()) {
-			for (String model : split(openRouterModels)) {
+			for (String model : split(openRouterModels.isBlank() ? "meta-llama/llama-3.3-70b-instruct:free" : openRouterModels)) {
 				providers.add(new Provider("openrouter:" + model, false,
 						"https://openrouter.ai/api/v1/chat/completions", openRouterKey, model));
 			}
@@ -83,7 +83,9 @@ public class AiService {
 		long now = System.currentTimeMillis();
 		List<Provider> ready = chain.stream().filter(p -> cooldownUntil.getOrDefault(p.id(), 0L) <= now).toList();
 		List<Provider> order = ready.isEmpty() ? chain : ready;
+		long deadline = System.nanoTime() + Duration.ofSeconds(40).toNanos();
 		for (Provider provider : order) {
+			if (System.nanoTime() >= deadline) break;
 			try {
 				String text = provider.gemini()
 						? gemini(provider, system, messages, maxTokens)
@@ -124,7 +126,7 @@ public class AiService {
 		body.put("max_tokens", tokens);
 
 		HttpRequest request = HttpRequest.newBuilder(URI.create(provider.url()))
-				.timeout(Duration.ofSeconds(40))
+				.timeout(Duration.ofSeconds(15))
 				.header("Content-Type", "application/json")
 				.header("Authorization", "Bearer " + provider.apiKey())
 				.POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body), StandardCharsets.UTF_8))
@@ -154,7 +156,7 @@ public class AiService {
 
 		String url = provider.url() + "?key=" + URLEncoder.encode(provider.apiKey(), StandardCharsets.UTF_8);
 		HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-				.timeout(Duration.ofSeconds(40))
+				.timeout(Duration.ofSeconds(15))
 				.header("Content-Type", "application/json")
 				.POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body), StandardCharsets.UTF_8))
 				.build();

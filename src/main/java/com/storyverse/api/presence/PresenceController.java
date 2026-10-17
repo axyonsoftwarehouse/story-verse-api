@@ -26,6 +26,7 @@ public class PresenceController {
 	@GetMapping(value = "/{room}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public SseEmitter subscribe(@PathVariable String room, @RequestParam(required = false) String key) {
 		String clientKey = (key == null || key.isBlank()) ? UUID.randomUUID().toString() : key;
+		if (clientKey.length() > 100) throw new AuthException(400, "Identificador inválido.");
 		return presence.join(sanitize(room), clientKey);
 	}
 
