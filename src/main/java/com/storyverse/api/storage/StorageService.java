@@ -124,23 +124,36 @@ public class StorageService {
 		return total;
 	}
 
+	/** Caminho do arquivo autorizado; o controller entrega como Resource (streaming). */
 	@Transactional(readOnly = true)
-	public Optional<byte[]> readFor(UUID userId, StorageBucket bucket, String path) {
+	public Optional<Path> fileFor(UUID userId, StorageBucket bucket, String path) {
 		String cleaned = safePath(path);
 		if (!access.readable(userId, bucket, cleaned)) throw new AuthException(403, "Sem permissão para este arquivo.");
-		return read(bucket, cleaned);
+		return file(bucket, cleaned);
 	}
 
 	public boolean exists(StorageBucket bucket, String path) { return Files.isRegularFile(resolve(bucket, safePath(path))); }
 
-	/** Leitura de um arquivo (público ou autenticado). */
-	public Optional<byte[]> read(StorageBucket bucket, String path) {
+	/** Caminho de um arquivo público/autenticado, sem carregar o conteúdo em memória. */
+	public Optional<Path> file(StorageBucket bucket, String path) {
 		Path target = resolve(bucket, safePath(path));
-		if (!Files.isRegularFile(target)) {
-			return Optional.empty();
-		}
+		return Files.isRegularFile(target) ? Optional.of(target) : Optional.empty();
+	}
+
+	/** Leitura em memória (testes e chamadas internas); o controller usa `fileFor`. */
+	@Transactional(readOnly = true)
+	public Optional<byte[]> readFor(UUID userId, StorageBucket bucket, String path) {
+		return fileFor(userId, bucket, path).map(StorageService::readBytes);
+	}
+
+	/** Leitura em memória de um arquivo (público ou autenticado). */
+	public Optional<byte[]> read(StorageBucket bucket, String path) {
+		return file(bucket, path).map(StorageService::readBytes);
+	}
+
+	private static byte[] readBytes(Path target) {
 		try {
-			return Optional.of(Files.readAllBytes(target));
+			return Files.readAllBytes(target);
 		} catch (IOException exception) {
 			throw new UncheckedIOException("Falha ao ler o arquivo", exception);
 		}
