@@ -42,8 +42,7 @@ public class StorageController {
 		StorageBucket selected = StorageBucket.from(bucket);
 		StorageService.requireOwn(userId, path);
 		if (request.getContentLengthLong() > selected.maxBytes()) throw new com.storyverse.api.auth.AuthException(413, "Arquivo grande demais.");
-		byte[] body = request.getInputStream().readNBytes((int) selected.maxBytes() + 1);
-		storage.write(userId, selected, path, contentType, body);
+		storage.write(userId, selected, path, contentType, request.getInputStream(), request.getContentLengthLong());
 		return ResponseEntity.ok().build();
 	}
 

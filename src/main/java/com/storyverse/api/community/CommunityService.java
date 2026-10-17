@@ -147,9 +147,13 @@ public class CommunityService {
 		if (!isAdmin(userId) && !(isOwner(row, userId) && pending)) {
 			throw new AuthException(403, "Sem permissão para remover este envio.");
 		}
+		String authorId = String.valueOf(row.get("user_id"));
+		String coverPath = uploadedCoverPath(String.valueOf(row.get("cover_url")));
 		repository.delete(id);
-		// Apaga o texto no servidor, na mesma transação: se o arquivo falhar, a linha volta.
+		// Apaga texto e capa no servidor, na mesma transação: se um arquivo falhar, a linha volta.
 		storage.delete(userId, StorageBucket.COMMUNITY_BOOKS, textPath);
+		if (coverPath != null && coverPath.startsWith(authorId + "/"))
+			storage.delete(userId, StorageBucket.PROFILE_MEDIA, coverPath);
 	}
 
 	private boolean isAdmin(UUID userId) {
@@ -182,5 +186,21 @@ public class CommunityService {
 			return null;
 		}
 		return value.length() > max ? value.substring(0, max) : value;
+	}
+
+	/** Caminho local de uma capa enviada pelo app; null para capas externas (Open Library). */
+	private static String uploadedCoverPath(String cover) {
+		if (cover == null) return null;
+		for (String prefix : new String[]{
+				"/api/v1/storage/public/profile-media/",
+				"/storage/v1/object/public/profile-media/"}) {
+			int at = cover.indexOf(prefix);
+			if (at >= 0) {
+				String path = cover.substring(at + prefix.length());
+				int query = path.indexOf('?');
+				return query >= 0 ? path.substring(0, query) : path;
+			}
+		}
+		return null;
 	}
 }

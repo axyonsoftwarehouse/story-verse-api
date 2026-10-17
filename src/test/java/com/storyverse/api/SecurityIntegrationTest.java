@@ -176,12 +176,17 @@ class SecurityIntegrationTest {
   }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";
+    String coverPath=id(owner)+"/livros/cover";
+    String coverUrl="https://api.example.test/api/v1/storage/public/profile-media/"+coverPath;
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","bye".getBytes());
-    var submission=community.create(owner.accessToken(),Map.of("title","Bye","text_path",path,"rights","own_work"));
+    storage.write(id(owner),StorageBucket.PROFILE_MEDIA,coverPath,"image/jpeg",new byte[]{1});
+    var submission=community.create(owner.accessToken(),Map.of("title","Bye","text_path",path,"rights","own_work","cover_url",coverUrl));
     UUID submissionId=UUID.fromString(submission.get("id").toString());
     assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
+    assertTrue(storage.readFor(id(owner),StorageBucket.PROFILE_MEDIA,coverPath).isPresent());
     community.delete(owner.accessToken(),submissionId);
     assertEquals(0,jdbc.sql("select count(*) from public.book_submissions where id=:id").param("id",submissionId).query(Integer.class).single());
     assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isEmpty());
+    assertTrue(storage.readFor(id(owner),StorageBucket.PROFILE_MEDIA,coverPath).isEmpty());
   }
 }

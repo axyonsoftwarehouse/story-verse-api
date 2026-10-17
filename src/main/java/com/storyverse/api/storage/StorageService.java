@@ -37,15 +37,22 @@ public class StorageService {
 
 	@Transactional
 	public void write(UUID userId, StorageBucket bucket, String path, String contentType, byte[] bytes) {
+		write(userId, bucket, path, contentType, new java.io.ByteArrayInputStream(bytes), bytes.length);
+	}
+
+	/** Grava em streaming: o corpo não é materializado inteiro em memória. */
+	@Transactional
+	public void write(UUID userId, StorageBucket bucket, String path, String contentType,
+			java.io.InputStream input, long declaredLength) {
 		String own = requireOwn(userId, path);
 		String type = normalizeType(contentType, own);
 		if (!bucket.allowedTypes().contains(type)) {
 			throw new AuthException(415, "Formato de arquivo não aceito.");
 		}
-		if (bytes.length == 0) {
+		if (declaredLength == 0) {
 			throw new AuthException(400, "Arquivo vazio.");
 		}
-		if (bytes.length > bucket.maxBytes()) {
+		if (declaredLength > bucket.maxBytes()) {
 			throw new AuthException(413, "Arquivo grande demais.");
 		}
 		Path target = resolve(bucket, own);
@@ -54,36 +61,67 @@ public class StorageService {
 		access.setUser(userId);
 		if (bucket == StorageBucket.COMMUNITY_BOOKS) access.lockCommunity(own);
 		access.assertWritable(bucket, own);
+		Path temporary = null;
 		try {
 			Files.createDirectories(baseDir);
-			if (Files.getFileStore(baseDir).getUsableSpace() - bytes.length < 2L * 1024 * 1024 * 1024)
+			long expected = declaredLength > 0 ? declaredLength : bucket.maxBytes();
+			if (Files.getFileStore(baseDir).getUsableSpace() - expected < 2L * 1024 * 1024 * 1024)
 				throw new AuthException(507, "Armazenamento temporariamente indisponível.");
-			long total = 0;
-			long count = 0;
-			for (StorageBucket item : StorageBucket.values()) {
-				Path folder = baseDir.resolve(item.id()).resolve(userId.toString());
-				if (!Files.exists(folder)) continue;
-				try (var files = Files.walk(folder)) {
-					for (Path file : files.filter(Files::isRegularFile).toList()) {
-						total += Files.size(file);
-						count++;
-					}
-				}
-			}
-			boolean existing = Files.isRegularFile(target);
-			if (total - (existing ? Files.size(target) : 0) + bytes.length > quotaBytes
-					|| count + (existing ? 0 : 1) > quotaObjects)
-				throw new AuthException(413, "Limite de armazenamento da conta atingido.");
+			ensureQuota(userId, target, expected);
 			Files.createDirectories(target.getParent());
-			Path temporary = Files.createTempFile(target.getParent(), ".upload-", ".tmp");
-			try {
-				Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
-				Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-						java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-			} finally { Files.deleteIfExists(temporary); }
+			Path temporaryDir = baseDir.resolve(".tmp");
+			Files.createDirectories(temporaryDir);
+			temporary = Files.createTempFile(temporaryDir, ".upload-", ".tmp");
+			long written = copyBounded(input, temporary, bucket.maxBytes());
+			if (written == 0) {
+				throw new AuthException(400, "Arquivo vazio.");
+			}
+			// O Content-Length pode mentir: reconfere a quota com o tamanho realmente recebido.
+			ensureQuota(userId, target, written);
+			Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+					java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			temporary = null;
 		} catch (IOException exception) {
 			throw new UncheckedIOException("Falha ao gravar o arquivo", exception);
+		} finally {
+			if (temporary != null) {
+				try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+			}
 		}
+	}
+
+	private void ensureQuota(UUID userId, Path target, long incoming) throws IOException {
+		long total = 0;
+		long count = 0;
+		for (StorageBucket item : StorageBucket.values()) {
+			Path folder = baseDir.resolve(item.id()).resolve(userId.toString());
+			if (!Files.exists(folder)) continue;
+			try (var files = Files.walk(folder)) {
+				for (Path file : files.filter(Files::isRegularFile).toList()) {
+					total += Files.size(file);
+					count++;
+				}
+			}
+		}
+		boolean existing = Files.isRegularFile(target);
+		if (total - (existing ? Files.size(target) : 0) + incoming > quotaBytes
+				|| count + (existing ? 0 : 1) > quotaObjects)
+			throw new AuthException(413, "Limite de armazenamento da conta atingido.");
+	}
+
+	private static long copyBounded(java.io.InputStream input, Path target, long maxBytes) throws IOException {
+		byte[] buffer = new byte[64 * 1024];
+		long total = 0;
+		try (java.io.OutputStream out = Files.newOutputStream(target,
+				StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+			int read;
+			while ((read = input.read(buffer)) != -1) {
+				total += read;
+				if (total > maxBytes) throw new AuthException(413, "Arquivo grande demais.");
+				out.write(buffer, 0, read);
+			}
+		}
+		return total;
 	}
 
 	@Transactional(readOnly = true)
