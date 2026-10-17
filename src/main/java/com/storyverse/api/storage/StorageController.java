@@ -9,7 +9,8 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
+import jakarta.servlet.http.HttpServletRequest;
+import java.io.IOException;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,9 +37,13 @@ public class StorageController {
 			@RequestParam String path,
 			@RequestHeader(value = "Content-Type", required = false) String contentType,
 			@RequestHeader(value = "Authorization", required = false) String authorization,
-			@RequestBody byte[] body) {
+			HttpServletRequest request) throws IOException {
 		UUID userId = auth.authenticate(AuthTokens.bearer(authorization));
-		storage.write(userId, StorageBucket.from(bucket), path, contentType, body);
+		StorageBucket selected = StorageBucket.from(bucket);
+		StorageService.requireOwn(userId, path);
+		if (request.getContentLengthLong() > selected.maxBytes()) throw new com.storyverse.api.auth.AuthException(413, "Arquivo grande demais.");
+		byte[] body = request.getInputStream().readNBytes((int) selected.maxBytes() + 1);
+		storage.write(userId, selected, path, contentType, body);
 		return ResponseEntity.ok().build();
 	}
 
@@ -49,9 +54,8 @@ public class StorageController {
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		StorageBucket storageBucket = StorageBucket.from(bucket);
 		UUID userId = auth.authenticate(AuthTokens.bearer(authorization));
-		String own = StorageService.requireOwn(userId, path);
-		return storage.read(storageBucket, own)
-				.map(data -> ResponseEntity.ok().contentType(typeFor(own)).body(data))
+		return storage.readFor(userId, storageBucket, path)
+				.map(data -> ResponseEntity.ok().contentType(typeFor(path)).cacheControl(CacheControl.noStore()).body(data))
 				.orElseGet(() -> ResponseEntity.notFound().build());
 	}
 

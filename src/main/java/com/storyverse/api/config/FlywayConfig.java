@@ -6,6 +6,7 @@ import org.flywaydb.core.Flyway;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Configura e roda o Flyway de forma explícita (não depende da auto-configuração do Spring Boot,
@@ -17,9 +18,14 @@ import org.springframework.context.annotation.Configuration;
 public class FlywayConfig {
 
 	@Bean(initMethod = "migrate")
-	Flyway flyway(DataSource dataSource) {
-		return Flyway.configure()
-				.dataSource(dataSource)
+	Flyway flyway(DataSource dataSource,
+			@Value("${spring.flyway.url:}") String url,
+			@Value("${spring.flyway.user:}") String user,
+			@Value("${spring.flyway.password:}") String password) {
+		var config = Flyway.configure();
+		if (url.isBlank()) config.dataSource(dataSource);
+		else config.dataSource(url, user, password);
+		return config
 				.baselineOnMigrate(true)
 				.baselineVersion("0")
 				.load();

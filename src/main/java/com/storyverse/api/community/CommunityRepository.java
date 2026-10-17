@@ -47,6 +47,10 @@ public class CommunityRepository {
 		return DbRows.one(jdbc, "select * from public.book_submissions where id = :id", Map.of("id", id));
 	}
 
+	public Optional<Map<String, Object>> findForUpdate(UUID id) {
+		return DbRows.one(jdbc, "select * from public.book_submissions where id = :id for update", Map.of("id", id));
+	}
+
 	public Optional<Map<String, Object>> insert(Map<String, Object> params) {
 		return DbRows.one(jdbc, """
 				insert into public.book_submissions

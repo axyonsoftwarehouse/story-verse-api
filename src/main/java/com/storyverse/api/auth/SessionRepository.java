@@ -41,13 +41,19 @@ public class SessionRepository {
 	}
 
 	public Optional<SessionRow> findByRefreshHash(String refreshHash) {
-		return jdbc.sql("select " + SELECT_COLUMNS + " from auth.sessions where refresh_hash = :hash")
+ return jdbc.sql("select " + SELECT_COLUMNS + " from auth.sessions where refresh_hash = :hash for update")
 				.param("hash", refreshHash)
 				.query(SessionRepository::map)
 				.optional();
 	}
 
 	public void rotate(UUID id, String accessHash, Instant accessExpiresAt, String refreshHash, Instant refreshExpiresAt) {
+		jdbc.sql("""
+				insert into auth.session_token_history (token_hash, session_id, expires_at)
+				select access_hash, id, access_expires_at from auth.sessions where id = :id
+				union all select refresh_hash, id, refresh_expires_at from auth.sessions where id = :id
+				on conflict (token_hash) do nothing
+				""").param("id", id).update();
 		jdbc.sql("""
 				update auth.sessions
 				   set access_hash = :accessHash,
@@ -66,15 +72,23 @@ public class SessionRepository {
 	}
 
 	public void revokeByRefreshHash(String refreshHash) {
-		jdbc.sql("update auth.sessions set revoked_at = now() where refresh_hash = :hash and revoked_at is null")
-				.param("hash", refreshHash)
-				.update();
+		revokeByTokenHash(refreshHash);
 	}
 
 	public void revokeByAccessHash(String accessHash) {
-		jdbc.sql("update auth.sessions set revoked_at = now() where access_hash = :hash and revoked_at is null")
-				.param("hash", accessHash)
-				.update();
+		revokeByTokenHash(accessHash);
+	}
+
+	private void revokeByTokenHash(String hash) {
+		// Resolve the stable session ID before taking the update lock. Rotation may change hashes
+		// while this request waits, but must never move a logout to a different session.
+		var id = jdbc.sql("""
+				select id from auth.sessions where access_hash = :hash or refresh_hash = :hash
+				union select session_id from auth.session_token_history
+				where token_hash = :hash and expires_at > now()
+				""").param("hash", hash).query(UUID.class).optional();
+		id.ifPresent(value -> jdbc.sql("update auth.sessions set revoked_at = now() where id = :id")
+				.param("id", value).update());
 	}
 
 	private static OffsetDateTime at(Instant instant) {

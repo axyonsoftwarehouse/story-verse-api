@@ -18,15 +18,18 @@ public class ReadingStateService {
 
 	private final ReadingStateRepository repository;
 	private final AuthService auth;
+	private final org.springframework.jdbc.core.simple.JdbcClient jdbc;
 
-	public ReadingStateService(ReadingStateRepository repository, AuthService auth) {
+	public ReadingStateService(ReadingStateRepository repository, AuthService auth, org.springframework.jdbc.core.simple.JdbcClient jdbc) {
 		this.repository = repository;
 		this.auth = auth;
+		this.jdbc = jdbc;
 	}
 
 	@Transactional(readOnly = true)
 	public ReadingStateResponse get(String accessToken) {
 		UUID userId = auth.authenticate(accessToken);
+		com.storyverse.api.common.DbSession.setUser(jdbc, userId);
 		return repository.find(userId)
 				.map(row -> new ReadingStateResponse(readTree(row.data()), row.updatedAt()))
 				.orElseGet(() -> new ReadingStateResponse(emptyObject(), null));
@@ -35,6 +38,7 @@ public class ReadingStateService {
 	@Transactional
 	public ReadingStateWriteResponse put(String accessToken, ReadingStateWriteRequest request) {
 		UUID userId = auth.authenticate(accessToken);
+		com.storyverse.api.common.DbSession.setUser(jdbc, userId);
 		String dataJson = request.data() == null ? "{}" : request.data().toString();
 		// baseUpdatedAt null => primeira gravação; senão, grava só se a nuvem não mudou (otimista).
 		Optional<String> updated = request.baseUpdatedAt() == null

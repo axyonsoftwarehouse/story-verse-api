@@ -20,10 +20,12 @@ public class AiController {
 
 	private final AiService ai;
 	private final AuthService auth;
+	private final AiBudget budget;
 
-	public AiController(AiService ai, AuthService auth) {
+	public AiController(AiService ai, AuthService auth, AiBudget budget) {
 		this.ai = ai;
 		this.auth = auth;
+		this.budget = budget;
 	}
 
 	@GetMapping("/status")
@@ -35,16 +37,25 @@ public class AiController {
 	public Map<String, Object> reply(
 			@RequestBody AiReplyRequest request,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
-		auth.authenticate(AuthTokens.bearer(authorization));
+		var user = auth.authenticate(AuthTokens.bearer(authorization));
 		List<AiMessage> messages = request.messages() == null ? List.of() : request.messages();
 		if (messages.size() > 20) {
-			messages = messages.subList(messages.size() - 20, messages.size());
+			throw new com.storyverse.api.auth.AuthException(400, "Histórico grande demais.");
 		}
+		for (AiMessage message : messages)
+			if (message == null || !("user".equals(message.role()) || "assistant".equals(message.role()))
+					|| message.content() == null || message.content().length() > 4000)
+				throw new com.storyverse.api.auth.AuthException(400, "Mensagem inválida ou grande demais.");
 		String system = request.system() == null ? "" : request.system();
 		if (system.length() > 6000) {
 			system = system.substring(0, 6000);
 		}
 		int maxTokens = request.maxTokens() == null ? 250 : Math.min(Math.max(request.maxTokens(), 1), 800);
-		return Map.of("text", ai.reply(system, messages, maxTokens));
+		if (!ai.live()) throw new com.storyverse.api.auth.AuthException(503, "IA indisponível.");
+		budget.acquire();
+		try {
+			budget.reserve(user);
+			return Map.of("text", ai.reply(system, messages, maxTokens));
+		} finally { budget.release(); }
 	}
 }

@@ -18,9 +18,15 @@ public class PresenceService {
 
 	private final Map<String, Map<String, Set<SseEmitter>>> rooms = new ConcurrentHashMap<>();
 
-	public SseEmitter join(String room, String key) {
-		// Sem tempo limite: a conexão vive até o cliente sair (ou o "batimento" detectar que morreu).
-		SseEmitter emitter = new SseEmitter(0L);
+	public synchronized SseEmitter join(String room, String key) {
+		// Finite lifetime; EventSource reconnects and stale connections cannot live forever.
+		int connections = rooms.values().stream().flatMap(m -> m.values().stream()).mapToInt(Set::size).sum();
+		if (connections >= 500 || rooms.size() >= 200 && !rooms.containsKey(room))
+			throw new com.storyverse.api.auth.AuthException(429, "Limite de conexões atingido.");
+		var existing = rooms.get(room);
+		if (existing != null && existing.getOrDefault(key, Set.of()).size() >= 5)
+			throw new com.storyverse.api.auth.AuthException(429, "Muitas conexões para este leitor.");
+		SseEmitter emitter = new SseEmitter(300_000L);
 		rooms.computeIfAbsent(room, ignored -> new ConcurrentHashMap<>())
 				.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet())
 				.add(emitter);
@@ -36,7 +42,7 @@ public class PresenceService {
 		return keys == null ? 0 : keys.size();
 	}
 
-	private void leave(String room, String key, SseEmitter emitter) {
+	private synchronized void leave(String room, String key, SseEmitter emitter) {
 		Map<String, Set<SseEmitter>> keys = rooms.get(room);
 		if (keys == null) {
 			return;
