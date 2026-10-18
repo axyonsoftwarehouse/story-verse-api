@@ -2,6 +2,8 @@ package com.storyverse.api.storage;
 
 import java.util.UUID;
 
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -42,21 +44,26 @@ public class StorageController {
 		StorageBucket selected = StorageBucket.from(bucket);
 		StorageService.requireOwn(userId, path);
 		if (request.getContentLengthLong() > selected.maxBytes()) throw new com.storyverse.api.auth.AuthException(413, "Arquivo grande demais.");
-		byte[] body = request.getInputStream().readNBytes((int) selected.maxBytes() + 1);
-		storage.write(userId, selected, path, contentType, body);
+		storage.write(userId, selected, path, contentType, request.getInputStream(), request.getContentLengthLong());
 		return ResponseEntity.ok().build();
 	}
 
 	@GetMapping("/{bucket}/object")
-	public ResponseEntity<byte[]> download(
+	public ResponseEntity<Resource> download(
 			@PathVariable String bucket,
 			@RequestParam String path,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		StorageBucket storageBucket = StorageBucket.from(bucket);
 		UUID userId = auth.authenticate(AuthTokens.bearer(authorization));
-		return storage.readFor(userId, storageBucket, path)
-				.map(data -> ResponseEntity.ok().contentType(typeFor(path)).cacheControl(CacheControl.noStore()).body(data))
-				.orElseGet(() -> ResponseEntity.notFound().build());
+		return storage.fileFor(userId, storageBucket, path)
+				.map(file -> {
+					Resource resource = new FileSystemResource(file);
+					return ResponseEntity.ok()
+							.contentType(typeFor(path))
+							.cacheControl(CacheControl.noStore())
+							.body(resource);
+				})
+				.orElseGet(() -> ResponseEntity.<Resource>notFound().build());
 	}
 
 	@DeleteMapping("/{bucket}/object")
@@ -71,19 +78,22 @@ public class StorageController {
 
 	/** Leitura pública (só buckets públicos, como `profile-media`). Não pede sessão. */
 	@GetMapping("/public/{bucket}/{*path}")
-	public ResponseEntity<byte[]> publicDownload(@PathVariable String bucket, @PathVariable String path) {
+	public ResponseEntity<Resource> publicDownload(@PathVariable String bucket, @PathVariable String path) {
 		StorageBucket storageBucket = StorageBucket.from(bucket);
 		if (!storageBucket.publiclyReadable()) {
 			return ResponseEntity.notFound().build();
 		}
 		// No padrão {*path} do Spring, o valor vem com a barra inicial ("/uid/arquivo").
 		String relative = path.startsWith("/") ? path.substring(1) : path;
-		return storage.read(storageBucket, relative)
-				.map(data -> ResponseEntity.ok()
-						.contentType(typeFor(path))
-						.cacheControl(CacheControl.maxAge(java.time.Duration.ofDays(365)).cachePublic())
-						.body(data))
-				.orElseGet(() -> ResponseEntity.notFound().build());
+		return storage.file(storageBucket, relative)
+				.map(file -> {
+					Resource resource = new FileSystemResource(file);
+					return ResponseEntity.ok()
+							.contentType(typeFor(path))
+							.cacheControl(CacheControl.maxAge(java.time.Duration.ofDays(365)).cachePublic())
+							.body(resource);
+				})
+				.orElseGet(() -> ResponseEntity.<Resource>notFound().build());
 	}
 
 	private static MediaType typeFor(String path) {
