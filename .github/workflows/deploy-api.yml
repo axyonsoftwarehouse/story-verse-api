@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/axyonsoftwarehouse/story-verse-api:latest
+  IMAGE: ghcr.io/axyonsoftwarehouse/story-verse-api:${{ github.sha }}
 
 jobs:
   deploy:
@@ -29,18 +29,22 @@ jobs:
           docker push "$IMAGE"
 
       - name: Configurar chave SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
+          test -n "$VPS_KNOWN_HOSTS" || { echo "Configure VPS_KNOWN_HOSTS com a chave verificada da VPS"; exit 1; }
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
       - name: Atualizar na VPS
         run: |
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'cd /home/deploy/storyverse && docker compose config --quiet && docker compose pull api && docker compose up -d api && docker compose ps api'
+            "cd /home/deploy/storyverse && API_IMAGE='$IMAGE' docker compose config --quiet && API_IMAGE='$IMAGE' docker compose pull api && API_IMAGE='$IMAGE' docker compose up -d api && docker compose ps api"
 
       - name: Conferir o health da API
         run: |
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.storyverse.2.29.42.104.sslip.io/api/v1/health'
+            'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.storyverse.2.29.42.104.sslip.io/api/v1/health/ready'

@@ -9,10 +9,14 @@ spring:
     enabled: true
     baseline-on-migrate: true
     baseline-version: 0
+    url: ${SPRING_FLYWAY_URL:}
+    user: ${SPRING_FLYWAY_USER:}
+    password: ${SPRING_FLYWAY_PASSWORD:}
 
 server:
   port: ${PORT:8080}
   shutdown: graceful
+  forward-headers-strategy: native
 
 app:
   cors:

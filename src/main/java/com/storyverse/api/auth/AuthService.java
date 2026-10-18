@@ -9,6 +9,8 @@ import java.util.regex.Pattern;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.storyverse.api.common.RateLimits;
+import java.nio.charset.StandardCharsets;
 
 @Service
 public class AuthService {
@@ -21,23 +23,27 @@ public class AuthService {
 	private final SessionRepository sessions;
 	private final TokenService tokens;
 	private final PasswordEncoder passwordEncoder;
+	private final RateLimits limits;
 
-	public AuthService(UserRepository users, SessionRepository sessions, TokenService tokens, PasswordEncoder passwordEncoder) {
+	public AuthService(UserRepository users, SessionRepository sessions, TokenService tokens, PasswordEncoder passwordEncoder, RateLimits limits) {
 		this.users = users;
 		this.sessions = sessions;
 		this.tokens = tokens;
 		this.passwordEncoder = passwordEncoder;
+		this.limits = limits;
 	}
 
 	@Transactional
 	public AuthResponse signup(SignupRequest request) {
 		String email = normalizeEmail(request.email());
-		if (email == null || !EMAIL.matcher(email).matches()) {
+		if (email == null || email.length() > 254 || !EMAIL.matcher(email).matches()) {
 			throw new AuthException(400, "E-mail inválido.");
 		}
 		if (request.password() == null || request.password().length() < 6) {
 			throw new AuthException(400, "A senha precisa de pelo menos 6 caracteres.");
 		}
+		if (request.password().getBytes(StandardCharsets.UTF_8).length > 72 || (request.name() != null && request.name().length() > 60))
+			throw new AuthException(400, "Senha ou nome grande demais.");
 		if (users.findByEmail(email).isPresent()) {
 			throw new AuthException(409, "Este e-mail já está cadastrado.");
 		}
@@ -48,6 +54,10 @@ public class AuthService {
 	@Transactional
 	public AuthResponse login(LoginRequest request) {
 		String email = normalizeEmail(request.email());
+		if (email != null && email.length() > 254) throw new AuthException(401, "E-mail ou senha inválidos.");
+		limits.check("login-account:" + tokens.hash(email == null ? "" : email), 15, Duration.ofMinutes(15));
+		if (request.password() != null && request.password().getBytes(StandardCharsets.UTF_8).length > 72)
+			throw new AuthException(401, "E-mail ou senha inválidos.");
 		User user = users.findByEmail(email == null ? "" : email)
 				.orElseThrow(() -> new AuthException(401, "E-mail ou senha inválidos."));
 		if (user.encryptedPassword() == null
@@ -76,7 +86,8 @@ public class AuthService {
 	public void logout(String refreshToken, String accessToken) {
 		if (refreshToken != null && !refreshToken.isBlank()) {
 			sessions.revokeByRefreshHash(tokens.hash(refreshToken));
-		} else if (accessToken != null && !accessToken.isBlank()) {
+		}
+		if (accessToken != null && !accessToken.isBlank()) {
 			sessions.revokeByAccessHash(tokens.hash(accessToken));
 		}
 	}

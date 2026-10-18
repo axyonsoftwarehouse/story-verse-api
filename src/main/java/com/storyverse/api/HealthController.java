@@ -9,6 +9,14 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/health")
 public class HealthController {
+	private final org.springframework.jdbc.core.simple.JdbcClient jdbc;
+	public HealthController(org.springframework.jdbc.core.simple.JdbcClient jdbc) { this.jdbc = jdbc; }
+
+	@GetMapping("/ready")
+	public HealthResponse ready() {
+		jdbc.sql("select 1 from public.reading_state limit 0").query().listOfRows();
+		return new HealthResponse("ready", Instant.now());
+	}
 
 	@GetMapping
 	public HealthResponse health() {

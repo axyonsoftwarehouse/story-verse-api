@@ -36,6 +36,8 @@ public class RpcService {
 		DbSession.setUser(jdbc, userId);
 		try {
 			return switch (name) {
+				case "reading_heartbeat" -> scalar("select public.reading_heartbeat(:active)",
+						Map.of("active", boolArg(args, "p_active")));
 				case "my_wallet" -> DbRows.list(jdbc, "select * from public.my_wallet()", Map.of());
 				case "my_diamond_history" -> DbRows.list(jdbc, "select * from public.my_diamond_history(p_limit => :limit)",
 						Map.of("limit", intArg(args, "p_limit", 30)));
