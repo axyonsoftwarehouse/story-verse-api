@@ -85,4 +85,10 @@ public class AuthController {
 	public UserResponse me(@RequestHeader(value = "Authorization", required = false) String authorization) {
 		return service.me(AuthTokens.bearer(authorization));
 	}
+
+	@GetMapping("/capabilities")
+	public CapabilitiesResponse capabilities(
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.capabilities(AuthTokens.bearer(authorization));
+	}
 }

@@ -28,6 +28,12 @@ class AuthControllerTest {
 	}
 
 	@Test
+	void capabilitiesWithoutTokenIsUnauthorized() throws Exception {
+		mockMvc.perform(get("/api/v1/auth/capabilities"))
+				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
 	void signupWithInvalidEmailIsRejected() throws Exception {
 		mockMvc.perform(post("/api/v1/auth/signup")
 						.contentType(MediaType.APPLICATION_JSON)

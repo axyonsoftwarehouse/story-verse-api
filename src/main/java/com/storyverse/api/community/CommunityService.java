@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.storage.StorageService;
@@ -27,13 +28,16 @@ public class CommunityService {
 
 	private final CommunityRepository repository;
 	private final AuthService auth;
+	private final AuthzService authz;
 	private final JdbcClient jdbc;
 	private final StorageService storage;
 	private final StorageAccess access;
 
-	public CommunityService(CommunityRepository repository, AuthService auth, JdbcClient jdbc, StorageService storage, StorageAccess access) {
+	public CommunityService(CommunityRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc,
+			StorageService storage, StorageAccess access) {
 		this.repository = repository;
 		this.auth = auth;
+		this.authz = authz;
 		this.jdbc = jdbc;
 		this.storage = storage;
 		this.access = access;
@@ -106,13 +110,19 @@ public class CommunityService {
 		if (!"approved".equals(status) && !"rejected".equals(status)) {
 			throw new AuthException(400, "Situação inválida.");
 		}
+		String note = limit(text(body.get("review_note")), 500);
 		Map<String, Object> params = new LinkedHashMap<>();
 		params.put("id", id);
 		params.put("status", status);
-		params.put("note", limit(text(body.get("review_note")), 500));
+		params.put("note", note);
 		params.put("cover", limit(text(body.get("cover_url")), 300));
+		params.put("reviewed_by", userId);
 		try {
-			return repository.review(params).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+			Map<String, Object> reviewed = repository.review(params)
+					.orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+			authz.audit(userId, "book_submission.review", "book_submission", id.toString(),
+					Map.of("status", status, "note", note == null ? "" : note));
+			return reviewed;
 		} catch (DataAccessException exception) {
 			throw new AuthException(400, DbErrors.message(exception));
 		}

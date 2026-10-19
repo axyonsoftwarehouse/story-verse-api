@@ -40,6 +40,7 @@ class SecurityIntegrationTest {
   @Autowired TokenService tokenService;
   @Autowired StorageService storage;
   @Autowired CommunityService community;
+  @Autowired AuthzService authz;
   @Autowired RpcService rpc;
   @Autowired JdbcClient jdbc;
   @Autowired PlatformTransactionManager transactions;
@@ -213,6 +214,26 @@ class SecurityIntegrationTest {
     updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null));
     assertFalse(updated.user_metadata().containsKey("photo"));
     assertFalse(updated.user_metadata().containsKey("cover"));
+  }
+  @Test void rolesDriveCapabilitiesAndAdminAudit() {
+    AuthResponse user=user(); UUID userId=id(user);
+    assertTrue(authz.roles(userId).isEmpty());
+    assertThrows(AuthException.class,()->authz.requireRole(userId,"superadmin"));
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",userId).update();
+    assertTrue(authz.hasRole(userId,"superadmin"));
+    assertTrue(auth.capabilities(user.accessToken()).roles().contains("superadmin"));
+    authz.audit(userId,"test.action","user",userId.toString(),Map.of("ok",true));
+    assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where actor_id=:id").param("id",userId).query(Integer.class).single());
+  }
+  @Test void runtimeRoleCanReadOwnRolesAndWriteAudit() {
+    AuthResponse user=user(); UUID uid=id(user);
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",uid).update();
+    new TransactionTemplate(transactions).executeWithoutResult(status->{
+      jdbc.sql("set local role storyverse_api").update();
+      assertTrue(authz.hasRole(uid,"superadmin"));
+      authz.audit(uid,"test.runtime","user",uid.toString(),Map.of("ok",true));
+      assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where actor_id=:id").param("id",uid).query(Integer.class).single());
+    });
   }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";

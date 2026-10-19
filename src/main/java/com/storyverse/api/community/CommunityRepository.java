@@ -67,6 +67,7 @@ public class CommunityRepository {
 				   set status = :status,
 				       review_note = :note,
 				       reviewed_at = now(),
+				       reviewed_by = :reviewed_by,
 				       cover_url = coalesce(:cover, cover_url)
 				 where id = :id
 				 returning *
