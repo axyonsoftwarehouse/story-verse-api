@@ -81,6 +81,19 @@ public class SessionRepository {
 		revokeByTokenHash(accessHash);
 	}
 
+	public void revokeAllForUser(UUID userId) {
+		jdbc.sql("update auth.sessions set revoked_at = now() where user_id = :userId and revoked_at is null")
+				.param("userId", userId)
+				.update();
+	}
+
+	public void revokeAllForUserExcept(UUID userId, UUID keepSessionId) {
+		jdbc.sql("""
+				update auth.sessions set revoked_at = now()
+				 where user_id = :userId and id <> :keepSessionId and revoked_at is null
+				""").param("userId", userId).param("keepSessionId", keepSessionId).update();
+	}
+
 	private void revokeByTokenHash(String hash) {
 		// Resolve the stable session ID before taking the update lock. Rotation may change hashes
 		// while this request waits, but must never move a logout to a different session.

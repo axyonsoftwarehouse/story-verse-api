@@ -33,8 +33,11 @@ class SecurityIntegrationTest {
     properties.add("app.storage.dir", () -> media.toString());
     properties.add("app.storage.quota-bytes", () -> "2048");
     properties.add("app.storage.quota-objects", () -> "3");
+    properties.add("app.auth.require-email-confirmation", () -> "false");
   }
   @Autowired AuthService auth;
+  @Autowired EmailTokenRepository emailTokens;
+  @Autowired TokenService tokenService;
   @Autowired StorageService storage;
   @Autowired CommunityService community;
   @Autowired RpcService rpc;
@@ -43,7 +46,7 @@ class SecurityIntegrationTest {
   @Autowired javax.sql.DataSource dataSource;
   @Autowired com.storyverse.api.ai.AiBudget aiBudget;
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
-  AuthResponse user() { return auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
+  AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
 
   @Test void refreshIsSingleUseUnderConcurrency() throws Exception {
@@ -142,6 +145,7 @@ class SecurityIntegrationTest {
       assertEquals(0,((Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true))).intValue());
       aiBudget.reserve(uid);
       assertEquals(1,jdbc.sql("select used from public.api_daily_usage where user_id=:uid").param("uid",uid).query(Integer.class).single());
+      auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });
     assertThrows(AuthException.class,()->auth.authenticate(user.accessToken()));
@@ -173,6 +177,42 @@ class SecurityIntegrationTest {
         () -> community.review(admin.accessToken(),submissionId,Map.of("status","approved")));
     assertEquals(409,rejected.status());
     assertEquals("pending",jdbc.sql("select status from public.book_submissions where id=:id").param("id",submissionId).query(String.class).single());
+  }
+  @Test void emailConfirmationAndPasswordResetTokensAreSingleUse() {
+    AuthResponse session=user();UUID uid=id(session);String email=session.user().email();
+    jdbc.sql("update auth.users set email_confirmed_at=null where id=:id").param("id",uid).update();
+    String confirm=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.CONFIRM_EMAIL,tokenService.hash(confirm),java.time.Instant.now().plusSeconds(3600));
+    AuthResponse confirmed=auth.confirmEmail(confirm);
+    assertEquals(uid,UUID.fromString(confirmed.user().id()));
+    assertEquals(1,jdbc.sql("select count(*) from auth.users where id=:id and email_confirmed_at is not null").param("id",uid).query(Integer.class).single());
+    assertThrows(AuthException.class,()->auth.confirmEmail(confirm));
+    String reset=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(reset),java.time.Instant.now().plusSeconds(3600));
+    auth.resetPassword(reset,"new-secret");
+    assertThrows(AuthException.class,()->auth.login(new LoginRequest(email,"test-secret")));
+    assertThrows(AuthException.class,()->auth.refresh(session.refreshToken()));
+    assertNotNull(auth.login(new LoginRequest(email,"new-secret")).accessToken());
+    assertThrows(AuthException.class,()->auth.resetPassword(reset,"another-secret"));
+  }
+  @Test void changingPasswordRequiresCurrentPasswordAndKeepsOnlyThisSession() {
+    AuthResponse first=user();
+    AuthResponse second=auth.login(new LoginRequest(first.user().email(),"test-secret"));
+    auth.changePassword(first.accessToken(),"test-secret","other-secret");
+    assertDoesNotThrow(()->auth.authenticate(first.accessToken()));
+    assertThrows(AuthException.class,()->auth.refresh(second.refreshToken()));
+    assertThrows(AuthException.class,()->auth.login(new LoginRequest(first.user().email(),"test-secret")));
+    assertThrows(AuthException.class,()->auth.changePassword(first.accessToken(),"wrong","another-secret"));
+  }
+  @Test void profileUpdateKeepsUnchangedFieldsAndClearsRemovedOnes() {
+    AuthResponse session=user();
+    UserResponse updated=auth.updateProfile(session.accessToken(),
+        new ProfileUpdateRequest("Novo nome","avatar-1","https://example.test/photo","https://example.test/cover"));
+    assertEquals("Novo nome",updated.user_metadata().get("name"));
+    assertEquals("avatar-1",updated.user_metadata().get("avatar"));
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null));
+    assertFalse(updated.user_metadata().containsKey("photo"));
+    assertFalse(updated.user_metadata().containsKey("cover"));
   }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";

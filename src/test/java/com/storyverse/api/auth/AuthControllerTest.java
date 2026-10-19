@@ -1,6 +1,7 @@
 package com.storyverse.api.auth;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -33,5 +34,33 @@ class AuthControllerTest {
 						.content("{\"email\":\"invalido\",\"password\":\"segredo1\"}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error").value("E-mail inválido."));
+	}
+
+	@Test
+	void accountEndpointsRequireAuthentication() throws Exception {
+		mockMvc.perform(patch("/api/v1/auth/profile")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"name\":\"Novo\"}"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(post("/api/v1/auth/change-password")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"currentPassword\":\"segredo1\",\"newPassword\":\"segredo2\"}"))
+				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
+	void passwordRecoveryRejectsInvalidInputs() throws Exception {
+		mockMvc.perform(post("/api/v1/auth/forgot-password")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"email\":\"invalido\"}"))
+				.andExpect(status().isBadRequest());
+		mockMvc.perform(post("/api/v1/auth/reset-password")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"token\":\"abc\",\"password\":\"123\"}"))
+				.andExpect(status().isBadRequest());
+		mockMvc.perform(post("/api/v1/auth/confirm-email")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"token\":\"\"}"))
+				.andExpect(status().isBadRequest());
 	}
 }
