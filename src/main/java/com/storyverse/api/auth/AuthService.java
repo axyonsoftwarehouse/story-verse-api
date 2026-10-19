@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -31,6 +32,7 @@ public class AuthService {
 	private final PasswordEncoder passwordEncoder;
 	private final RateLimits limits;
 	private final MailService mail;
+	private final AuthzService authz;
 	private final boolean requireEmailConfirmation;
 	private final Duration confirmationTtl;
 	private final Duration resetTtl;
@@ -43,6 +45,7 @@ public class AuthService {
 			PasswordEncoder passwordEncoder,
 			RateLimits limits,
 			MailService mail,
+			AuthzService authz,
 			@Value("${app.auth.require-email-confirmation:true}") boolean requireEmailConfirmation,
 			@Value("${app.auth.confirmation-ttl:PT24H}") Duration confirmationTtl,
 			@Value("${app.auth.reset-ttl:PT1H}") Duration resetTtl) {
@@ -53,6 +56,7 @@ public class AuthService {
 		this.passwordEncoder = passwordEncoder;
 		this.limits = limits;
 		this.mail = mail;
+		this.authz = authz;
 		this.requireEmailConfirmation = requireEmailConfirmation;
 		this.confirmationTtl = confirmationTtl;
 		this.resetTtl = resetTtl;
@@ -211,6 +215,12 @@ public class AuthService {
 		User user = users.findById(session.userId())
 				.orElseThrow(() -> new AuthException(401, "Sessão inválida."));
 		return UserResponse.from(user);
+	}
+
+	@Transactional(readOnly = true)
+	public CapabilitiesResponse capabilities(String accessToken) {
+		SessionRow session = requireSession(accessToken, false);
+		return new CapabilitiesResponse(List.copyOf(authz.roles(session.userId())));
 	}
 
 	/** Id do usuário da sessão (Bearer). Usado pelos módulos de dados. */
