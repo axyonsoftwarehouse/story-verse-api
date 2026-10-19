@@ -225,6 +225,16 @@ class SecurityIntegrationTest {
     authz.audit(userId,"test.action","user",userId.toString(),Map.of("ok",true));
     assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where actor_id=:id").param("id",userId).query(Integer.class).single());
   }
+  @Test void runtimeRoleCanReadOwnRolesAndWriteAudit() {
+    AuthResponse user=user(); UUID uid=id(user);
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",uid).update();
+    new TransactionTemplate(transactions).executeWithoutResult(status->{
+      jdbc.sql("set local role storyverse_api").update();
+      assertTrue(authz.hasRole(uid,"superadmin"));
+      authz.audit(uid,"test.runtime","user",uid.toString(),Map.of("ok",true));
+      assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where actor_id=:id").param("id",uid).query(Integer.class).single());
+    });
+  }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";
     String coverPath=id(owner)+"/livros/cover";
