@@ -87,3 +87,18 @@ docker run --rm -p 8080:8080 story-verse-api
 ```
 
 O workflow `.github/workflows/ci.yml` executa `verify` com JDK 25 em cada push e pull request. O endpoint `/api/v1/health` pode ser usado como health check quando um provedor de hospedagem for escolhido.
+
+## Contas na API propria
+
+Endpoints de confirmacao, recuperacao e perfil:
+
+- `POST /api/v1/auth/confirm-email` - `{ "token" }` -> sessao (o link confirma e ja entra).
+- `POST /api/v1/auth/resend-confirmation` - `{ "email" }` -> 202, sempre resposta generica.
+- `POST /api/v1/auth/forgot-password` - `{ "email" }` -> 202, sempre resposta generica.
+- `POST /api/v1/auth/reset-password` - `{ "token", "password" }` -> 204; revoga as sessoes.
+- `POST /api/v1/auth/change-password` - `{ "currentPassword", "newPassword" }` com Bearer -> 204.
+- `PATCH /api/v1/auth/profile` - `{ "name", "avatar", "photo", "cover" }` com Bearer -> usuario atualizado.
+
+Com `APP_AUTH_REQUIRE_EMAIL_CONFIRMATION=true` (padrao em producao), o cadastro responde 202
+sem tokens e envia um link por SMTP. Com `false`, responde 201 com sessao (util em testes locais).
+As migracoes Flyway V5 criam `auth.email_tokens` e os grants do papel `storyverse_api`.
