@@ -25,7 +25,7 @@
 		</dependency>
 		<dependency>
 			<groupId>io.sentry</groupId>
-			<artifactId>sentry-spring-boot-starter-jakarta</artifactId>
+			<artifactId>sentry</artifactId>
 			<version>8.61.0</version>
 		</dependency>
 		<dependency>
