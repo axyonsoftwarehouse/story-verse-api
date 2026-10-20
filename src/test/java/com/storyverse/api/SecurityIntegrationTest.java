@@ -48,6 +48,8 @@ class SecurityIntegrationTest {
   @Autowired PlatformTransactionManager transactions;
   @Autowired javax.sql.DataSource dataSource;
   @Autowired com.storyverse.api.ai.AiBudget aiBudget;
+  @Autowired com.storyverse.api.ai.AiMetrics aiMetrics;
+  @Autowired com.storyverse.api.ai.AiCache aiCache;
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
@@ -146,8 +148,16 @@ class SecurityIntegrationTest {
       assertEquals(uid.toString(),row.get("user_id").toString());
       assertTrue(storage.readFor(uid,StorageBucket.COMMUNITY_BOOKS,path).isPresent());
       assertEquals(0,((Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true))).intValue());
-      aiBudget.reserve(uid);
+      var quota=aiBudget.reserve(uid);
+      assertEquals(1,quota.used());
+      assertEquals(quota.limit()-1,quota.remaining());
       assertEquals(1,jdbc.sql("select used from public.api_daily_usage where user_id=:uid").param("uid",uid).query(Integer.class).single());
+      assertEquals(1,aiBudget.quota(uid).used());
+      aiMetrics.record(uid,"chat","qa","qa-model","ok",12,10,5,false,null);
+      assertEquals(1,jdbc.sql("select count(*) from public.ai_usage_events where user_id=:uid").param("uid",uid).query(Integer.class).single());
+      String cacheKey=com.storyverse.api.ai.AiCache.key("qa",uid.toString());
+      aiCache.put(cacheKey,"qa","{\"ok\":true}","qa-model",java.time.Duration.ofMinutes(5));
+      assertTrue(aiCache.get(cacheKey).isPresent());
       auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });

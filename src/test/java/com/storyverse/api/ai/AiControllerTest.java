@@ -33,4 +33,10 @@ class AiControllerTest {
 						.content("{}"))
 				.andExpect(status().isUnauthorized());
 	}
+
+	@Test
+	void quotaWithoutTokenIsUnauthorized() throws Exception {
+		mockMvc.perform(get("/api/v1/ai/quota"))
+				.andExpect(status().isUnauthorized());
+	}
 }

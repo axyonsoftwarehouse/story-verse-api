@@ -42,3 +42,9 @@ app:
   storage:
     # Pasta dos arquivos (fotos, livros importados, acervo). Na VPS é o volume do stack.
     dir: ${STORAGE_DIR:/data/media}
+  ai:
+    # Cota diária por conta. 0 não desliga: o mínimo efetivo é 1.
+    daily-message-limit: ${AI_DAILY_MESSAGE_LIMIT:50}
+    # Teto global diário (todas as contas). 0 = sem modo economia.
+    daily-global-limit: ${AI_DAILY_GLOBAL_LIMIT:0}
+    per-minute-limit: ${AI_PER_MINUTE_LIMIT:6}
