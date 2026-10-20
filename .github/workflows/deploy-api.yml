@@ -49,3 +49,34 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
             'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.storyverse.2.29.42.104.sslip.io/api/v1/health/ready'
+
+      - name: Smoke test da API
+        env:
+          API_URL: https://api.storyverse.2.29.42.104.sslip.io
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SMOKE_EMAIL" ] || [ -z "$SMOKE_PASSWORD" ]; then
+            echo "::warning::SMOKE_EMAIL/SMOKE_PASSWORD não configurados; smoke test pulado."
+            exit 0
+          fi
+          login_payload=$(jq -n --arg email "$SMOKE_EMAIL" --arg password "$SMOKE_PASSWORD" '{email:$email,password:$password}')
+          login=$(curl -fsS -X POST "$API_URL/api/v1/auth/login" -H "Content-Type: application/json" -d "$login_payload")
+          token=$(printf '%s' "$login" | jq -r '.accessToken // empty')
+          test -n "$token" || { echo "::error::Login do smoke não devolveu accessToken"; exit 1; }
+          curl -fsS "$API_URL/api/v1/auth/me" -H "Authorization: Bearer $token" >/dev/null
+          curl -fsS -X PATCH "$API_URL/api/v1/auth/profile" \
+            -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+            -d '{"name":"Smoke Test"}' >/dev/null
+          if curl -fsS "$API_URL/api/v1/ai/status" | jq -e '.live == true' >/dev/null; then
+            request_id=$(openssl rand -hex 16)
+            ai_payload=$(jq -n --arg id "$request_id" \
+              '{system:"Smoke test.",messages:[{role:"user",content:"Responda apenas: ok"}],maxTokens:10,requestId:$id}')
+            curl -fsS -X POST "$API_URL/api/v1/ai/reply" \
+              -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+              -d "$ai_payload" >/dev/null || echo "::warning::Chamada de IA do smoke falhou (provedor pode estar fora)."
+          else
+            echo "::warning::IA não configurada; chamada de IA do smoke pulada."
+          fi
+          echo "Smoke test da API concluído."
