@@ -55,6 +55,23 @@ public class RpcService {
 						Map.of("offset", intArg(args, "p_offset", 0), "limit", intArg(args, "p_limit", 50)));
 				case "my_ranking_profile" -> DbRows.list(jdbc, "select * from public.my_ranking_profile()", Map.of());
 				case "my_weekly_awards" -> DbRows.list(jdbc, "select * from public.my_weekly_awards()", Map.of());
+				case "gift_rules" -> DbRows.list(jdbc, "select * from public.gift_rules()", Map.of());
+				case "gift_catalog" -> DbRows.list(jdbc, "select * from public.gift_catalog()", Map.of());
+				case "send_gift" -> DbRows.list(jdbc, """
+						select * from public.send_gift(
+						  cast(:target as uuid), :gift, :ref
+						)
+						""", Map.of(
+						"target", strArg(args, "p_to"),
+						"gift", strArg(args, "p_gift"),
+						"ref", strArg(args, "p_ref")));
+				case "my_gifts_received" -> DbRows.list(jdbc,
+						"select * from public.my_gifts_received(p_limit => :limit)",
+						Map.of("limit", intArg(args, "p_limit", 20)));
+				case "my_gift_summary" -> DbRows.list(jdbc, "select * from public.my_gift_summary()", Map.of());
+				case "weekly_gift_counts" -> DbRows.list(jdbc,
+						"select * from public.weekly_gift_counts(p_offset => :offset)",
+						Map.of("offset", intArg(args, "p_offset", 0)));
 				case "set_ranking_hidden" -> {
 					voidCall("select public.set_ranking_hidden(cast(:hidden as boolean))", Map.of("hidden", boolArg(args, "p_hidden")));
 					yield null;
