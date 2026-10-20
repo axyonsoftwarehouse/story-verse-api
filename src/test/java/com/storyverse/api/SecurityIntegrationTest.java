@@ -161,7 +161,7 @@ class SecurityIntegrationTest {
       assertEquals(4,((List<?>)rpc.call(uid,"gift_catalog",Map.of())).size());
       assertEquals(0,((Number)((List<Map<String,Object>>)rpc.call(uid,"my_gift_summary",Map.of())).get(0).get("received_total")).intValue());
       var giftCounts=(List<Map<String,Object>>)rpc.call(uid,"weekly_gift_counts",Map.of("p_offset",0));
-      assertTrue(giftCounts.stream().noneMatch(row -> uid.toString().equals(String.valueOf(row.get("user_id")))));
+      assertTrue(giftCounts.stream().noneMatch(giftRow -> uid.toString().equals(String.valueOf(giftRow.get("user_id")))));
       auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });
