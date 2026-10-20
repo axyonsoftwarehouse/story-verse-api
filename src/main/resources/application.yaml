@@ -48,3 +48,11 @@ app:
     # Teto global diário (todas as contas). 0 = sem modo economia.
     daily-global-limit: ${AI_DAILY_GLOBAL_LIMIT:0}
     per-minute-limit: ${AI_PER_MINUTE_LIMIT:6}
+
+sentry:
+  dsn: ${SENTRY_DSN:}
+  environment: ${SENTRY_ENVIRONMENT:}
+  release: ${SENTRY_RELEASE:}
+  send-default-pii: false
+  max-request-body-size: none
+  traces-sample-rate: ${SENTRY_TRACES_SAMPLE_RATE:0.0}
