@@ -158,11 +158,55 @@ class SecurityIntegrationTest {
       String cacheKey=com.storyverse.api.ai.AiCache.key("qa",uid.toString());
       aiCache.put(cacheKey,"qa","{\"ok\":true}","qa-model",java.time.Duration.ofMinutes(5));
       assertTrue(aiCache.get(cacheKey).isPresent());
+      assertEquals(4,((List<?>)rpc.call(uid,"gift_catalog",Map.of())).size());
+      assertEquals(0,((Number)((List<Map<String,Object>>)rpc.call(uid,"my_gift_summary",Map.of())).get(0).get("received_total")).intValue());
+      var giftCounts=(List<Map<String,Object>>)rpc.call(uid,"weekly_gift_counts",Map.of("p_offset",0));
+      assertTrue(giftCounts.stream().noneMatch(giftRow -> uid.toString().equals(String.valueOf(giftRow.get("user_id")))));
       auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });
     assertThrows(AuthException.class,()->auth.authenticate(user.accessToken()));
   }
+  @Test void giftsChargeTheWalletAndRespectAgeAndDailyLimits() {
+    AuthResponse sender=user(), receiver=user();
+    UUID senderId=id(sender), receiverId=id(receiver);
+    jdbc.sql("select public.apply_diamonds(:id, 200, 'adjustment', 'gift-test-seed')")
+      .param("id",senderId).query(Integer.class).single();
+
+    assertThrows(AuthException.class,()->rpc.call(senderId,"send_gift",Map.of(
+      "p_to",receiverId.toString(),"p_gift","flor","p_ref",UUID.randomUUID().toString())));
+    jdbc.sql("update auth.users set created_at=now()-interval '4 days' where id=:id")
+      .param("id",senderId).update();
+
+    String firstRef=UUID.randomUUID().toString();
+    var first=(List<Map<String,Object>>)rpc.call(senderId,"send_gift",Map.of(
+      "p_to",receiverId.toString(),"p_gift","flor","p_ref",firstRef));
+    assertEquals(195,((Number)first.get(0).get("balance")).intValue());
+    assertEquals(4,((Number)first.get(0).get("remaining_today")).intValue());
+    assertEquals(false,first.get(0).get("duplicate"));
+
+    var repeated=(List<Map<String,Object>>)rpc.call(senderId,"send_gift",Map.of(
+      "p_to",receiverId.toString(),"p_gift","flor","p_ref",firstRef));
+    assertEquals(true,repeated.get(0).get("duplicate"));
+    assertEquals(195,((Number)repeated.get(0).get("balance")).intValue());
+
+    for(int i=0;i<4;i++)rpc.call(senderId,"send_gift",Map.of(
+      "p_to",receiverId.toString(),"p_gift","coracao","p_ref",UUID.randomUUID().toString()));
+    assertThrows(AuthException.class,()->rpc.call(senderId,"send_gift",Map.of(
+      "p_to",receiverId.toString(),"p_gift","flor","p_ref",UUID.randomUUID().toString())));
+
+    var received=(List<Map<String,Object>>)rpc.call(receiverId,"my_gifts_received",Map.of("p_limit",20));
+    assertEquals(5,received.size());
+    var summary=(List<Map<String,Object>>)rpc.call(receiverId,"my_gift_summary",Map.of());
+    assertEquals(5,((Number)summary.get(0).get("received_total")).intValue());
+    assertEquals(5,((Number)summary.get(0).get("received_this_week")).intValue());
+
+    var counts=(List<Map<String,Object>>)rpc.call(senderId,"weekly_gift_counts",Map.of("p_offset",0));
+    assertTrue(counts.stream().anyMatch(row ->
+      receiverId.toString().equals(String.valueOf(row.get("user_id")))
+        && ((Number)row.get("gifts_received")).intValue()==5));
+  }
+
   @Test void closingAndUntrustedReportsCannotChangeFinalMinutesOrPayTwice() throws Exception {
     AuthResponse session=user();UUID uid=id(session);
     jdbc.sql("insert into public.reading_days(user_id,day,seconds) values(:uid,public.ranking_week_start(-1),600)").param("uid",uid).update();
