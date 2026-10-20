@@ -148,12 +148,14 @@ class SecurityIntegrationTest {
       assertEquals(uid.toString(),row.get("user_id").toString());
       assertTrue(storage.readFor(uid,StorageBucket.COMMUNITY_BOOKS,path).isPresent());
       assertEquals(0,((Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true))).intValue());
-      var quota=aiBudget.reserve(uid);
+      var reservation=aiBudget.reserve(uid,UUID.randomUUID().toString());
+      var quota=reservation.quota();
+      assertEquals("free",reservation.source());
       assertEquals(1,quota.used());
       assertEquals(quota.limit()-1,quota.remaining());
       assertEquals(1,jdbc.sql("select used from public.api_daily_usage where user_id=:uid").param("uid",uid).query(Integer.class).single());
       assertEquals(1,aiBudget.quota(uid).used());
-      aiMetrics.record(uid,"chat","qa","qa-model","ok",12,10,5,false,null);
+      aiMetrics.record(uid,"chat","qa","qa-model","ok",12,10,5,false,null,"free",0);
       assertEquals(1,jdbc.sql("select count(*) from public.ai_usage_events where user_id=:uid").param("uid",uid).query(Integer.class).single());
       String cacheKey=com.storyverse.api.ai.AiCache.key("qa",uid.toString());
       aiCache.put(cacheKey,"qa","{\"ok\":true}","qa-model",java.time.Duration.ofMinutes(5));
@@ -162,6 +164,8 @@ class SecurityIntegrationTest {
       assertEquals(0,((Number)((List<Map<String,Object>>)rpc.call(uid,"my_gift_summary",Map.of())).get(0).get("received_total")).intValue());
       var giftCounts=(List<Map<String,Object>>)rpc.call(uid,"weekly_gift_counts",Map.of("p_offset",0));
       assertTrue(giftCounts.stream().noneMatch(giftRow -> uid.toString().equals(String.valueOf(giftRow.get("user_id")))));
+      assertEquals(3,((List<?>)rpc.call(uid,"ai_pack_catalog",Map.of())).size());
+      assertEquals(0,((Number)((List<Map<String,Object>>)rpc.call(uid,"my_ai_quota",Map.of("p_daily_limit",50))).get(0).get("credits")).intValue());
       auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });
@@ -205,6 +209,44 @@ class SecurityIntegrationTest {
     assertTrue(counts.stream().anyMatch(row ->
       receiverId.toString().equals(String.valueOf(row.get("user_id")))
         && ((Number)row.get("gifts_received")).intValue()==5));
+  }
+
+  @Test void aiPacksChargeDiamondsAndCreditsWork() {
+    AuthResponse user=user();UUID uid=id(user);
+    jdbc.sql("select public.apply_diamonds(:id,100,'adjustment','ai-pack-seed')")
+      .param("id",uid).query(Integer.class).single();
+    String ref=UUID.randomUUID().toString();
+    var bought=(List<Map<String,Object>>)rpc.call(uid,"buy_ai_pack",Map.of("p_pack","msg20","p_ref",ref));
+    assertEquals(70,((Number)bought.get(0).get("diamond_balance")).intValue());
+    assertEquals(20,((Number)bought.get(0).get("credits_balance")).intValue());
+    assertEquals(20,((Number)bought.get(0).get("messages")).intValue());
+    assertEquals(false,bought.get(0).get("duplicate"));
+    var repeated=(List<Map<String,Object>>)rpc.call(uid,"buy_ai_pack",Map.of("p_pack","msg20","p_ref",ref));
+    assertEquals(true,repeated.get(0).get("duplicate"));
+    assertEquals(70,((Number)repeated.get(0).get("diamond_balance")).intValue());
+    assertEquals(20,((Number)repeated.get(0).get("credits_balance")).intValue());
+    assertEquals(3,((List<?>)rpc.call(uid,"ai_pack_catalog",Map.of())).size());
+
+    jdbc.sql("insert into public.api_daily_usage(user_id,day,feature,used) values(:id,(now() at time zone 'America/Sao_Paulo')::date,'ai',50) on conflict (user_id,day,feature) do update set used=50")
+      .param("id",uid).update();
+    String request=UUID.randomUUID().toString();
+    var first=aiBudget.reserve(uid,request);
+    assertEquals("credit",first.source());
+    assertEquals(0,first.quota().remaining());
+    assertEquals(19,first.quota().credits());
+    var duplicate=aiBudget.reserve(uid,request);
+    assertEquals(19,duplicate.quota().credits());
+
+    var quota=(List<Map<String,Object>>)rpc.call(uid,"my_ai_quota",Map.of("p_daily_limit",50));
+    assertEquals(19,((Number)quota.get(0).get("credits")).intValue());
+    assertEquals(0,((Number)quota.get(0).get("free_remaining")).intValue());
+
+    AuthResponse poor=user();UUID poorId=id(poor);
+    assertThrows(AuthException.class,()->rpc.call(poorId,"buy_ai_pack",Map.of("p_pack","msg20","p_ref",UUID.randomUUID().toString())));
+    jdbc.sql("insert into public.api_daily_usage(user_id,day,feature,used) values(:id,(now() at time zone 'America/Sao_Paulo')::date,'ai',50) on conflict (user_id,day,feature) do update set used=50")
+      .param("id",poorId).update();
+    AuthException exhausted=assertThrows(AuthException.class,()->aiBudget.reserve(poorId,UUID.randomUUID().toString()));
+    assertEquals("AI_QUOTA_EXHAUSTED",exhausted.code());
   }
 
   @Test void closingAndUntrustedReportsCannotChangeFinalMinutesOrPayTwice() throws Exception {

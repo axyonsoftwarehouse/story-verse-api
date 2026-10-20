@@ -1,8 +1,6 @@
 package com.storyverse.api.ai;
 
 import java.time.Duration;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 
@@ -16,14 +14,11 @@ import com.storyverse.api.common.DbSession;
 import com.storyverse.api.common.RateLimits;
 
 /**
- * Orçamento de IA no servidor: cota diária por conta, limite por minuto e um teto global
- * opcional (modo economia). O crédito é reservado antes da chamada paga; se o provedor falhar,
- * a mensagem ainda conta, como já acontecia antes.
+ * Orçamento de IA no servidor: cota diária por conta, limite por minuto, teto global opcional
+ * e créditos extras comprados com diamantes. A cota gratuita é tentada antes dos créditos.
  */
 @Component
 public class AiBudget {
-
-	private static final ZoneId ZONE = ZoneId.of("America/Sao_Paulo");
 
 	private final JdbcClient jdbc;
 	private final RateLimits limits;
@@ -45,8 +40,14 @@ public class AiBudget {
 		this.perMinuteLimit = Math.max(1, perMinuteLimit);
 	}
 
+	public record AiReservation(AiQuota quota, String source) {
+	}
+
+	private record CreditUse(boolean consumed, int creditsBalance, boolean duplicate) {
+	}
+
 	@Transactional
-	public AiQuota reserve(UUID user) {
+	public AiReservation reserve(UUID user, String requestId) {
 		DbSession.setUser(jdbc, user);
 		limits.check("ai:" + user, perMinuteLimit, Duration.ofMinutes(1));
 
@@ -62,45 +63,36 @@ public class AiBudget {
 				.param("limit", dailyLimit)
 				.query(Integer.class)
 				.optional();
-		if (used.isEmpty()) {
-			throw new AuthException(429, "Limite diário de mensagens atingido.", "AI_QUOTA_EXHAUSTED");
+
+		if (used.isPresent()) {
+			reserveGlobal();
+			return new AiReservation(quota(), "free");
 		}
 
-		if (globalLimit > 0) {
-			var global = jdbc.sql("""
-					insert into public.api_global_usage(day, used)
-					values ((now() at time zone 'America/Sao_Paulo')::date, 1)
-					on conflict (day) do update
-					   set used = api_global_usage.used + 1,
-					       updated_at = now()
-					 where api_global_usage.used < :limit
-					returning used
-					""")
-					.param("limit", globalLimit)
-					.query(Integer.class)
-					.optional();
-			if (global.isEmpty()) {
-				throw new AuthException(429,
-						"A IA está em modo economia. Tente novamente mais tarde.",
-						"AI_BUDGET_EXHAUSTED");
-			}
+		// A cota gratuita acabou. O teto global vem antes para não consumir crédito em vão.
+		reserveGlobal();
+		String ref = requestId == null || requestId.isBlank()
+				? UUID.randomUUID().toString()
+				: requestId;
+		CreditUse credit = jdbc.sql("select * from public.consume_ai_credit(:ref)")
+				.param("ref", ref)
+				.query((rs, rowNum) -> new CreditUse(
+						rs.getBoolean("consumed"),
+						rs.getInt("credits_balance"),
+						rs.getBoolean("duplicate")))
+				.single();
+		if (!credit.consumed()) {
+			throw new AuthException(429,
+					"Limite diário de mensagens atingido. Compre mensagens extras para continuar.",
+					"AI_QUOTA_EXHAUSTED");
 		}
-
-		return quota(used.get());
+		return new AiReservation(quota(), "credit");
 	}
 
 	@Transactional(readOnly = true)
 	public AiQuota quota(UUID user) {
 		DbSession.setUser(jdbc, user);
-		int used = jdbc.sql("""
-				select coalesce((
-				  select used from public.api_daily_usage
-				   where user_id = :uid
-				     and day = (now() at time zone 'America/Sao_Paulo')::date
-				     and feature = 'ai'
-				), 0)
-				""").param("uid", user).query(Integer.class).single();
-		return quota(used);
+		return quota();
 	}
 
 	public void acquire() {
@@ -113,14 +105,39 @@ public class AiBudget {
 		concurrent.release();
 	}
 
-	private AiQuota quota(int used) {
-		LocalDate day = LocalDate.now(ZONE);
-		int safeUsed = Math.max(0, used);
-		return new AiQuota(
-				dailyLimit,
-				safeUsed,
-				Math.max(0, dailyLimit - safeUsed),
-				day.toString(),
-				day.plusDays(1).atStartOfDay(ZONE).toInstant().toString());
+	private AiQuota quota() {
+		return jdbc.sql("select * from public.my_ai_quota(:limit)")
+				.param("limit", dailyLimit)
+				.query((rs, rowNum) -> new AiQuota(
+						rs.getInt("daily_limit"),
+						rs.getInt("used"),
+						rs.getInt("free_remaining"),
+						rs.getInt("credits"),
+						rs.getDate("day").toString(),
+						rs.getTimestamp("resets_at").toInstant().toString()))
+				.single();
+	}
+
+	private void reserveGlobal() {
+		if (globalLimit <= 0) {
+			return;
+		}
+		var global = jdbc.sql("""
+				insert into public.api_global_usage(day, used)
+				values ((now() at time zone 'America/Sao_Paulo')::date, 1)
+				on conflict (day) do update
+				   set used = api_global_usage.used + 1,
+				       updated_at = now()
+				 where api_global_usage.used < :limit
+				returning used
+				""")
+				.param("limit", globalLimit)
+				.query(Integer.class)
+				.optional();
+		if (global.isEmpty()) {
+			throw new AuthException(429,
+					"A IA está em modo economia. Tente novamente mais tarde.",
+					"AI_BUDGET_EXHAUSTED");
+		}
 	}
 }

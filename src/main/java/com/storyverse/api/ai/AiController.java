@@ -75,30 +75,38 @@ public class AiController {
 			throw new AuthException(503, "IA indisponível.", "AI_UNAVAILABLE");
 		}
 
+		String requestId = request.requestId() == null || request.requestId().isBlank()
+				? UUID.randomUUID().toString()
+				: request.requestId();
 		budget.acquire();
 		try {
-			AiQuota quota;
+			AiBudget.AiReservation reservation;
 			try {
-				quota = budget.reserve(user);
+				reservation = budget.reserve(user, requestId);
 			} catch (AuthException exception) {
 				metrics.record(user, "chat", null, null, "budget_blocked", 0, 0, 0, false,
-						exception.code());
+						exception.code(), null, 0);
 				throw exception;
 			}
+			AiQuota quota = reservation.quota();
 
 			long started = System.nanoTime();
 			try {
 				AiService.AiResult result = ai.reply(system, messages, maxTokens);
 				metrics.record(user, "chat", result.provider(), result.model(), "ok",
-						result.latencyMs(), result.tokensIn(), result.tokensOut(), false, null);
+						result.latencyMs(), result.tokensIn(), result.tokensOut(), false, null,
+						reservation.source(), quota.credits());
 				return Map.of(
 						"text", result.text(),
 						"remaining", quota.remaining(),
-						"limit", quota.limit());
+						"limit", quota.limit(),
+						"credits", quota.credits(),
+						"source", reservation.source());
 			} catch (RuntimeException exception) {
 				long latencyMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
 				String code = exception instanceof AuthException authError ? authError.code() : null;
-				metrics.record(user, "chat", null, null, "error", latencyMs, 0, 0, false, code);
+				metrics.record(user, "chat", null, null, "error", latencyMs, 0, 0, false, code,
+						reservation.source(), quota.credits());
 				throw exception;
 			}
 		} finally {
