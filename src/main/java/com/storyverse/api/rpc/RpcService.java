@@ -72,6 +72,15 @@ public class RpcService {
 				case "weekly_gift_counts" -> DbRows.list(jdbc,
 						"select * from public.weekly_gift_counts(p_offset => :offset)",
 						Map.of("offset", intArg(args, "p_offset", 0)));
+				case "ai_pack_catalog" -> DbRows.list(jdbc, "select * from public.ai_pack_catalog()", Map.of());
+				case "buy_ai_pack" -> DbRows.list(jdbc,
+						"select * from public.buy_ai_pack(:pack, :ref)",
+						Map.of(
+								"pack", strArg(args, "p_pack"),
+								"ref", strArg(args, "p_ref")));
+				case "my_ai_quota" -> DbRows.list(jdbc,
+						"select * from public.my_ai_quota(p_daily_limit => :limit)",
+						Map.of("limit", intArg(args, "p_daily_limit", 50)));
 				case "set_ranking_hidden" -> {
 					voidCall("select public.set_ranking_hidden(cast(:hidden as boolean))", Map.of("hidden", boolArg(args, "p_hidden")));
 					yield null;

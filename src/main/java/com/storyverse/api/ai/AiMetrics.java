@@ -8,9 +8,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * Métricas por chamada de IA. Guarda apenas metadados (provedor, modelo, latencia, tokens
- * estimados e código de erro), nunca o conteúdo da conversa. Uma falha aqui não pode derrubar
- * a resposta para o usuario.
+ * Métricas por chamada de IA. Guarda apenas metadados (provedor, modelo, latência, tokens
+ * estimados, origem e código de erro), nunca o conteúdo da conversa. Uma falha aqui não pode
+ * derrubar a resposta para o usuário.
  */
 @Component
 public class AiMetrics {
@@ -24,15 +24,16 @@ public class AiMetrics {
 	}
 
 	public void record(UUID userId, String kind, String provider, String model, String status,
-			long latencyMs, int tokensIn, int tokensOut, boolean cacheHit, String errorCode) {
+			long latencyMs, int tokensIn, int tokensOut, boolean cacheHit, String errorCode,
+			String source, int creditsAfter) {
 		try {
 			jdbc.sql("""
 					insert into public.ai_usage_events
 					  (user_id, kind, provider, model, status, latency_ms, tokens_in, tokens_out,
-					   cache_hit, error_code)
+					   cache_hit, error_code, source, credits_after)
 					values
 					  (:userId, :kind, :provider, :model, :status, :latency, :tokensIn, :tokensOut,
-					   :cacheHit, :errorCode)
+					   :cacheHit, :errorCode, :source, :creditsAfter)
 					""")
 					.param("userId", userId)
 					.param("kind", kind)
@@ -44,6 +45,8 @@ public class AiMetrics {
 					.param("tokensOut", Math.max(0, tokensOut))
 					.param("cacheHit", cacheHit)
 					.param("errorCode", errorCode)
+					.param("source", source)
+					.param("creditsAfter", Math.max(0, creditsAfter))
 					.update();
 		} catch (RuntimeException exception) {
 			log.warn("Falha ao registrar métrica de IA: {}", exception.getMessage());
