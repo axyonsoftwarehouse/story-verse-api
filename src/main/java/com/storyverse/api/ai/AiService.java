@@ -39,6 +39,13 @@ public class AiService {
 	private record Provider(String id, boolean gemini, String url, String apiKey, String model) {
 	}
 
+	public record AiResult(String text, String provider, String model, int tokensIn, int tokensOut,
+			long latencyMs) {
+	}
+
+	private record ProviderReply(String text, int tokensIn, int tokensOut) {
+	}
+
 	public AiService(
 			@Value("${GROQ_API_KEY:}") String groqKey,
 			@Value("${GROQ_MODELS:openai/gpt-oss-120b,openai/gpt-oss-20b}") String groqModels,
@@ -76,7 +83,7 @@ public class AiService {
 		return chain.size();
 	}
 
-	public String reply(String system, List<AiMessage> messages, int maxTokens) {
+	public AiResult reply(String system, List<AiMessage> messages, int maxTokens) {
 		if (chain.isEmpty()) {
 			throw new AuthException(503, "A inteligência artificial ainda não está configurada neste servidor.");
 		}
@@ -86,12 +93,15 @@ public class AiService {
 		long deadline = System.nanoTime() + Duration.ofSeconds(40).toNanos();
 		for (Provider provider : order) {
 			if (System.nanoTime() >= deadline) break;
+			long started = System.nanoTime();
 			try {
-				String text = provider.gemini()
+				ProviderReply result = provider.gemini()
 						? gemini(provider, system, messages, maxTokens)
 						: openAi(provider, system, messages, maxTokens);
 				cooldownUntil.remove(provider.id());
-				return text;
+				long latencyMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+				return new AiResult(result.text(), provider.id(), provider.model(),
+						result.tokensIn(), result.tokensOut(), latencyMs);
 			} catch (AiHttpException exception) {
 				if (exception.status == 429) {
 					cooldownUntil.put(provider.id(), System.currentTimeMillis()
@@ -101,10 +111,11 @@ public class AiService {
 				// Cota, modelo removido, chave inválida, rede: tenta o próximo.
 			}
 		}
-		throw new AuthException(503, "Não foi possível gerar a resposta agora. Tente de novo em instantes.");
+		throw new AuthException(503, "Não foi possível gerar a resposta agora. Tente de novo em instantes.",
+				"AI_UNAVAILABLE");
 	}
 
-	private String openAi(Provider provider, String system, List<AiMessage> messages, int maxTokens) throws Exception {
+	private ProviderReply openAi(Provider provider, String system, List<AiMessage> messages, int maxTokens) throws Exception {
 		List<Map<String, String>> msgs = new ArrayList<>();
 		msgs.add(Map.of("role", "system", "content", system));
 		for (AiMessage message : messages) {
@@ -135,14 +146,20 @@ public class AiService {
 		if (response.statusCode() >= 400) {
 			throw new AiHttpException(response.statusCode(), retryAfter(response));
 		}
-		JsonNode text = MAPPER.readTree(response.body()).path("choices").path(0).path("message").path("content");
+		JsonNode root = MAPPER.readTree(response.body());
+		JsonNode text = root.path("choices").path(0).path("message").path("content");
 		if (!text.isString() || text.asText().isBlank()) {
 			throw new IllegalStateException("resposta vazia");
 		}
-		return text.asText().trim();
+		String result = text.asText().trim();
+		int prompt = root.path("usage").path("prompt_tokens").asInt(-1);
+		int completion = root.path("usage").path("completion_tokens").asInt(-1);
+		return new ProviderReply(result,
+				prompt >= 0 ? prompt : estimateTokens(system, messages),
+				completion >= 0 ? completion : estimateTokens(result));
 	}
 
-	private String gemini(Provider provider, String system, List<AiMessage> messages, int maxTokens) throws Exception {
+	private ProviderReply gemini(Provider provider, String system, List<AiMessage> messages, int maxTokens) throws Exception {
 		List<Map<String, Object>> contents = new ArrayList<>();
 		for (AiMessage message : messages) {
 			contents.add(Map.of(
@@ -164,7 +181,8 @@ public class AiService {
 		if (response.statusCode() >= 400) {
 			throw new AiHttpException(response.statusCode(), retryAfter(response));
 		}
-		JsonNode parts = MAPPER.readTree(response.body()).path("candidates").path(0).path("content").path("parts");
+		JsonNode root = MAPPER.readTree(response.body());
+		JsonNode parts = root.path("candidates").path(0).path("content").path("parts");
 		StringBuilder text = new StringBuilder();
 		if (parts.isArray()) {
 			for (int i = 0; i < parts.size(); i++) {
@@ -178,7 +196,23 @@ public class AiService {
 		if (result.isEmpty()) {
 			throw new IllegalStateException("resposta vazia");
 		}
-		return result;
+		int prompt = root.path("usageMetadata").path("promptTokenCount").asInt(-1);
+		int completion = root.path("usageMetadata").path("candidatesTokenCount").asInt(-1);
+		return new ProviderReply(result,
+				prompt >= 0 ? prompt : estimateTokens(system, messages),
+				completion >= 0 ? completion : estimateTokens(result));
+	}
+
+	private static int estimateTokens(String system, List<AiMessage> messages) {
+		int chars = system.length();
+		for (AiMessage message : messages) {
+			chars += message.content().length();
+		}
+		return Math.max(1, (chars + 3) / 4);
+	}
+
+	private static int estimateTokens(String text) {
+		return Math.max(1, (text.length() + 3) / 4);
 	}
 
 	private static Long retryAfter(HttpResponse<?> response) {

@@ -11,6 +11,7 @@ public class ApiExceptionHandler {
 
 	@ExceptionHandler(AuthException.class)
 	ResponseEntity<ApiError> handleAuth(AuthException exception) {
-		return ResponseEntity.status(exception.status()).body(new ApiError(exception.getMessage()));
+		return ResponseEntity.status(exception.status())
+				.body(new ApiError(exception.getMessage(), exception.code()));
 	}
 }
