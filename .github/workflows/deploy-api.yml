@@ -41,8 +41,9 @@ jobs:
 
       - name: Atualizar na VPS
         run: |
+          # Persiste o SHA no .env: um restart manual depois do deploy nao pode voltar para :latest.
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "cd /home/deploy/storyverse && API_IMAGE='$IMAGE' docker compose config --quiet && API_IMAGE='$IMAGE' docker compose pull api && API_IMAGE='$IMAGE' docker compose up -d api && docker compose ps api"
+            "cd /home/deploy/storyverse && sed -i 's|^API_IMAGE=.*|API_IMAGE=$IMAGE|' .env && API_IMAGE='$IMAGE' docker compose config --quiet && API_IMAGE='$IMAGE' docker compose pull api && API_IMAGE='$IMAGE' docker compose up -d api && docker compose ps api"
 
       - name: Conferir o health da API
         run: |
