@@ -15,6 +15,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
 import com.storyverse.api.community.CommunityService;
+import com.storyverse.api.forum.*;
 import com.storyverse.api.storage.*;
 import com.storyverse.api.rpc.RpcService;
 import com.storyverse.api.common.DbSession;
@@ -40,6 +41,7 @@ class SecurityIntegrationTest {
   @Autowired TokenService tokenService;
   @Autowired StorageService storage;
   @Autowired CommunityService community;
+  @Autowired ForumService forum;
   @Autowired AuthzService authz;
   @Autowired RpcService rpc;
   @Autowired JdbcClient jdbc;
@@ -234,6 +236,43 @@ class SecurityIntegrationTest {
       authz.audit(uid,"test.runtime","user",uid.toString(),Map.of("ok",true));
       assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where actor_id=:id").param("id",uid).query(Integer.class).single());
     });
+  }
+  @Test void forumFlowCreatesTopicReplyReactionBookmarkReportAndModeration() {
+    AuthResponse user=user(); UUID uid=id(user);
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'moderator')").param("id",uid).update();
+
+    Map<String,Object> topic=forum.createTopic(user.accessToken(),Map.of(
+        "space","duvidas","title","Como ler melhor?","body","Quero dicas de leitura.",
+        "bookKey","gb:1342","spoilerLevel","none"));
+    UUID topicId=UUID.fromString(topic.get("id").toString());
+    assertEquals("published",topic.get("status"));
+
+    Map<String,Object> reply=forum.createReply(user.accessToken(),topicId,Map.of("body","Leia devagar."));
+    UUID replyId=UUID.fromString(reply.get("id").toString());
+    assertEquals("published",reply.get("status"));
+
+    ForumPage page=forum.topics(null,"duvidas",null,"recent",null,null,20);
+    assertTrue(page.items().stream().anyMatch(row -> topicId.toString().equals(String.valueOf(row.get("id")))));
+    assertEquals(1,forum.replies(null,topicId,null,20).items().size());
+    assertEquals(1,((Number)forum.topic(null,topicId).get("reply_count")).intValue());
+
+    Map<String,Object> reaction=forum.reactToTopic(user.accessToken(),topicId);
+    assertEquals(true,reaction.get("liked"));
+    assertEquals(1,((Number)reaction.get("reactionCount")).intValue());
+    assertEquals(true,forum.toggleBookmark(user.accessToken(),topicId).get("saved"));
+
+    Map<String,Object> report=forum.report(user.accessToken(),Map.of(
+        "targetType","topic","targetId",topicId.toString(),"reasonCode","spam","details","teste"));
+    UUID reportId=UUID.fromString(report.get("id").toString());
+    assertEquals(1,forum.adminReports(user.accessToken(),"pending",20).size());
+
+    Map<String,Object> resolved=forum.resolveReport(user.accessToken(),reportId,
+        Map.of("status","actioned","resolutionNote","ok"));
+    assertEquals("actioned",resolved.get("status"));
+
+    Map<String,Object> accepted=forum.acceptReply(user.accessToken(),topicId,
+        Map.of("replyId",replyId.toString()));
+    assertEquals(replyId.toString(),String.valueOf(accepted.get("accepted_reply_id")));
   }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";
