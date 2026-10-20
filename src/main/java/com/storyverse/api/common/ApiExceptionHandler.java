@@ -6,6 +6,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 import com.storyverse.api.auth.AuthException;
 
@@ -20,6 +21,11 @@ public class ApiExceptionHandler {
 	ResponseEntity<ApiError> handleAuth(AuthException exception) {
 		return ResponseEntity.status(exception.status())
 				.body(new ApiError(exception.getMessage(), exception.code()));
+	}
+
+	@ExceptionHandler(AsyncRequestNotUsableException.class)
+	void handleClientDisconnect() {
+		// Cliente SSE desconectou: a resposta já foi encerrada e não há corpo para escrever.
 	}
 
 	@ExceptionHandler(Exception.class)
