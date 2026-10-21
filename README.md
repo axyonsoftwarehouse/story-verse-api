@@ -26,11 +26,13 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 ## Endpoints
 
 - `GET /api/v1/health`: confirma que a aplicação está respondendo.
-- `POST /api/v1/auth/signup` — `{ "email", "password", "name?" }` → cria a conta e devolve os tokens.
-- `POST /api/v1/auth/login` — `{ "email", "password" }` → devolve os tokens.
-- `POST /api/v1/auth/refresh` — `{ "refreshToken" }` → rotaciona e devolve tokens novos.
-- `POST /api/v1/auth/logout` — `{ "refreshToken"? }` (ou cabeçalho `Authorization`) → encerra a sessão.
+- `POST /api/v1/auth/signup` — `{ "email", "password", "name?" }` → cria a conta; devolve o access token e define o cookie de refresh (quando a confirmação de e-mail está desligada).
+- `POST /api/v1/auth/login` — `{ "email", "password" }` → devolve o access token e define o cookie de refresh.
+- `POST /api/v1/auth/refresh` — sem corpo (ou `{ "refreshToken" }` para clientes legados) → rotaciona o cookie e devolve um access token novo.
+- `POST /api/v1/auth/logout` — sem corpo (ou `{ "refreshToken"? }`, ou cabeçalho `Authorization`) → encerra a sessão e limpa o cookie.
 - `GET /api/v1/auth/me` — cabeçalho `Authorization: Bearer <accessToken>` → dados da conta.
+- `GET /api/v1/account/export` — cabeçalho `Authorization` → perfil, estado de leitura e envios (JSON).
+- `DELETE /api/v1/account` — `{ "password" }` + `Authorization` → apaga conta, arquivos e dados pessoais; exige a senha atual.
 - `POST /api/v1/rpc/{fn}` — chama uma função do banco em nome do usuário (diamantes, ranking e
   acervo), ex.: `my_wallet`, `weekly_ranking`, `spin_daily_wheel`, `is_admin`, `set_submission_cover`.
   Lista branca no servidor.
@@ -52,8 +54,10 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
   → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
 
-A sessão usa **Bearer token**: access de 30 min + refresh de 30 dias, opacos e guardados apenas como
-hash (SHA-256). O frontend Story Verse continua responsável pelas funcionalidades de livros.
+A sessão usa **Bearer token** para o access de 30 min e um **refresh de 30 dias em cookie HttpOnly,
+Secure e SameSite** (nome `storyverse_refresh`, caminho `/api/v1/auth`). Os dois são opacos e o banco
+guarda apenas o hash SHA-256; o refresh token não aparece no JSON de login/refresh. O frontend Story
+Verse continua responsável pelas funcionalidades de livros.
 
 ## Banco de dados
 
@@ -63,9 +67,13 @@ base precisa existir antes (ele cria `auth.users`). Configuração por variávei
 
 ```
 SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/storyverse
-SPRING_DATASOURCE_USERNAME=storyverse
+SPRING_DATASOURCE_USERNAME=storyverse_api
 SPRING_DATASOURCE_PASSWORD=...
 ```
+
+O runtime deve usar `storyverse_api` (sem ownership, superuser ou bypassrls). Com
+`APP_REQUIRE_RUNTIME_ROLE=true` (padrão), a API falha o boot se o usuário do banco puder ignorar a
+RLS. As migrações usam credenciais administrativas separadas em `SPRING_FLYWAY_*`.
 
 ## Testes
 

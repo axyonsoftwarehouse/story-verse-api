@@ -697,14 +697,12 @@ grant execute on function public.my_weekly_awards() to authenticated;
 grant execute on function public.mark_awards_seen() to authenticated;
 
 -- ===========================================================================
--- Admin (só tem efeito depois que a conta existir em auth.users; rode de novo após importar).
--- O Gmail ignora pontos no endereço: aceita as duas grafias.
+-- Admin: promoção MANUAL, por UUID verificado fora de banda.
+-- Nunca derive admin do e-mail informado no cadastro (o e-mail pode não ter sido confirmado e
+-- variantes do Gmail com pontos apontam para a mesma caixa).
+-- Exemplo:
+--   insert into public.admins (user_id) values ('00000000-0000-0000-0000-000000000000');
 -- ===========================================================================
-insert into public.admins (user_id)
-select id from auth.users
-where lower(replace(split_part(email, '@', 1), '.', '')) = 'businesscodeplus'
-  and lower(split_part(email, '@', 2)) = 'gmail.com'
-on conflict do nothing;
 
 -- Confere: lista as tabelas criadas.
 select table_schema, table_name

@@ -20,8 +20,9 @@ import com.storyverse.api.storage.StorageBucket;
 import com.storyverse.api.storage.StorageAccess;
 
 /**
- * Acervo da comunidade. Como a API conecta como dono do banco (sem RLS), as regras de quem vê,
- * envia, revisa e apaga ficam aqui — espelhando as policies de supabase/community-books.sql.
+ * Acervo da comunidade. O runtime usa o papel `storyverse_api` (sem ownership), então a RLS
+ * continua valendo; as regras explícitas abaixo são a primeira barreira, espelhando as policies
+ * de supabase/community-books.sql.
  */
 @Service
 public class CommunityService {
@@ -32,15 +33,17 @@ public class CommunityService {
 	private final JdbcClient jdbc;
 	private final StorageService storage;
 	private final StorageAccess access;
+	private final CoverUrlPolicy covers;
 
 	public CommunityService(CommunityRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc,
-			StorageService storage, StorageAccess access) {
+			StorageService storage, StorageAccess access, CoverUrlPolicy covers) {
 		this.repository = repository;
 		this.auth = auth;
 		this.authz = authz;
 		this.jdbc = jdbc;
 		this.storage = storage;
 		this.access = access;
+		this.covers = covers;
 	}
 
 	@Transactional(readOnly = true)
@@ -82,7 +85,7 @@ public class CommunityService {
 		params.put("characters", limit(text(body.get("characters")), 600));
 		params.put("text_path", textPath);
 		params.put("char_count", body.get("char_count"));
-		params.put("cover_url", limit(text(body.get("cover_url")), 300));
+		params.put("cover_url", covers.require(text(body.get("cover_url"))));
 		try {
 			return repository.insert(params).orElseThrow(() -> new AuthException(400, "Não foi possível enviar o livro."));
 		} catch (DataAccessException exception) {
@@ -115,7 +118,7 @@ public class CommunityService {
 		params.put("id", id);
 		params.put("status", status);
 		params.put("note", note);
-		params.put("cover", limit(text(body.get("cover_url")), 300));
+		params.put("cover", covers.require(text(body.get("cover_url"))));
 		params.put("reviewed_by", userId);
 		try {
 			Map<String, Object> reviewed = repository.review(params)
@@ -135,7 +138,7 @@ public class CommunityService {
 		if (!isOwner(row, userId) && !isAdmin(userId)) {
 			throw new AuthException(403, "Sem permissão para trocar a capa.");
 		}
-		String cover = limit(text(body.get("cover_url")), 300);
+		String cover = covers.require(text(body.get("cover_url")));
 		if (cover == null) {
 			throw new AuthException(400, "Capa ausente.");
 		}

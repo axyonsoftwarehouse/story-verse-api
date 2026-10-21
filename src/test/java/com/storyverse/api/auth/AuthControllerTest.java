@@ -43,6 +43,15 @@ class AuthControllerTest {
 	}
 
 	@Test
+	void signupRejectsPasswordShorterThanEight() throws Exception {
+		mockMvc.perform(post("/api/v1/auth/signup")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"email\":\"a@example.test\",\"password\":\"1234567\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.error").value("A senha precisa de pelo menos 8 caracteres."));
+	}
+
+	@Test
 	void accountEndpointsRequireAuthentication() throws Exception {
 		mockMvc.perform(patch("/api/v1/auth/profile")
 						.contentType(MediaType.APPLICATION_JSON)

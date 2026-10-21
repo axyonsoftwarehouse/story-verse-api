@@ -7,12 +7,12 @@ import jakarta.servlet.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.common.RateLimits;
+import com.storyverse.api.common.RateLimitGate;
 
 @Component
 public class RequestSecurityFilter extends OncePerRequestFilter {
-  private final RateLimits limits;
-  public RequestSecurityFilter(RateLimits limits) { this.limits = limits; }
+  private final RateLimitGate limits;
+  public RequestSecurityFilter(RateLimitGate limits) { this.limits = limits; }
 
   @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
       throws ServletException, IOException {

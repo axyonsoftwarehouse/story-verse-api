@@ -18,7 +18,7 @@ import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.common.DbSession;
-import com.storyverse.api.common.RateLimits;
+import com.storyverse.api.common.RateLimitGate;
 
 @Service
 public class ForumService {
@@ -35,10 +35,10 @@ public class ForumService {
 	private final AuthService auth;
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
-	private final RateLimits limits;
+	private final RateLimitGate limits;
 
 	public ForumService(ForumRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc,
-			RateLimits limits) {
+			RateLimitGate limits) {
 		this.repository = repository;
 		this.auth = auth;
 		this.authz = authz;

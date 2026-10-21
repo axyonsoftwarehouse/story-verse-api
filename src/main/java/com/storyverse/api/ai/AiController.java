@@ -75,9 +75,13 @@ public class AiController {
 			throw new AuthException(503, "IA indisponível.", "AI_UNAVAILABLE");
 		}
 
-		String requestId = request.requestId() == null || request.requestId().isBlank()
-				? UUID.randomUUID().toString()
-				: request.requestId();
+		String requestId = request.requestId() == null ? "" : request.requestId().trim();
+		if (requestId.isEmpty()) {
+			requestId = UUID.randomUUID().toString();
+		} else if (requestId.length() < 8 || requestId.length() > 80
+				|| !requestId.matches("[A-Za-z0-9_-]+")) {
+			throw new AuthException(400, "Identificador de pedido inválido.");
+		}
 		budget.acquire();
 		try {
 			AiBudget.AiReservation reservation;

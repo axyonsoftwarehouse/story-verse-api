@@ -11,7 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.common.DbSession;
-import com.storyverse.api.common.RateLimits;
+import com.storyverse.api.common.RateLimitGate;
 
 /**
  * Orçamento de IA no servidor: cota diária por conta, limite por minuto, teto global opcional
@@ -21,7 +21,7 @@ import com.storyverse.api.common.RateLimits;
 public class AiBudget {
 
 	private final JdbcClient jdbc;
-	private final RateLimits limits;
+	private final RateLimitGate limits;
 	private final Semaphore concurrent = new Semaphore(4);
 	private final int dailyLimit;
 	private final int globalLimit;
@@ -29,7 +29,7 @@ public class AiBudget {
 
 	public AiBudget(
 			JdbcClient jdbc,
-			RateLimits limits,
+			RateLimitGate limits,
 			@Value("${app.ai.daily-message-limit:50}") int dailyLimit,
 			@Value("${app.ai.daily-global-limit:0}") int globalLimit,
 			@Value("${app.ai.per-minute-limit:6}") int perMinuteLimit) {
@@ -81,6 +81,13 @@ public class AiBudget {
 						rs.getInt("credits_balance"),
 						rs.getBoolean("duplicate")))
 				.single();
+		// Um requestId repetido já foi cobrado (ou já falhou depois da cobrança). Nunca chame o
+		// provedor de novo: sem esta checagem, o mesmo ref gerava respostas ilimitadas de graça.
+		if (credit.duplicate()) {
+			throw new AuthException(409,
+					"Este pedido de IA já foi processado. Envie uma nova mensagem.",
+					"AI_REQUEST_REPLAYED");
+		}
 		if (!credit.consumed()) {
 			throw new AuthException(429,
 					"Limite diário de mensagens atingido. Compre mensagens extras para continuar.",
