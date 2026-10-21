@@ -53,15 +53,11 @@ jobs:
           path: sbom-api.json
 
       - name: Trivy (relatório, não bloqueante)
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-api.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            aquasec/trivy:0.63.0@sha256:6fb0646988fcd2fdf7bf123f7174945ebc2c9c72d1fa1567c8d7daeeb70f8037 \
+            fs --format sarif --output trivy-api.sarif --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 0 .
 
       - name: Publicar relatório Trivy
         if: always()
