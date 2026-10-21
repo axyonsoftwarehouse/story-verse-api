@@ -23,6 +23,7 @@ public class SecurityEvents {
 
 	public void info(String event) {
 		log.info("security event={}", event);
+		capture(event, SentryLevel.INFO);
 	}
 
 	private void capture(String event, SentryLevel level) {
