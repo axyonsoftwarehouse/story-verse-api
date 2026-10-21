@@ -7,6 +7,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -81,6 +83,7 @@ public class SessionRepository {
 				""").param("hash", refreshHash).query(UUID.class).optional();
 	}
 
+	@Transactional(propagation = Propagation.REQUIRES_NEW)
 	public void revokeById(UUID sessionId) {
 		jdbc.sql("update auth.sessions set revoked_at = coalesce(revoked_at, now()) where id = :id")
 				.param("id", sessionId).update();
