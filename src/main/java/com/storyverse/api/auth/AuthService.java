@@ -217,7 +217,7 @@ public class AuthService {
 		return UserResponse.from(updated);
 	}
 
-	@Transactional
+	@Transactional(noRollbackFor = RefreshReusedException.class)
 	public AuthResponse refresh(String refreshToken) {
 		if (refreshToken == null || refreshToken.isBlank()) {
 			throw new AuthException(401, "Não autenticado.");
@@ -230,8 +230,7 @@ public class AuthService {
 				// Token antigo reapareceu: pode ser roubo. Revoga a família inteira.
 				sessions.revokeById(reused.get());
 				security.warn("auth.refresh_reuse");
-				throw new AuthException(401,
-						"Sessão encerrada por segurança. Entre novamente.", "AUTH_REFRESH_REUSED");
+				throw new RefreshReusedException();
 			}
 			throw new AuthException(401, "Sessão inválida. Entre novamente.");
 		}
