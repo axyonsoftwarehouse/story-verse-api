@@ -1,13 +1,17 @@
 package com.storyverse.api.storage;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -231,6 +235,27 @@ public class StorageService {
 			} catch (IOException exception) {
 				throw new UncheckedIOException("Falha ao apagar os arquivos da conta", exception);
 			}
+		}
+	}
+
+	/** Exporta todos os arquivos da conta em um ZIP (portabilidade de dados). */
+	public void writeExportZip(UUID userId, OutputStream output) throws IOException {
+		try (ZipOutputStream zip = new ZipOutputStream(output)) {
+			for (StorageBucket bucket : StorageBucket.values()) {
+				Path folder = baseDir.resolve(bucket.id()).resolve(userId.toString());
+				if (!Files.exists(folder)) continue;
+				List<Path> files;
+				try (var paths = Files.walk(folder)) {
+					files = paths.filter(Files::isRegularFile).toList();
+				}
+				for (Path file : files) {
+					String relative = folder.relativize(file).toString().replace('\\', '/');
+					zip.putNextEntry(new ZipEntry(bucket.id() + "/" + relative));
+					Files.copy(file, zip);
+					zip.closeEntry();
+				}
+			}
+			zip.finish();
 		}
 	}
 

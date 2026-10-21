@@ -1,5 +1,6 @@
 package com.storyverse.api.account;
 
+import java.io.IOException;
 import java.util.Map;
 
 import org.springframework.http.HttpStatus;
@@ -28,6 +29,14 @@ public class AccountController {
 	public Map<String, Object> export(
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		return service.export(AuthTokens.bearer(authorization));
+	}
+
+	@GetMapping("/export/files")
+	public void exportFiles(@RequestHeader(value = "Authorization", required = false) String authorization,
+			jakarta.servlet.http.HttpServletResponse response) throws IOException {
+		response.setContentType("application/zip");
+		response.setHeader("Content-Disposition", "attachment; filename=\"storyverse-arquivos.zip\"");
+		service.exportFiles(AuthTokens.bearer(authorization), response.getOutputStream());
 	}
 
 	@DeleteMapping

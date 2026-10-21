@@ -1,5 +1,7 @@
 package com.storyverse.api.account;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -62,6 +64,11 @@ public class AccountService {
 				  from public.book_submissions where user_id = :uid order by created_at
 				""", Map.of("uid", userId)));
 		return out;
+	}
+
+	public void exportFiles(String accessToken, OutputStream output) throws IOException {
+		UUID userId = auth.authenticate(accessToken);
+		storage.writeExportZip(userId, output);
 	}
 
 	@Transactional

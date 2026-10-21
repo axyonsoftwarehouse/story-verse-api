@@ -39,3 +39,33 @@ jobs:
           chmod +x ./mvnw
           PGPASSWORD=local-audit-test-only psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -f src/test/resources/schema-postgres.sql
           ./mvnw --batch-mode --no-transfer-progress verify
+
+      - name: Gerar SBOM (CycloneDX)
+        run: |
+          chmod +x ./mvnw
+          ./mvnw --batch-mode --no-transfer-progress org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeAggregateBom
+          cp "$HOME/.story-verse-build/story-verse-api/bom.json" sbom-api.json
+
+      - name: Publicar SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-api
+          path: sbom-api.json
+
+      - name: Trivy (relatório, não bloqueante)
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-api.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Publicar relatório Trivy
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: trivy-api
+          path: trivy-api.sarif

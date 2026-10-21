@@ -31,6 +31,7 @@ public class AuthService {
 	private final EmailTokenRepository emailTokens;
 	private final TokenService tokens;
 	private final PasswordEncoder passwordEncoder;
+	private final PasswordPolicy passwords;
 	private final String dummyPasswordHash;
 	private final RateLimitGate limits;
 	private final MailService mail;
@@ -46,6 +47,7 @@ public class AuthService {
 			EmailTokenRepository emailTokens,
 			TokenService tokens,
 			PasswordEncoder passwordEncoder,
+			PasswordPolicy passwords,
 			RateLimitGate limits,
 			MailService mail,
 			AuthzService authz,
@@ -58,6 +60,7 @@ public class AuthService {
 		this.emailTokens = emailTokens;
 		this.tokens = tokens;
 		this.passwordEncoder = passwordEncoder;
+		this.passwords = passwords;
 		// Hash inofensivo para gastar o mesmo tempo de BCrypt quando a conta não existe.
 		this.dummyPasswordHash = passwordEncoder.encode("storyverse-dummy-" + UUID.randomUUID());
 		this.limits = limits;
@@ -72,7 +75,7 @@ public class AuthService {
 	@Transactional
 	public Object signup(SignupRequest request) {
 		String email = validatedEmail(request.email());
-		validatePassword(request.password());
+		passwords.validate(request.password(), email, request.name());
 		if (request.name() != null && request.name().length() > 60) {
 			throw new AuthException(400, "Nome grande demais.");
 		}
@@ -162,11 +165,13 @@ public class AuthService {
 
 	@Transactional
 	public void resetPassword(String token, String password) {
-		validatePassword(password);
+		passwords.validate(password, null, null);
 		if (token == null || token.isBlank()) throw new AuthException(400, "Link inválido ou expirado.");
 		limits.check("reset-password:" + tokens.hash(token), 5, Duration.ofMinutes(15));
 		UUID userId = emailTokens.consume(EmailTokenRepository.RESET_PASSWORD, tokens.hash(token))
 				.orElseThrow(() -> new AuthException(400, "Link inválido ou expirado."));
+		User user = users.findById(userId).orElseThrow(() -> new AuthException(401, "Sessão inválida."));
+		passwords.validate(password, user.email(), null);
 		users.updatePassword(userId, passwordEncoder.encode(password));
 		sessions.revokeAllForUser(userId);
 		security.info("auth.password_reset");
@@ -174,7 +179,7 @@ public class AuthService {
 
 	@Transactional
 	public void changePassword(String accessToken, String currentPassword, String newPassword) {
-		validatePassword(newPassword);
+		passwords.validate(newPassword, null, null);
 		SessionRow session = requireSession(accessToken, false);
 		limits.check("change-password:" + session.userId(), 5, Duration.ofMinutes(15));
 		User user = users.findById(session.userId()).orElseThrow(() -> new AuthException(401, "Sessão inválida."));
@@ -186,6 +191,8 @@ public class AuthService {
 		if (passwordEncoder.matches(newPassword, user.encryptedPassword())) {
 			throw new AuthException(400, "A nova senha precisa ser diferente da atual.");
 		}
+		String accountName = user.metadata().get("name") instanceof String value ? value : null;
+		passwords.validate(newPassword, user.email(), accountName);
 		users.updatePassword(user.id(), passwordEncoder.encode(newPassword));
 		sessions.revokeAllForUserExcept(user.id(), session.id());
 		security.info("auth.password_changed");
@@ -326,15 +333,6 @@ public class AuthService {
 			throw new AuthException(400, "E-mail inválido.");
 		}
 		return email;
-	}
-
-	private static void validatePassword(String password) {
-		if (password == null || password.length() < 8) {
-			throw new AuthException(400, "A senha precisa de pelo menos 8 caracteres.");
-		}
-		if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
-			throw new AuthException(400, "Senha grande demais.");
-		}
 	}
 
 	private static String normalizeEmail(String email) {
