@@ -29,7 +29,13 @@ public class FeatureAccessService {
 
 	@Transactional(readOnly = true)
 	public List<String> features(UUID userId) {
-		DbSession.setUser(jdbc, userId);
+		return features(userId, userId);
+	}
+
+	/** Features de {@code userId} vistas por {@code viewerId}: o RLS avalia quem consulta, não o alvo. */
+	@Transactional(readOnly = true)
+	public List<String> features(UUID viewerId, UUID userId) {
+		DbSession.setUser(jdbc, viewerId);
 		return jdbc.sql("""
 				select feature from public.feature_access
 				 where user_id = :uid and enabled

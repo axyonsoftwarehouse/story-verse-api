@@ -115,6 +115,15 @@ class SecurityIntegrationTest {
     assertDoesNotThrow(()->features.require(uid,"library"));
     assertTrue(auth.capabilities(session.accessToken()).features().contains("library"));
   }
+  @Test void superadminGrantsAndListsAnotherAccountsFeatures() {
+    UUID admin=id(user()), target=id(user());
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",admin).update();
+    features.set(admin,target,"library",true);
+    assertEquals(List.of("library"),features.features(admin,target));
+    features.set(admin,target,"library",false);
+    assertTrue(features.features(admin,target).isEmpty());
+    assertThrows(AuthException.class,()->features.set(admin,target,"desconhecida",true));
+  }
 
   @Test void persistentRateLimitIsSharedAndRejectsAfterTheLimit() {
     String key="integration-rate:"+UUID.randomUUID();

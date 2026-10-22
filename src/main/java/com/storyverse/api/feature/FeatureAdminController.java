@@ -36,7 +36,7 @@ public class FeatureAdminController {
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		UUID actor = auth.authenticate(AuthTokens.bearer(authorization));
 		authz.requireRole(actor, AuthzService.SUPERADMIN);
-		return features.features(userId);
+		return features.features(actor, userId);
 	}
 
 	@PutMapping
