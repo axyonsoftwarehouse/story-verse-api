@@ -266,6 +266,23 @@ class LibraryIntegrationTest {
     AuthResponse s=userSession(); grant(id(s)); library.put(s.accessToken(),"gb:1",write("reading",null));
     assertEquals(1,((List<?>)account.export(s.accessToken()).get("library")).size());
   }
+  @Test void repeatingFinishWithoutDateKeepsTheOriginalDate() {
+    AuthResponse s=userSession(); grant(id(s));
+    library.put(s.accessToken(),"gb:1",write("reading",null));
+    library.finish(s.accessToken(),"gb:1",new FinishRequest("2026-10-01",null,null));
+    LibraryEntry again=library.finish(s.accessToken(),"gb:1",new FinishRequest(null,new BigDecimal("5"),null));
+    assertEquals(java.time.LocalDate.parse("2026-10-01"),again.finishedOn());
+    assertEquals(0,new BigDecimal("5").compareTo(again.rating()));
+  }
+  @Test void staleDeviceCannotReviveADeletedEntry() {
+    AuthResponse s=userSession(); grant(id(s));
+    LibraryEntry before=library.put(s.accessToken(),"gb:1",write("reading",null));
+    library.delete(s.accessToken(),"gb:1");
+    LibraryConflictException c=assertThrows(LibraryConflictException.class,
+        ()->library.put(s.accessToken(),"gb:1",write("reading",before.updatedAt())));
+    assertNotNull(c.current().deletedAt());
+    assertEquals(404,status(()->library.get(s.accessToken(),"gb:1")));
+  }
   @Test void writesAreRateLimited() {
     AuthResponse s=userSession(); grant(id(s));
     for(int i=0;i<60;i++) library.put(s.accessToken(),"gb:"+(1000+i),write("reading",null));

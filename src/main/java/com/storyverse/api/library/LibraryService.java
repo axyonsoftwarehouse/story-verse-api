@@ -87,6 +87,10 @@ public class LibraryService {
 		}
 		LibraryEntry current = existing.get();
 		if (current.deletedAt() != null) {
+			// Remoção mais nova que a leitura do cliente vence: só volta com base nula (readicionar) ou atual.
+			if (request.baseUpdatedAt() != null && !request.baseUpdatedAt().equals(current.updatedAt())) {
+				throw new LibraryConflictException(current);
+			}
 			return repository.revive(userId, candidate).orElseThrow(() -> conflict(userId, key.value()));
 		}
 		if (request.baseUpdatedAt() == null) {
@@ -200,7 +204,12 @@ public class LibraryService {
 		FinishRequest r = request == null ? new FinishRequest(null, null, null) : request;
 		Draft draft = new Draft(current);
 		draft.status = "finished";
-		draft.finishedOn = r.finishedOn() == null ? LibraryRules.today() : date(r.finishedOn());
+		// Repetir "concluir" (toque duplo, fila offline) não muda a data: só nota e resenha.
+		if (r.finishedOn() != null) {
+			draft.finishedOn = date(r.finishedOn());
+		} else if (!"finished".equals(current.status()) || current.finishedOn() == null) {
+			draft.finishedOn = LibraryRules.today();
+		}
 		if (draft.startedOn != null && draft.startedOn.isAfter(draft.finishedOn)) {
 			draft.startedOn = draft.finishedOn;
 		}
