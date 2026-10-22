@@ -354,7 +354,7 @@ class SecurityIntegrationTest {
     AuthResponse session=user();UUID uid=id(session);
     jdbc.sql("update auth.users set email_confirmed_at=null where id=:id").param("id",uid).update();
     List<String> links=new ArrayList<>();
-    for(int i=0;i<=5;i++) {
+    for(int i=0;i<=EmailTokenRepository.MAX_PENDING_CONFIRMATIONS;i++) {
       String link=tokenService.newToken();links.add(link);
       emailTokens.create(uid,EmailTokenRepository.CONFIRM_EMAIL,tokenService.hash(link),java.time.Instant.now().plusSeconds(3600));
     }

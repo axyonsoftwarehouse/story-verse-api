@@ -135,6 +135,8 @@ public class AuthService {
 		if (token == null || token.isBlank()) throw new AuthException(400, "Link inválido ou expirado.");
 		UUID userId = emailTokens.consume(EmailTokenRepository.CONFIRM_EMAIL, tokens.hash(token))
 				.orElseThrow(() -> new AuthException(400, "Link inválido ou expirado."));
+		// Os outros links pendentes (reenvios) ainda abririam uma sessão: confirmado, eles morrem.
+		emailTokens.revokePending(userId, EmailTokenRepository.CONFIRM_EMAIL);
 		users.markEmailConfirmed(userId);
 		User user = users.findById(userId).orElseThrow(() -> new AuthException(401, "Conta não encontrada."));
 		return issue(user);
