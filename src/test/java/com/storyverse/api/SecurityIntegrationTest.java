@@ -341,6 +341,35 @@ class SecurityIntegrationTest {
     assertNotNull(auth.login(new LoginRequest(email,"new-secret")).accessToken());
     assertThrows(AuthException.class,()->auth.resetPassword(reset,"another-secret"));
   }
+  @Test void resendingConfirmationKeepsEarlierLinksValidUntilOneIsUsed() {
+    AuthResponse session=user();UUID uid=id(session);
+    jdbc.sql("update auth.users set email_confirmed_at=null where id=:id").param("id",uid).update();
+    String first=tokenService.newToken(), second=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.CONFIRM_EMAIL,tokenService.hash(first),java.time.Instant.now().plusSeconds(3600));
+    emailTokens.create(uid,EmailTokenRepository.CONFIRM_EMAIL,tokenService.hash(second),java.time.Instant.now().plusSeconds(3600));
+    assertEquals(uid,UUID.fromString(auth.confirmEmail(first).user().id()));
+    assertThrows(AuthException.class,()->auth.confirmEmail(second));
+  }
+  @Test void pendingConfirmationLinksAreCapped() {
+    AuthResponse session=user();UUID uid=id(session);
+    jdbc.sql("update auth.users set email_confirmed_at=null where id=:id").param("id",uid).update();
+    List<String> links=new ArrayList<>();
+    for(int i=0;i<=EmailTokenRepository.MAX_PENDING_CONFIRMATIONS;i++) {
+      String link=tokenService.newToken();links.add(link);
+      emailTokens.create(uid,EmailTokenRepository.CONFIRM_EMAIL,tokenService.hash(link),java.time.Instant.now().plusSeconds(3600));
+    }
+    assertThrows(AuthException.class,()->auth.confirmEmail(links.get(0)));
+    assertEquals(uid,UUID.fromString(auth.confirmEmail(links.get(1)).user().id()));
+  }
+  @Test void newPasswordResetLinkStillRevokesEarlierOnes() {
+    AuthResponse session=user();UUID uid=id(session);String email=session.user().email();
+    String older=tokenService.newToken(), newer=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(older),java.time.Instant.now().plusSeconds(3600));
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(newer),java.time.Instant.now().plusSeconds(3600));
+    assertThrows(AuthException.class,()->auth.resetPassword(older,"older-secret"));
+    auth.resetPassword(newer,"newer-secret");
+    assertNotNull(auth.login(new LoginRequest(email,"newer-secret")).accessToken());
+  }
   @Test void changingPasswordRequiresCurrentPasswordAndKeepsOnlyThisSession() {
     AuthResponse first=user();
     AuthResponse second=auth.login(new LoginRequest(first.user().email(),"test-secret"));
