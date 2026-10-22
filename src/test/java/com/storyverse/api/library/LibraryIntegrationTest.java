@@ -203,4 +203,22 @@ class LibraryIntegrationTest {
     assertTrue(library.list(s.accessToken(),query().genre("Da comunidade").build()).items().isEmpty());
     assertEquals(1,library.list(s.accessToken(),query().genre("Romance").build()).items().size());
   }
+
+  @Test void statsForTheYear() {
+    AuthResponse s=userSession(); grant(id(s));
+    library.put(s.accessToken(),"gb:1",w("reading",null).withGenre("Romance").build());
+    library.finish(s.accessToken(),"gb:1",new FinishRequest("2026-03-10",new BigDecimal("4"),null));
+    library.put(s.accessToken(),"gb:2",w("reading",null).withGenre("Da comunidade").build());
+    library.finish(s.accessToken(),"gb:2",new FinishRequest("2026-03-20",new BigDecimal("5"),null));
+    library.put(s.accessToken(),"gb:3",write("want_to_read",null));
+    library.put(s.accessToken(),"gb:4",write("reading",null));
+    LibraryStats st=library.stats(s.accessToken(),2026);
+    assertEquals(2026,st.year());
+    assertEquals(2,st.finished()); assertEquals(2,st.rated()); assertEquals(new BigDecimal("4.5"),st.averageRating());
+    assertEquals(Map.of("Romance",1),st.finishedByGenre()); assertEquals(2,st.finishedByMonth().get(3));
+    assertEquals(1,st.wantToRead()); assertEquals(1,st.reading());
+    assertEquals(0,library.stats(s.accessToken(),2025).finished());
+    assertNull(library.stats(s.accessToken(),2025).averageRating());
+    assertEquals(400,status(()->library.stats(s.accessToken(),1999)));
+  }
 }

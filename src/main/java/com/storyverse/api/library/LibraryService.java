@@ -145,6 +145,18 @@ public class LibraryService {
 		return new LibraryPage(List.copyOf(items), next.encode());
 	}
 
+	/** Números do ano (padrão: o ano corrente em Brasília). */
+	@Transactional(readOnly = true)
+	public LibraryStats stats(String accessToken, Integer year) {
+		UUID userId = open(accessToken);
+		int current = LibraryRules.today().getYear();
+		int target = year == null ? current : year;
+		if (target < 2000 || target > current + 1) {
+			throw new AuthException(400, "Ano inválido.");
+		}
+		return repository.stats(userId, target);
+	}
+
 	/** Muda só os campos presentes no corpo (null limpa). Exige `baseUpdatedAt`. */
 	@Transactional
 	public LibraryEntry patch(String accessToken, String bookKey, JsonNode body) {

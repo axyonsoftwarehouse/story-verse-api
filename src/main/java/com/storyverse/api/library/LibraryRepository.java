@@ -4,6 +4,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -115,6 +116,43 @@ public class LibraryRepository {
 			sql.append(clause);
 			params.put(name, value);
 		}
+	}
+
+	public LibraryStats stats(UUID userId, int year) {
+		String done = "deleted_at is null and extract(year from finished_on) = :year";
+		LibraryStats totals = jdbc.sql("""
+				select count(*) filter (where %1$s) as finished,
+				       count(*) filter (where status = 'abandoned'
+				                          and extract(year from updated_at at time zone 'America/Sao_Paulo') = :year) as abandoned,
+				       count(*) filter (where status = 'reading') as reading,
+				       count(*) filter (where status = 'want_to_read') as want_to_read,
+				       count(*) filter (where %1$s and rating is not null) as rated,
+				       round(avg(rating) filter (where %1$s), 1) as average_rating
+				  from public.library_entries
+				 where user_id = :userId and deleted_at is null
+				""".formatted(done))
+				.param("userId", userId)
+				.param("year", year)
+				.query((rs, rowNum) -> new LibraryStats(year, rs.getInt("finished"), rs.getInt("abandoned"),
+						rs.getInt("reading"), rs.getInt("want_to_read"), rs.getInt("rated"),
+						rs.getBigDecimal("average_rating"), Map.of(), Map.of()))
+				.single();
+		Map<String, Integer> byGenre = new LinkedHashMap<>();
+		jdbc.sql("select genre, count(*) as total from public.library_entries where user_id = :userId and " + done
+				+ " and genre is not null and genre <> 'Da comunidade' group by genre order by total desc, genre")
+				.param("userId", userId)
+				.param("year", year)
+				.query((rs, rowNum) -> byGenre.put(rs.getString("genre"), rs.getInt("total")))
+				.list();
+		Map<Integer, Integer> byMonth = new LinkedHashMap<>();
+		jdbc.sql("select extract(month from finished_on)::int as month, count(*) as total from public.library_entries"
+				+ " where user_id = :userId and " + done + " group by 1 order by 1")
+				.param("userId", userId)
+				.param("year", year)
+				.query((rs, rowNum) -> byMonth.put(rs.getInt("month"), rs.getInt("total")))
+				.list();
+		return new LibraryStats(year, totals.finished(), totals.abandoned(), totals.reading(), totals.wantToRead(),
+				totals.rated(), totals.averageRating(), byGenre, byMonth);
 	}
 
 	public int countLive(UUID userId) {
