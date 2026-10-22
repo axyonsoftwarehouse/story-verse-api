@@ -14,10 +14,18 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.test.web.servlet.MockMvc;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.*;
 
 /** Run only against a disposable PostgreSQL database, never production. */
 @SpringBootTest
+@AutoConfigureMockMvc
 @EnabledIfEnvironmentVariable(named="STORYVERSE_TEST_DB_URL", matches=".+")
 class LibraryIntegrationTest {
   static final Path media;
@@ -36,6 +44,8 @@ class LibraryIntegrationTest {
   @Autowired AuthService auth;
   @Autowired JdbcClient jdbc;
   @Autowired LibraryService library;
+  @Autowired AccountService account;
+  @Autowired MockMvc mvc;
 
   /** Corpo de PUT mínimo (Dom Casmurro, Gutenberg) para variar um campo por vez. */
   static final class W {
@@ -220,5 +230,45 @@ class LibraryIntegrationTest {
     assertEquals(0,library.stats(s.accessToken(),2025).finished());
     assertNull(library.stats(s.accessToken(),2025).averageRating());
     assertEquals(400,status(()->library.stats(s.accessToken(),1999)));
+  }
+
+  static final String BODY="{\"source\":\"gutenberg\",\"status\":\"reading\",\"title\":\"T\"}";
+
+  @Test void httpConflictCarriesCurrentEntryAndGateIsEnforced() throws Exception {
+    AuthResponse s=userSession(); grant(id(s)); String bearer="Bearer "+s.accessToken();
+    mvc.perform(put("/api/v1/me/library/gb:1").header("Authorization",bearer).contentType(APPLICATION_JSON).content(BODY))
+       .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+       .andExpect(jsonPath("$.bookKey").value("gb:1"));
+    mvc.perform(put("/api/v1/me/library/gb:1").header("Authorization",bearer).contentType(APPLICATION_JSON)
+        .content(BODY.replace("reading","want_to_read")))
+       .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict())
+       .andExpect(jsonPath("$.code").value("CONFLICT"))
+       .andExpect(jsonPath("$.current.bookKey").value("gb:1"));
+    mvc.perform(get("/api/v1/me/library").header("Authorization",bearer).param("status","reading,finished"))
+       .andExpect(jsonPath("$.items[0].bookKey").value("gb:1"));
+    mvc.perform(get("/api/v1/me/library/stats").header("Authorization",bearer))
+       .andExpect(jsonPath("$.reading").value(1));
+    AuthResponse other=userSession();
+    mvc.perform(get("/api/v1/me/library/stats").header("Authorization","Bearer "+other.accessToken()))
+       .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isForbidden())
+       .andExpect(jsonPath("$.code").value("FEATURE_DISABLED"));
+  }
+  @Test void malformedInputIsABadRequestNotAServerError() throws Exception {
+    AuthResponse s=userSession(); grant(id(s)); String bearer="Bearer "+s.accessToken();
+    mvc.perform(put("/api/v1/me/library/gb:1").header("Authorization",bearer).contentType(APPLICATION_JSON).content("{nao é json"))
+       .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+    mvc.perform(get("/api/v1/me/library/stats").header("Authorization",bearer).param("year","abc"))
+       .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+    mvc.perform(get("/api/v1/me/library").header("Authorization",bearer).param("limit","dez"))
+       .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+  }
+  @Test void exportIncludesTheShelf() {
+    AuthResponse s=userSession(); grant(id(s)); library.put(s.accessToken(),"gb:1",write("reading",null));
+    assertEquals(1,((List<?>)account.export(s.accessToken()).get("library")).size());
+  }
+  @Test void writesAreRateLimited() {
+    AuthResponse s=userSession(); grant(id(s));
+    for(int i=0;i<60;i++) library.put(s.accessToken(),"gb:"+(1000+i),write("reading",null));
+    assertEquals(429,status(()->library.put(s.accessToken(),"gb:2000",write("reading",null))));
   }
 }

@@ -53,6 +53,23 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `GET /api/v1/me/reading-state` — dados de leitura da conta (progresso, marcações, conversas…).
 - `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
   → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
+- Estante (biblioteca pessoal), só para contas com a feature `library` (sem ela: 403 `FEATURE_DISABLED`).
+  `{bookKey}` é `gb:<n>`, `cm:<uuid>` ou `local:<id>`.
+  - `GET /api/v1/me/library` — lista; filtros `status` (repetível ou CSV), `author`, `series`, `language`,
+    `genre`, `year`, `minRating`, `maxRating`, `sort` (`recent`, `title`, `author`, `rating`, `finished`),
+    `cursor`, `limit` (até 100) → `{ "items": [...], "nextCursor" }`. Com `updatedSince=<updatedAt>`
+    devolve o que mudou depois, **inclusive apagadas** (`deletedAt`), para o sync.
+  - `GET /api/v1/me/library/stats?year=` — números do ano.
+  - `GET /api/v1/me/library/{bookKey}` — uma entrada (404 se fora da estante).
+  - `PUT /api/v1/me/library/{bookKey}` — cria ou substitui a entrada inteira; para substituir, mande
+    `baseUpdatedAt` igual ao `updatedAt` atual.
+  - `PATCH /api/v1/me/library/{bookKey}` — muda só os campos enviados; `baseUpdatedAt` obrigatório.
+  - `DELETE /api/v1/me/library/{bookKey}` — remove (soft delete) → 204.
+  - `POST /api/v1/me/library/{bookKey}/finish` — `{ finishedOn?, rating?, review? }`.
+  - `POST /api/v1/me/library/{bookKey}/abandon` — `{ dnfReason, dnfNote? }`.
+  - Erros: 400 dados inválidos, 401 sem sessão, 403 sem a feature, 404 fora da estante, 409 conflito
+    (`{ "error", "code": "CONFLICT", "current": <entrada atual> }`), 422 regra de negócio (nota, datas,
+    motivo, estante cheia), 429 mais de 60 escritas por minuto.
 
 A sessão usa **Bearer token** para o access de 30 min e um **refresh de 30 dias em cookie HttpOnly,
 Secure e SameSite** (nome `storyverse_refresh`, caminho `/api/v1/auth`). Os dois são opacos e o banco
