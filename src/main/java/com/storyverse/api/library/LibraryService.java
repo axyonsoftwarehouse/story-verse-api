@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -17,6 +18,8 @@ import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.common.RateLimitGate;
 import com.storyverse.api.feature.FeatureAccessService;
+
+import tools.jackson.databind.JsonNode;
 
 /** Estante da conta (`/api/v1/me/library`). Toda rota exige a feature `library`. */
 @Service
@@ -82,6 +85,86 @@ public class LibraryService {
 				.orElseThrow(() -> conflict(userId, key.value()));
 	}
 
+	/** Muda só os campos presentes no corpo (null limpa). Exige `baseUpdatedAt`. */
+	@Transactional
+	public LibraryEntry patch(String accessToken, String bookKey, JsonNode body) {
+		UUID userId = openForWrite(accessToken);
+		String key = BookKey.parse(bookKey).value();
+		if (body == null || !body.isObject()) {
+			throw new AuthException(400, "Corpo inválido.");
+		}
+		JsonNode base = body.get("baseUpdatedAt");
+		if (base == null || !base.isString()) {
+			throw new AuthException(400, "Informe baseUpdatedAt.");
+		}
+		Draft draft = new Draft(live(userId, key));
+		for (Map.Entry<String, JsonNode> field : body.properties()) {
+			draft.apply(field.getKey(), field.getValue());
+		}
+		LibraryEntry candidate = LibraryRules.normalize(draft.toEntry());
+		LibraryRules.validate(candidate);
+		return repository.replaceIfMatches(userId, candidate, base.asText())
+				.orElseThrow(() -> conflict(userId, key));
+	}
+
+	/** Remove da estante (soft delete). Repetir é inofensivo; livro que nunca esteve lá é 404. */
+	@Transactional
+	public void delete(String accessToken, String bookKey) {
+		UUID userId = openForWrite(accessToken);
+		String key = BookKey.parse(bookKey).value();
+		LibraryEntry current = repository.find(userId, key)
+				.orElseThrow(() -> new AuthException(404, "Livro fora da estante."));
+		if (current.deletedAt() == null) {
+			repository.softDelete(userId, key);
+		}
+	}
+
+	/** Concluir. Idempotente; nota e resenha nulas mantêm as atuais. */
+	@Transactional
+	public LibraryEntry finish(String accessToken, String bookKey, FinishRequest request) {
+		UUID userId = openForWrite(accessToken);
+		String key = BookKey.parse(bookKey).value();
+		LibraryEntry current = lockLive(userId, key);
+		FinishRequest r = request == null ? new FinishRequest(null, null, null) : request;
+		Draft draft = new Draft(current);
+		draft.status = "finished";
+		draft.finishedOn = r.finishedOn() == null ? LibraryRules.today() : date(r.finishedOn());
+		if (draft.startedOn != null && draft.startedOn.isAfter(draft.finishedOn)) {
+			draft.startedOn = draft.finishedOn;
+		}
+		if (r.rating() != null) {
+			draft.rating = r.rating();
+		}
+		if (r.review() != null) {
+			draft.review = r.review();
+		}
+		return save(userId, current, draft);
+	}
+
+	@Transactional
+	public LibraryEntry abandon(String accessToken, String bookKey, AbandonRequest request) {
+		UUID userId = openForWrite(accessToken);
+		String key = BookKey.parse(bookKey).value();
+		LibraryEntry current = lockLive(userId, key);
+		Draft draft = new Draft(current);
+		draft.status = "abandoned";
+		draft.dnfReason = request == null ? null : request.dnfReason();
+		draft.dnfNote = request == null ? null : request.dnfNote();
+		return save(userId, current, draft);
+	}
+
+	private LibraryEntry lockLive(UUID userId, String key) {
+		return repository.findLiveForUpdate(userId, key)
+				.orElseThrow(() -> new AuthException(404, "Livro fora da estante."));
+	}
+
+	private LibraryEntry save(UUID userId, LibraryEntry current, Draft draft) {
+		LibraryEntry candidate = LibraryRules.normalize(draft.toEntry());
+		LibraryRules.validate(candidate);
+		return repository.replaceIfMatches(userId, candidate, current.updatedAt())
+				.orElseThrow(() -> conflict(userId, current.bookKey()));
+	}
+
 	/** Autentica, exige a feature e marca a sessão do banco (RLS). */
 	private UUID open(String accessToken) {
 		UUID userId = auth.authenticate(accessToken);
@@ -132,5 +215,98 @@ public class LibraryService {
 
 	private static boolean sameNumber(BigDecimal a, BigDecimal b) {
 		return a == null ? b == null : b != null && a.compareTo(b) == 0;
+	}
+
+	/** Cópia editável de uma entrada, para PATCH, concluir e abandonar. */
+	private static final class Draft {
+		final String bookKey;
+		final String source;
+		String status;
+		BigDecimal rating;
+		String review;
+		LocalDate startedOn;
+		LocalDate finishedOn;
+		String dnfReason;
+		String dnfNote;
+		Integer progressPercent;
+		String progressLabel;
+		String title;
+		String author;
+		String coverUrl;
+		String series;
+		BigDecimal seriesIndex;
+		String genre;
+		String language;
+
+		Draft(LibraryEntry e) {
+			bookKey = e.bookKey();
+			source = e.source();
+			status = e.status();
+			rating = e.rating();
+			review = e.review();
+			startedOn = e.startedOn();
+			finishedOn = e.finishedOn();
+			dnfReason = e.dnfReason();
+			dnfNote = e.dnfNote();
+			progressPercent = e.progressPercent();
+			progressLabel = e.progressLabel();
+			title = e.title();
+			author = e.author();
+			coverUrl = e.coverUrl();
+			series = e.series();
+			seriesIndex = e.seriesIndex();
+			genre = e.genre();
+			language = e.language();
+		}
+
+		void apply(String field, JsonNode value) {
+			switch (field) {
+				case "baseUpdatedAt" -> { }
+				case "status" -> status = text(value);
+				case "rating" -> rating = number(value);
+				case "review" -> review = text(value);
+				case "startedOn" -> startedOn = date(text(value));
+				case "finishedOn" -> finishedOn = date(text(value));
+				case "dnfReason" -> dnfReason = text(value);
+				case "dnfNote" -> dnfNote = text(value);
+				case "progressPercent" -> progressPercent = number(value) == null ? null : number(value).intValue();
+				case "progressLabel" -> progressLabel = text(value);
+				case "title" -> title = text(value);
+				case "author" -> author = text(value);
+				case "coverUrl" -> coverUrl = text(value);
+				case "series" -> series = text(value);
+				case "seriesIndex" -> seriesIndex = number(value);
+				case "genre" -> genre = text(value);
+				case "language" -> language = text(value);
+				case "source", "bookKey" -> throw new AuthException(400, "Campo não pode ser alterado.");
+				default -> throw new AuthException(400, "Campo desconhecido: " + field + ".");
+			}
+		}
+
+		LibraryEntry toEntry() {
+			return new LibraryEntry(bookKey, source, status, rating, review, startedOn, finishedOn, dnfReason,
+					dnfNote, progressPercent, progressLabel, title, author, coverUrl, series, seriesIndex, genre,
+					language, null, 0, null);
+		}
+
+		private static String text(JsonNode value) {
+			if (value.isNull()) {
+				return null;
+			}
+			if (!value.isString()) {
+				throw new AuthException(400, "Campo de texto inválido.");
+			}
+			return value.asText();
+		}
+
+		private static BigDecimal number(JsonNode value) {
+			if (value.isNull()) {
+				return null;
+			}
+			if (!value.isNumber()) {
+				throw new AuthException(400, "Campo numérico inválido.");
+			}
+			return value.decimalValue();
+		}
 	}
 }

@@ -111,4 +111,49 @@ class LibraryIntegrationTest {
     fillShelf(id(s),5000);
     assertEquals(422,status(()->library.put(s.accessToken(),"gb:999999",write("reading",null))));
   }
+
+  static tools.jackson.databind.JsonNode json(String raw) { return tools.jackson.databind.json.JsonMapper.builder().build().readTree(raw); }
+  static String base(LibraryEntry e) { return "\"baseUpdatedAt\":\""+e.updatedAt()+"\""; }
+
+  @Test void staleDeviceGetsConflictWithCurrentEntry() {
+    AuthResponse s=userSession(); grant(id(s));
+    LibraryEntry v1=library.put(s.accessToken(),"gb:1",write("reading",null));
+    LibraryEntry v2=library.patch(s.accessToken(),"gb:1",json("{\"progressPercent\":40,"+base(v1)+"}"));
+    LibraryConflictException c=assertThrows(LibraryConflictException.class,
+        ()->library.patch(s.accessToken(),"gb:1",json("{\"progressPercent\":10,"+base(v1)+"}")));
+    assertEquals(40,c.current().progressPercent()); assertEquals(v2.version(),c.current().version());
+    assertEquals(400,status(()->library.patch(s.accessToken(),"gb:1",json("{\"progressPercent\":10}"))));
+    assertEquals(400,status(()->library.patch(s.accessToken(),"gb:1",json("{\"source\":\"local\","+base(v2)+"}"))));
+  }
+  @Test void restartingAFinishedBookKeepsRatingAndDate() {
+    AuthResponse s=userSession(); grant(id(s));
+    library.put(s.accessToken(),"gb:1",write("reading",null));
+    LibraryEntry done=library.finish(s.accessToken(),"gb:1",new FinishRequest(null,new BigDecimal("4.5"),"Ótimo."));
+    assertEquals(LibraryRules.today(),done.finishedOn()); assertEquals(100,done.progressPercent());
+    LibraryEntry again=library.patch(s.accessToken(),"gb:1",json("{\"status\":\"reading\","+base(done)+"}"));
+    assertEquals(0,new BigDecimal("4.5").compareTo(again.rating())); assertEquals(done.finishedOn(),again.finishedOn());
+    assertEquals("reading",again.status());
+  }
+  @Test void finishIsIdempotentAndAdjustsStartDate() {
+    AuthResponse s=userSession(); grant(id(s));
+    library.put(s.accessToken(),"gb:1",w("reading",null).withStartedOn("2026-10-10").build());
+    LibraryEntry f=library.finish(s.accessToken(),"gb:1",new FinishRequest("2026-10-01",null,null));
+    assertEquals(java.time.LocalDate.parse("2026-10-01"),f.startedOn());
+    assertEquals("finished",library.finish(s.accessToken(),"gb:1",new FinishRequest("2026-10-01",null,null)).status());
+  }
+  @Test void abandonNeedsReasonAndFinishNeedsEntry() {
+    AuthResponse s=userSession(); grant(id(s));
+    assertEquals(404,status(()->library.finish(s.accessToken(),"gb:7",new FinishRequest(null,null,null))));
+    library.put(s.accessToken(),"gb:1",write("reading",null));
+    assertEquals(422,status(()->library.abandon(s.accessToken(),"gb:1",new AbandonRequest(null,null))));
+    assertEquals("slow",library.abandon(s.accessToken(),"gb:1",new AbandonRequest("slow",null)).dnfReason());
+  }
+  @Test void deleteIsSoftAndPutRevives() {
+    AuthResponse s=userSession(); grant(id(s));
+    library.put(s.accessToken(),"gb:1",write("reading",null));
+    library.delete(s.accessToken(),"gb:1"); library.delete(s.accessToken(),"gb:1");
+    assertEquals(404,status(()->library.get(s.accessToken(),"gb:1")));
+    assertEquals(404,status(()->library.delete(s.accessToken(),"gb:2")));
+    assertNull(library.put(s.accessToken(),"gb:1",write("reading",null)).deletedAt());
+  }
 }

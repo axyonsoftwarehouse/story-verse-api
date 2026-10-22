@@ -43,6 +43,30 @@ public class LibraryRepository {
 				.optional();
 	}
 
+	/** Linha viva travada até o fim da transação (concluir/abandonar sem baseUpdatedAt). */
+	public Optional<LibraryEntry> findLiveForUpdate(UUID userId, String bookKey) {
+		return jdbc.sql("select " + COLUMNS + """
+				 from public.library_entries
+				 where user_id = :userId and book_key = :bookKey and deleted_at is null
+				 for update""")
+				.param("userId", userId)
+				.param("bookKey", bookKey)
+				.query(LibraryRepository::map)
+				.optional();
+	}
+
+	/** Soft delete: a remoção vira uma escrita, para o sync levá-la aos outros aparelhos. */
+	public void softDelete(UUID userId, String bookKey) {
+		jdbc.sql("""
+				update public.library_entries
+				   set deleted_at = now(), updated_at = now(), version = version + 1
+				 where user_id = :userId and book_key = :bookKey and deleted_at is null
+				""")
+				.param("userId", userId)
+				.param("bookKey", bookKey)
+				.update();
+	}
+
 	public int countLive(UUID userId) {
 		return jdbc.sql("select count(*) from public.library_entries where user_id = :userId and deleted_at is null")
 				.param("userId", userId)
