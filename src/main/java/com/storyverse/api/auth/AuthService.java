@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.common.RateLimitGate;
 import com.storyverse.api.common.SecurityEvents;
+import com.storyverse.api.feature.FeatureAccessService;
 
 @Service
 public class AuthService {
@@ -37,6 +38,7 @@ public class AuthService {
 	private final MailService mail;
 	private final AuthzService authz;
 	private final SecurityEvents security;
+	private final FeatureAccessService featureAccess;
 	private final boolean requireEmailConfirmation;
 	private final Duration confirmationTtl;
 	private final Duration resetTtl;
@@ -52,6 +54,7 @@ public class AuthService {
 			MailService mail,
 			AuthzService authz,
 			SecurityEvents security,
+			FeatureAccessService featureAccess,
 			@Value("${app.auth.require-email-confirmation:true}") boolean requireEmailConfirmation,
 			@Value("${app.auth.confirmation-ttl:PT24H}") Duration confirmationTtl,
 			@Value("${app.auth.reset-ttl:PT1H}") Duration resetTtl) {
@@ -67,6 +70,7 @@ public class AuthService {
 		this.mail = mail;
 		this.authz = authz;
 		this.security = security;
+		this.featureAccess = featureAccess;
 		this.requireEmailConfirmation = requireEmailConfirmation;
 		this.confirmationTtl = confirmationTtl;
 		this.resetTtl = resetTtl;
@@ -276,7 +280,8 @@ public class AuthService {
 	@Transactional(readOnly = true)
 	public CapabilitiesResponse capabilities(String accessToken) {
 		SessionRow session = requireSession(accessToken, false);
-		return new CapabilitiesResponse(List.copyOf(authz.roles(session.userId())));
+		return new CapabilitiesResponse(List.copyOf(authz.roles(session.userId())),
+				featureAccess.features(session.userId()));
 	}
 
 	/** Id do usuário da sessão (Bearer). Usado pelos módulos de dados. */

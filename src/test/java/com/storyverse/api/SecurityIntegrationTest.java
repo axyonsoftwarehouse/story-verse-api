@@ -16,6 +16,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
 import com.storyverse.api.account.AccountService;
+import com.storyverse.api.feature.FeatureAccessService;
 import com.storyverse.api.community.CommunityService;
 import com.storyverse.api.forum.*;
 import com.storyverse.api.storage.*;
@@ -61,6 +62,7 @@ class SecurityIntegrationTest {
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
   @Autowired RateLimitGate rateLimits;
   @Autowired AccountService account;
+  @Autowired FeatureAccessService features;
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
 
@@ -99,6 +101,28 @@ class SecurityIntegrationTest {
         .query(Integer.class).single());
     assertTrue(Files.notExists(media.resolve("profile-media").resolve(uid.toString())));
     assertThrows(AuthException.class,()->auth.authenticate(session.accessToken()));
+  }
+
+  @Test void featureGateIsPerAccountAndExposedInCapabilities() {
+    AuthResponse session=user(); UUID uid=id(session);
+    assertFalse(features.enabled(uid,"library"));
+    assertThrows(AuthException.class,()->features.require(uid,"library"));
+    assertTrue(auth.capabilities(session.accessToken()).features().isEmpty());
+
+    jdbc.sql("insert into public.feature_access(user_id,feature) values(:id,'library')")
+        .param("id",uid).update();
+    assertTrue(features.enabled(uid,"library"));
+    assertDoesNotThrow(()->features.require(uid,"library"));
+    assertTrue(auth.capabilities(session.accessToken()).features().contains("library"));
+  }
+  @Test void superadminGrantsAndListsAnotherAccountsFeatures() {
+    UUID admin=id(user()), target=id(user());
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",admin).update();
+    features.set(admin,target,"library",true);
+    assertEquals(List.of("library"),features.features(admin,target));
+    features.set(admin,target,"library",false);
+    assertTrue(features.features(admin,target).isEmpty());
+    assertThrows(AuthException.class,()->features.set(admin,target,"desconhecida",true));
   }
 
   @Test void persistentRateLimitIsSharedAndRejectsAfterTheLimit() {
