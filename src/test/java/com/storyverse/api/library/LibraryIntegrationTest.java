@@ -35,6 +35,29 @@ class LibraryIntegrationTest {
   }
   @Autowired AuthService auth;
   @Autowired JdbcClient jdbc;
+  @Autowired LibraryService library;
+
+  /** Corpo de PUT mínimo (Dom Casmurro, Gutenberg) para variar um campo por vez. */
+  static final class W {
+    String source="gutenberg", status, title="Dom Casmurro", genre, startedOn, base;
+    W(String status,String base) { this.status=status; this.base=base; }
+    W withSource(String s) { source=s; return this; }
+    W withTitle(String t) { title=t; return this; }
+    W withGenre(String g) { genre=g; return this; }
+    W withStartedOn(String d) { startedOn=d; return this; }
+    LibraryWriteRequest build() {
+      return new LibraryWriteRequest(source,status,null,null,startedOn,null,null,null,null,null,title,
+          "Machado de Assis",null,null,null,genre,"pt",base);
+    }
+  }
+  static LibraryWriteRequest write(String status,String base) { return new W(status,base).build(); }
+  static W w(String status,String base) { return new W(status,base); }
+  void fillShelf(UUID uid,int n) {
+    jdbc.sql("""
+        insert into public.library_entries(user_id,book_key,source,status,title)
+        select :uid,'gb:'||g,'gutenberg','reading','T' from generate_series(1,:n) g
+        """).param("uid",uid).param("n",n).update();
+  }
 
   AuthResponse userSession() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Leitor")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
@@ -61,5 +84,31 @@ class LibraryIntegrationTest {
     UUID uid=user(); insertRaw(uid,"gb:1","gutenberg","reading",null);
     jdbc.sql("delete from auth.users where id=:id").param("id",uid).update();
     assertEquals(0,count("select count(*) from public.library_entries where user_id=:id",uid));
+  }
+
+  @Test void putCreatesThenNeedsTheCurrentBase() {
+    AuthResponse s=userSession(); grant(id(s));
+    LibraryEntry created=library.put(s.accessToken(),"gb:1",write("reading",null));
+    assertEquals(1,created.version());
+    assertEquals("Dom Casmurro",library.get(s.accessToken(),"gb:1").title());
+    assertEquals(1,library.put(s.accessToken(),"gb:1",write("reading",null)).version());   // repetição idêntica
+    LibraryConflictException c=assertThrows(LibraryConflictException.class,()->library.put(s.accessToken(),"gb:1",write("finished",null)));
+    assertEquals(created.updatedAt(),c.current().updatedAt());
+    assertEquals(2,library.put(s.accessToken(),"gb:1",write("reading",created.updatedAt())).version());
+  }
+  @Test void shelfIsPerAccountAndGated() {
+    AuthResponse a=userSession(), b=userSession(); grant(id(a)); grant(id(b));
+    library.put(a.accessToken(),"gb:1",write("reading",null));
+    assertEquals(404,status(()->library.get(b.accessToken(),"gb:1")));
+    AuthResponse noFeature=userSession();
+    AuthException e=assertThrows(AuthException.class,()->library.get(noFeature.accessToken(),"gb:1"));
+    assertEquals(403,e.status()); assertEquals("FEATURE_DISABLED",e.code());
+  }
+  @Test void putRejectsSourceMismatchBadDateAndFullShelf() {
+    AuthResponse s=userSession(); grant(id(s));
+    assertEquals(400,status(()->library.put(s.accessToken(),"gb:1",w("reading",null).withSource("local").build())));
+    assertEquals(400,status(()->library.put(s.accessToken(),"gb:1",w("reading",null).withStartedOn("22/10/2026").build())));
+    fillShelf(id(s),5000);
+    assertEquals(422,status(()->library.put(s.accessToken(),"gb:999999",write("reading",null))));
   }
 }
