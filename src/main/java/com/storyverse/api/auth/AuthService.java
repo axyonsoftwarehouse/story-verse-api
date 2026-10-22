@@ -15,7 +15,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.storyverse.api.common.RateLimits;
+import com.storyverse.api.common.RateLimitGate;
+import com.storyverse.api.common.SecurityEvents;
 
 @Service
 public class AuthService {
@@ -30,9 +31,12 @@ public class AuthService {
 	private final EmailTokenRepository emailTokens;
 	private final TokenService tokens;
 	private final PasswordEncoder passwordEncoder;
-	private final RateLimits limits;
+	private final PasswordPolicy passwords;
+	private final String dummyPasswordHash;
+	private final RateLimitGate limits;
 	private final MailService mail;
 	private final AuthzService authz;
+	private final SecurityEvents security;
 	private final boolean requireEmailConfirmation;
 	private final Duration confirmationTtl;
 	private final Duration resetTtl;
@@ -43,9 +47,11 @@ public class AuthService {
 			EmailTokenRepository emailTokens,
 			TokenService tokens,
 			PasswordEncoder passwordEncoder,
-			RateLimits limits,
+			PasswordPolicy passwords,
+			RateLimitGate limits,
 			MailService mail,
 			AuthzService authz,
+			SecurityEvents security,
 			@Value("${app.auth.require-email-confirmation:true}") boolean requireEmailConfirmation,
 			@Value("${app.auth.confirmation-ttl:PT24H}") Duration confirmationTtl,
 			@Value("${app.auth.reset-ttl:PT1H}") Duration resetTtl) {
@@ -54,9 +60,13 @@ public class AuthService {
 		this.emailTokens = emailTokens;
 		this.tokens = tokens;
 		this.passwordEncoder = passwordEncoder;
+		this.passwords = passwords;
+		// Hash inofensivo para gastar o mesmo tempo de BCrypt quando a conta não existe.
+		this.dummyPasswordHash = passwordEncoder.encode("storyverse-dummy-" + UUID.randomUUID());
 		this.limits = limits;
 		this.mail = mail;
 		this.authz = authz;
+		this.security = security;
 		this.requireEmailConfirmation = requireEmailConfirmation;
 		this.confirmationTtl = confirmationTtl;
 		this.resetTtl = resetTtl;
@@ -65,37 +75,52 @@ public class AuthService {
 	@Transactional
 	public Object signup(SignupRequest request) {
 		String email = validatedEmail(request.email());
-		validatePassword(request.password());
+		passwords.validate(request.password(), email, request.name());
 		if (request.name() != null && request.name().length() > 60) {
 			throw new AuthException(400, "Nome grande demais.");
 		}
-		if (users.findByEmail(email).isPresent()) {
-			throw new AuthException(409, "Este e-mail já está cadastrado.");
-		}
+		// Gasta o BCrypt antes de saber se a conta existe, para não diferenciar pelo tempo.
+		String passwordHash = passwordEncoder.encode(request.password());
+		// Verifica o SMTP antes de consultar a conta: com o e-mail fora, a resposta não distingue
+		// conta existente de inexistente. Em produção a confirmação fica ligada.
 		if (requireEmailConfirmation) {
 			mail.requireConfigured();
 		}
-		User user = users.create(email, passwordEncoder.encode(request.password()), request.name(),
+		var existing = users.findByEmail(email);
+		if (existing.isPresent()) {
+			if (!requireEmailConfirmation) {
+				// Só desenvolvimento (confirmação desligada): mantém o erro explícito.
+				throw new AuthException(409, "Este e-mail já está cadastrado.");
+			}
+			User user = existing.get();
+			if (user.emailConfirmedAt() == null) sendConfirmation(user);
+			else mail.sendExistingAccount(user.email());
+			return new SignupPendingResponse("Se este e-mail puder ser usado, enviaremos as instruções.");
+		}
+		User user = users.create(email, passwordHash, request.name(),
 				requireEmailConfirmation ? null : Instant.now());
 		if (!requireEmailConfirmation) {
 			return issue(user);
 		}
 		sendConfirmation(user);
-		return new SignupPendingResponse("Enviamos um link de confirmação para o seu e-mail.");
+		return new SignupPendingResponse("Se este e-mail puder ser usado, enviaremos as instruções.");
 	}
 
 	@Transactional
 	public AuthResponse login(LoginRequest request) {
 		String email = normalizeEmail(request.email());
 		if (email != null && email.length() > 254) throw new AuthException(401, "E-mail ou senha inválidos.");
-		limits.check("login-account:" + tokens.hash(email == null ? "" : email), 15, Duration.ofMinutes(15));
 		if (request.password() != null && request.password().getBytes(StandardCharsets.UTF_8).length > 72)
 			throw new AuthException(401, "E-mail ou senha inválidos.");
-		User user = users.findByEmail(email == null ? "" : email)
-				.orElseThrow(() -> new AuthException(401, "E-mail ou senha inválidos."));
-		if (user.encryptedPassword() == null
-				|| request.password() == null
-				|| !passwordEncoder.matches(request.password(), user.encryptedPassword())) {
+		User user = users.findByEmail(email == null ? "" : email).orElse(null);
+		String storedHash = user != null && user.encryptedPassword() != null
+				? user.encryptedPassword()
+				: dummyPasswordHash;
+		boolean passwordOk = request.password() != null && passwordEncoder.matches(request.password(), storedHash);
+		if (user == null || user.encryptedPassword() == null || !passwordOk) {
+			// Conta falha por conta/e-mail, mas uma senha correta nunca é bloqueada pelo ataque
+			// de outra pessoa (o limite é aplicado ao erro, não antes de verificar a senha).
+			limits.check("login-fail:" + tokens.hash(email == null ? "" : email), 15, Duration.ofMinutes(15));
 			throw new AuthException(401, "E-mail ou senha inválidos.");
 		}
 		if (requireEmailConfirmation && user.emailConfirmedAt() == null) {
@@ -140,18 +165,21 @@ public class AuthService {
 
 	@Transactional
 	public void resetPassword(String token, String password) {
-		validatePassword(password);
+		passwords.validate(password, null, null);
 		if (token == null || token.isBlank()) throw new AuthException(400, "Link inválido ou expirado.");
 		limits.check("reset-password:" + tokens.hash(token), 5, Duration.ofMinutes(15));
 		UUID userId = emailTokens.consume(EmailTokenRepository.RESET_PASSWORD, tokens.hash(token))
 				.orElseThrow(() -> new AuthException(400, "Link inválido ou expirado."));
+		User user = users.findById(userId).orElseThrow(() -> new AuthException(401, "Sessão inválida."));
+		passwords.validate(password, user.email(), null);
 		users.updatePassword(userId, passwordEncoder.encode(password));
 		sessions.revokeAllForUser(userId);
+		security.info("auth.password_reset");
 	}
 
 	@Transactional
 	public void changePassword(String accessToken, String currentPassword, String newPassword) {
-		validatePassword(newPassword);
+		passwords.validate(newPassword, null, null);
 		SessionRow session = requireSession(accessToken, false);
 		limits.check("change-password:" + session.userId(), 5, Duration.ofMinutes(15));
 		User user = users.findById(session.userId()).orElseThrow(() -> new AuthException(401, "Sessão inválida."));
@@ -163,8 +191,11 @@ public class AuthService {
 		if (passwordEncoder.matches(newPassword, user.encryptedPassword())) {
 			throw new AuthException(400, "A nova senha precisa ser diferente da atual.");
 		}
+		String accountName = user.metadata().get("name") instanceof String value ? value : null;
+		passwords.validate(newPassword, user.email(), accountName);
 		users.updatePassword(user.id(), passwordEncoder.encode(newPassword));
 		sessions.revokeAllForUserExcept(user.id(), session.id());
+		security.info("auth.password_changed");
 	}
 
 	@Transactional
@@ -186,11 +217,34 @@ public class AuthService {
 		return UserResponse.from(updated);
 	}
 
-	@Transactional
+	@Transactional(noRollbackFor = RefreshReusedException.class)
 	public AuthResponse refresh(String refreshToken) {
-		SessionRow session = requireSession(refreshToken, true);
+		if (refreshToken == null || refreshToken.isBlank()) {
+			throw new AuthException(401, "Não autenticado.");
+		}
+		String hash = tokens.hash(refreshToken);
+		SessionRow session = sessions.findByRefreshHash(hash).orElse(null);
+		if (session == null) {
+			var reused = sessions.findReusedRefreshSession(hash);
+			if (reused.isPresent()) {
+				// Token antigo reapareceu: pode ser roubo. Revoga a família inteira.
+				sessions.revokeById(reused.get());
+				security.warn("auth.refresh_reuse");
+				throw new RefreshReusedException();
+			}
+			throw new AuthException(401, "Sessão inválida. Entre novamente.");
+		}
+		Instant now = Instant.now();
+		if (session.revokedAt() != null || session.refreshExpiresAt() == null
+				|| session.refreshExpiresAt().isBefore(now)) {
+			throw new AuthException(401, "Sessão expirada. Entre novamente.");
+		}
 		User user = users.findById(session.userId())
 				.orElseThrow(() -> new AuthException(401, "Sessão inválida."));
+		return rotate(session, user);
+	}
+
+	private AuthResponse rotate(SessionRow session, User user) {
 		String accessToken = tokens.newToken();
 		String newRefreshToken = tokens.newToken();
 		Instant now = Instant.now();
@@ -278,15 +332,6 @@ public class AuthService {
 			throw new AuthException(400, "E-mail inválido.");
 		}
 		return email;
-	}
-
-	private static void validatePassword(String password) {
-		if (password == null || password.length() < 6) {
-			throw new AuthException(400, "A senha precisa de pelo menos 6 caracteres.");
-		}
-		if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
-			throw new AuthException(400, "Senha grande demais.");
-		}
 	}
 
 	private static String normalizeEmail(String email) {

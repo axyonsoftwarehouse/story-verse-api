@@ -51,9 +51,9 @@ public class SessionRepository {
 		// Poda o histórico vencido; sem isso a tabela cresceria para sempre (2 linhas por refresh).
 		jdbc.sql("delete from auth.session_token_history where expires_at <= now()").update();
 		jdbc.sql("""
-				insert into auth.session_token_history (token_hash, session_id, expires_at)
-				select access_hash, id, access_expires_at from auth.sessions where id = :id
-				union all select refresh_hash, id, refresh_expires_at from auth.sessions where id = :id
+				insert into auth.session_token_history (token_hash, session_id, expires_at, kind)
+				select access_hash, id, access_expires_at, 'access' from auth.sessions where id = :id
+				union all select refresh_hash, id, refresh_expires_at, 'refresh' from auth.sessions where id = :id
 				on conflict (token_hash) do nothing
 				""").param("id", id).update();
 		jdbc.sql("""
@@ -71,6 +71,19 @@ public class SessionRepository {
 				.param("refreshHash", refreshHash)
 				.param("refreshExpiresAt", at(refreshExpiresAt))
 				.update();
+	}
+
+	/** Sessão dona de um refresh token já rotacionado (histórico), se ainda dentro da validade. */
+	public Optional<UUID> findReusedRefreshSession(String refreshHash) {
+		return jdbc.sql("""
+				select session_id from auth.session_token_history
+				 where token_hash = :hash and kind = 'refresh' and expires_at > now()
+				""").param("hash", refreshHash).query(UUID.class).optional();
+	}
+
+	public void revokeById(UUID sessionId) {
+		jdbc.sql("update auth.sessions set revoked_at = coalesce(revoked_at, now()) where id = :id")
+				.param("id", sessionId).update();
 	}
 
 	public void revokeByRefreshHash(String refreshHash) {

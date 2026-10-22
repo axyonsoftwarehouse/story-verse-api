@@ -2,6 +2,7 @@ package com.storyverse.api;
 
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.*;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
@@ -14,11 +15,13 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
+import com.storyverse.api.account.AccountService;
 import com.storyverse.api.community.CommunityService;
 import com.storyverse.api.forum.*;
 import com.storyverse.api.storage.*;
 import com.storyverse.api.rpc.RpcService;
 import com.storyverse.api.common.DbSession;
+import com.storyverse.api.common.RateLimitGate;
 
 /** Run only against a disposable PostgreSQL database, never production. */
 @SpringBootTest
@@ -35,6 +38,11 @@ class SecurityIntegrationTest {
     properties.add("app.storage.quota-bytes", () -> "2048");
     properties.add("app.storage.quota-objects", () -> "3");
     properties.add("app.auth.require-email-confirmation", () -> "false");
+    properties.add("app.public-api-url", () -> "https://api.example.test");
+    properties.add("app.rate-limit.persistent", () -> "true");
+    // A suíte usa o superusuário postgres para criar/migrar o banco descartável; o guard de
+    // runtime é validado pelo Compose/VPS, não por este teste.
+    properties.add("app.security.require-runtime-role", () -> "false");
   }
   @Autowired AuthService auth;
   @Autowired EmailTokenRepository emailTokens;
@@ -51,6 +59,8 @@ class SecurityIntegrationTest {
   @Autowired com.storyverse.api.ai.AiMetrics aiMetrics;
   @Autowired com.storyverse.api.ai.AiCache aiCache;
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
+  @Autowired RateLimitGate rateLimits;
+  @Autowired AccountService account;
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
 
@@ -63,6 +73,40 @@ class SecurityIntegrationTest {
       assertNotEquals(a.get(10,TimeUnit.SECONDS), b.get(10,TimeUnit.SECONDS));
     }
   }
+  @Test void reusingAnOldRefreshTokenRevokesTheSessionFamily() {
+    AuthResponse first=user();
+    AuthResponse renewed=auth.refresh(first.refreshToken());
+
+    AuthException reused=assertThrows(AuthException.class,()->auth.refresh(first.refreshToken()));
+    assertEquals("AUTH_REFRESH_REUSED",reused.code());
+    assertThrows(AuthException.class,()->auth.refresh(renewed.refreshToken()));
+    assertThrows(AuthException.class,()->auth.authenticate(renewed.accessToken()));
+  }
+
+  @Test void accountExportIncludesDataAndDeleteRemovesUserAndFiles() throws Exception {
+    AuthResponse session=user(); UUID uid=id(session);
+    jdbc.sql("insert into public.reading_state(user_id,data) values(:id,'{\"x\":1}'::jsonb)")
+        .param("id",uid).update();
+    storage.write(uid,StorageBucket.PROFILE_MEDIA,uid+"/avatar","image/jpeg",
+        new byte[]{(byte)0xFF,(byte)0xD8,(byte)0xFF,0x00});
+
+    var exported=account.export(session.accessToken());
+    assertEquals(uid.toString(),((com.storyverse.api.auth.UserResponse)exported.get("user")).id());
+    assertTrue(String.valueOf(exported.get("readingState")).contains("\"x\""));
+
+    account.delete(session.accessToken(),"test-secret");
+    assertEquals(0,jdbc.sql("select count(*) from auth.users where id=:id").param("id",uid)
+        .query(Integer.class).single());
+    assertTrue(Files.notExists(media.resolve("profile-media").resolve(uid.toString())));
+    assertThrows(AuthException.class,()->auth.authenticate(session.accessToken()));
+  }
+
+  @Test void persistentRateLimitIsSharedAndRejectsAfterTheLimit() {
+    String key="integration-rate:"+UUID.randomUUID();
+    rateLimits.check(key,1,Duration.ofMinutes(1));
+    assertThrows(AuthException.class,()->rateLimits.check(key,1,Duration.ofMinutes(1)));
+  }
+
   @Test void logoutWithRotatedTokenRevokesTheStableSession() {
     AuthResponse old=user(), renewed=auth.refresh(old.refreshToken());
     auth.logout(old.refreshToken(),old.accessToken());
@@ -86,8 +130,9 @@ class SecurityIntegrationTest {
   @Test void quotaIsAtomicAcrossConcurrentUploads() throws Exception {
     AuthResponse user=user();
     try (ExecutorService executor=Executors.newFixedThreadPool(2)) {
-      Callable<Boolean> a=()->{try{storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/a.txt","text/plain",new byte[1500]);return true;}catch(AuthException e){return false;}};
-      Callable<Boolean> b=()->{try{storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/b.txt","text/plain",new byte[1500]);return true;}catch(AuthException e){return false;}};
+      byte[] content=("x").repeat(1500).getBytes();
+      Callable<Boolean> a=()->{try{storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/a.txt","text/plain",content);return true;}catch(AuthException e){return false;}};
+      Callable<Boolean> b=()->{try{storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/b.txt","text/plain",content);return true;}catch(AuthException e){return false;}};
       Future<Boolean> one=executor.submit(a), two=executor.submit(b);
       assertNotEquals(one.get(10,TimeUnit.SECONDS),two.get(10,TimeUnit.SECONDS));
     }
@@ -234,8 +279,10 @@ class SecurityIntegrationTest {
     assertEquals("credit",first.source());
     assertEquals(0,first.quota().remaining());
     assertEquals(19,first.quota().credits());
-    var duplicate=aiBudget.reserve(uid,request);
-    assertEquals(19,duplicate.quota().credits());
+    AuthException replay=assertThrows(AuthException.class,()->aiBudget.reserve(uid,request));
+    assertEquals(409,replay.status());
+    assertEquals("AI_REQUEST_REPLAYED",replay.code());
+    assertEquals(19,aiBudget.quota(uid).credits());
 
     var quota=(List<Map<String,Object>>)rpc.call(uid,"my_ai_quota",Map.of("p_daily_limit",50));
     assertEquals(19,((Number)quota.get(0).get("credits")).intValue());
@@ -375,7 +422,8 @@ class SecurityIntegrationTest {
     String coverPath=id(owner)+"/livros/cover";
     String coverUrl="https://api.example.test/api/v1/storage/public/profile-media/"+coverPath;
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","bye".getBytes());
-    storage.write(id(owner),StorageBucket.PROFILE_MEDIA,coverPath,"image/jpeg",new byte[]{1});
+    storage.write(id(owner),StorageBucket.PROFILE_MEDIA,coverPath,"image/jpeg",
+        new byte[]{(byte)0xFF,(byte)0xD8,(byte)0xFF,0x00});
     var submission=community.create(owner.accessToken(),Map.of("title","Bye","text_path",path,"rights","own_work","cover_url",coverUrl));
     UUID submissionId=UUID.fromString(submission.get("id").toString());
     assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isPresent());

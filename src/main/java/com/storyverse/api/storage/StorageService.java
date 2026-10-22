@@ -1,12 +1,17 @@
 package com.storyverse.api.storage;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -76,6 +81,8 @@ public class StorageService {
 			if (written == 0) {
 				throw new AuthException(400, "Arquivo vazio.");
 			}
+			// O Content-Type é declarado pelo cliente: confere os bytes reais antes de publicar.
+			validateContent(temporary, type);
 			// O Content-Length pode mentir: reconfere a quota com o tamanho realmente recebido.
 			ensureQuota(userId, target, written);
 			Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
@@ -107,6 +114,47 @@ public class StorageService {
 		if (total - (existing ? Files.size(target) : 0) + incoming > quotaBytes
 				|| count + (existing ? 0 : 1) > quotaObjects)
 			throw new AuthException(413, "Limite de armazenamento da conta atingido.");
+	}
+
+	/**
+	 * Confere a assinatura real do arquivo. Impede que um cliente direto envie HTML/JS/binário
+	 * rotulado como imagem ou texto e ele seja servido com o tipo declarado.
+	 */
+	static void validateContent(Path file, String type) throws IOException {
+		byte[] head = new byte[12];
+		int n;
+		try (java.io.InputStream input = Files.newInputStream(file)) {
+			n = input.readNBytes(head, 0, head.length);
+		}
+		boolean ok = switch (type) {
+			case "image/jpeg" -> n >= 3 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xFF) == 0xD8
+					&& (head[2] & 0xFF) == 0xFF;
+			case "image/png" -> n >= 8 && (head[0] & 0xFF) == 0x89 && head[1] == 'P' && head[2] == 'N'
+					&& head[3] == 'G' && head[4] == 0x0D && head[5] == 0x0A && head[6] == 0x1A && head[7] == 0x0A;
+			case "image/webp" -> n >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F'
+					&& head[3] == 'F' && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P';
+			case "application/gzip" -> n >= 2 && (head[0] & 0xFF) == 0x1F && (head[1] & 0xFF) == 0x8B;
+			case "text/plain" -> isText(file);
+			default -> false;
+		};
+		if (!ok) throw new AuthException(415, "O conteúdo do arquivo não corresponde ao formato.");
+	}
+
+	private static boolean isText(Path file) throws IOException {
+		byte[] buffer = new byte[64 * 1024];
+		try (java.io.InputStream input = Files.newInputStream(file)) {
+			int read;
+			while ((read = input.read(buffer)) != -1) {
+				for (int i = 0; i < read; i++) {
+					int value = buffer[i] & 0xFF;
+					if (value == 0 || value == 0x7F
+							|| value < 0x20 && value != '\t' && value != '\n' && value != '\r' && value != '\f') {
+						return false;
+					}
+				}
+			}
+		}
+		return true;
 	}
 
 	private static long copyBounded(java.io.InputStream input, Path target, long maxBytes) throws IOException {
@@ -170,6 +218,44 @@ public class StorageService {
 			Files.deleteIfExists(target);
 		} catch (IOException exception) {
 			throw new UncheckedIOException("Falha ao apagar o arquivo", exception);
+		}
+	}
+
+	/** Remove todos os arquivos de todas as pastas da conta (exclusão de conta). */
+	@Transactional
+	public void deleteAllForUser(UUID userId) {
+		access.lock("storage-owner:" + userId);
+		for (StorageBucket bucket : StorageBucket.values()) {
+			Path folder = baseDir.resolve(bucket.id()).resolve(userId.toString());
+			if (!Files.exists(folder)) continue;
+			try (var paths = Files.walk(folder)) {
+				for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+					Files.deleteIfExists(path);
+				}
+			} catch (IOException exception) {
+				throw new UncheckedIOException("Falha ao apagar os arquivos da conta", exception);
+			}
+		}
+	}
+
+	/** Exporta todos os arquivos da conta em um ZIP (portabilidade de dados). */
+	public void writeExportZip(UUID userId, OutputStream output) throws IOException {
+		try (ZipOutputStream zip = new ZipOutputStream(output)) {
+			for (StorageBucket bucket : StorageBucket.values()) {
+				Path folder = baseDir.resolve(bucket.id()).resolve(userId.toString());
+				if (!Files.exists(folder)) continue;
+				List<Path> files;
+				try (var paths = Files.walk(folder)) {
+					files = paths.filter(Files::isRegularFile).toList();
+				}
+				for (Path file : files) {
+					String relative = folder.relativize(file).toString().replace('\\', '/');
+					zip.putNextEntry(new ZipEntry(bucket.id() + "/" + relative));
+					Files.copy(file, zip);
+					zip.closeEntry();
+				}
+			}
+			zip.finish();
 		}
 	}
 

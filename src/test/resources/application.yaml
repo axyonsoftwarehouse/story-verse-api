@@ -5,3 +5,8 @@ spring:
     password: ""
   flyway:
     enabled: false
+
+app:
+  rate-limit:
+    # Testes unitários usam H2 sem a tabela api_rate_limits; o fallback local é exercitado.
+    persistent: false

@@ -50,7 +50,8 @@ public class MailService {
 	}
 
 	public void sendConfirmation(String email, String token) {
-		String link = publicUrl + "/confirmar-email?token=" + token;
+		// Fragmento (#) não é enviado ao servidor/proxy nem aparece em logs de acesso.
+		String link = publicUrl + "/confirmar-email#token=" + token;
 		send(email, "Confirme seu e-mail no Storyverse", """
 				Confirme seu e-mail para ativar sua conta no Storyverse:
 				%s
@@ -64,7 +65,7 @@ public class MailService {
 	}
 
 	public void sendPasswordReset(String email, String token) {
-		String link = publicUrl + "/redefinir-senha?token=" + token;
+		String link = publicUrl + "/redefinir-senha#token=" + token;
 		send(email, "Redefinir sua senha no Storyverse", """
 				Recebemos um pedido para redefinir a senha da sua conta no Storyverse:
 				%s
@@ -74,6 +75,19 @@ public class MailService {
 				<p>Recebemos um pedido para redefinir a senha da sua conta no <strong>Storyverse</strong>.</p>
 				<p><a href="%s">Criar uma senha nova</a></p>
 				<p>O link vale por 1 hora. Se você não pediu, ignore esta mensagem.</p>
+				""".formatted(link));
+	}
+
+	/** Aviso para quem tentou cadastrar um e-mail que já tem conta (sem revelar isso na API). */
+	public void sendExistingAccount(String email) {
+		String link = publicUrl + "/";
+		send(email, "Sua conta no Storyverse já existe", """
+				Você (ou alguém) tentou criar uma conta com este e-mail, mas ela já existe.
+				Entre normalmente em %s; se esqueceu a senha, use "Esqueci minha senha" na tela de entrada.
+				""".formatted(link), """
+				<p>Você (ou alguém) tentou criar uma conta com este e-mail, mas ela já existe.</p>
+				<p><a href="%s">Entrar no Storyverse</a></p>
+				<p>Se esqueceu a senha, use <strong>Esqueci minha senha</strong> na tela de entrada.</p>
 				""".formatted(link));
 	}
 

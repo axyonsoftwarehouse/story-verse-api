@@ -20,9 +20,15 @@ public class CommunityRepository {
 	}
 
 	public List<Map<String, Object>> listApproved() {
-		return DbRows.list(jdbc,
-				"select * from public.book_submissions where status = 'approved' order by reviewed_at desc nulls last",
-				Map.of());
+		// A estante é pública: não devolva review_note/reviewed_by (notas internas e identidade
+		// do moderador). Esses campos só aparecem em "mine" e na fila de moderação.
+		return DbRows.list(jdbc, """
+				select id, user_id, submitter_name, title, author, language, rights, rights_note,
+				       characters, text_path, char_count, status, reviewed_at, cover_url, created_at
+				  from public.book_submissions
+				 where status = 'approved'
+				 order by reviewed_at desc nulls last
+				""", Map.of());
 	}
 
 	public List<Map<String, Object>> listMine(UUID userId) {
