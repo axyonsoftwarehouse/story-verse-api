@@ -3,6 +3,9 @@ package com.storyverse.api.library;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -65,6 +68,53 @@ public class LibraryRepository {
 				.param("userId", userId)
 				.param("bookKey", bookKey)
 				.update();
+	}
+
+	/**
+	 * Uma página da estante (até `limit` linhas). `orderBy` vem de uma lista fixa no serviço; os valores
+	 * do cliente entram só como parâmetros.
+	 */
+	public List<LibraryEntry> list(UUID userId, LibraryQuery q, List<String> statuses, String orderBy,
+			LibraryCursor cursor, int limit) {
+		StringBuilder sql = new StringBuilder("select " + COLUMNS + " from public.library_entries where user_id = :userId");
+		Map<String, Object> params = new HashMap<>();
+		params.put("userId", userId);
+		if (q.updatedSince() != null) {
+			sql.append(" and updated_at > cast(:since as timestamptz)");
+			params.put("since", q.updatedSince());
+		} else {
+			sql.append(" and deleted_at is null");
+			if (!statuses.isEmpty()) {
+				sql.append(" and status in (:statuses)");
+				params.put("statuses", statuses);
+			}
+			filter(sql, params, q.author(), " and lower(author) = lower(:author)", "author");
+			filter(sql, params, q.series(), " and lower(series) = lower(:series)", "series");
+			filter(sql, params, q.language(), " and language = :language", "language");
+			filter(sql, params, q.genre(), " and genre = :genre and genre <> 'Da comunidade'", "genre");
+			filter(sql, params, q.year(), " and extract(year from finished_on) = :year", "year");
+			filter(sql, params, q.minRating(), " and rating >= :minRating", "minRating");
+			filter(sql, params, q.maxRating(), " and rating <= :maxRating", "maxRating");
+		}
+		if (cursor != null && !cursor.isOffset()) {
+			sql.append(" and (updated_at, book_key) < (cast(:cursorAt as timestamptz), :cursorKey)");
+			params.put("cursorAt", cursor.updatedAt());
+			params.put("cursorKey", cursor.bookKey());
+		}
+		sql.append(" order by ").append(orderBy).append(" limit :limit");
+		params.put("limit", limit);
+		if (cursor != null && cursor.isOffset()) {
+			sql.append(" offset :offset");
+			params.put("offset", cursor.offset());
+		}
+		return jdbc.sql(sql.toString()).params(params).query(LibraryRepository::map).list();
+	}
+
+	private static void filter(StringBuilder sql, Map<String, Object> params, Object value, String clause, String name) {
+		if (value != null) {
+			sql.append(clause);
+			params.put(name, value);
+		}
 	}
 
 	public int countLive(UUID userId) {

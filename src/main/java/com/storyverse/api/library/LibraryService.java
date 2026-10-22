@@ -4,10 +4,13 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -27,6 +30,18 @@ public class LibraryService {
 
 	static final String FEATURE = "library";
 	static final int MAX_ENTRIES = 5000;
+	static final int DEFAULT_LIMIT = 50;
+	static final int MAX_LIMIT = 100;
+	/** Colunas de ordenação permitidas; o cliente escolhe só a chave. */
+	private static final Map<String, String> ORDER = Map.of(
+			"recent", "updated_at desc, book_key desc",
+			"title", "lower(title), book_key",
+			"author", "lower(author) nulls last, book_key",
+			"rating", "rating desc nulls last, book_key",
+			"finished", "finished_on desc nulls last, book_key");
+	/** Texto de `updated_at` como o Postgres devolve (o mesmo que a API entrega em `updatedAt`). */
+	private static final Pattern TIMESTAMP = Pattern.compile(
+			"^\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?([+-]\\d{2}(:?\\d{2})?|Z)?$");
 
 	private final LibraryRepository repository;
 	private final AuthService auth;
@@ -83,6 +98,51 @@ public class LibraryService {
 		}
 		return repository.replaceIfMatches(userId, candidate, request.baseUpdatedAt())
 				.orElseThrow(() -> conflict(userId, key.value()));
+	}
+
+	@Transactional(readOnly = true)
+	public LibraryPage list(String accessToken, LibraryQuery query) {
+		UUID userId = open(accessToken);
+		LibraryQuery q = query == null
+				? new LibraryQuery(null, null, null, null, null, null, null, null, null, null, null, null)
+				: query;
+		// O sync lê tudo o que mudou, em ordem de gravação; os filtros de tela não se aplicam.
+		String sort = q.updatedSince() != null || q.sort() == null ? "recent" : q.sort();
+		String orderBy = ORDER.get(sort);
+		if (orderBy == null) {
+			throw new AuthException(400, "Ordenação inválida.");
+		}
+		int limit = q.limit() == null ? DEFAULT_LIMIT : Math.min(q.limit(), MAX_LIMIT);
+		if (limit < 1) {
+			throw new AuthException(400, "Limite inválido.");
+		}
+		List<String> statuses = new ArrayList<>();
+		for (String item : q.status() == null ? List.<String>of() : q.status()) {
+			for (String status : item.split(",")) {
+				String trimmed = status.trim();
+				if (!LibraryRules.STATUSES.contains(trimmed)) {
+					throw new AuthException(400, "Status inválido.");
+				}
+				statuses.add(trimmed);
+			}
+		}
+		if (q.updatedSince() != null && !TIMESTAMP.matcher(q.updatedSince()).matches()) {
+			throw new AuthException(400, "updatedSince inválido.");
+		}
+		LibraryCursor cursor = LibraryCursor.decode(q.cursor());
+		if (cursor != null && (cursor.isOffset() == "recent".equals(sort)
+				|| (!cursor.isOffset() && !TIMESTAMP.matcher(cursor.updatedAt()).matches()))) {
+			throw new AuthException(400, "Cursor inválido.");
+		}
+		List<LibraryEntry> rows = repository.list(userId, q, statuses, orderBy, cursor, limit + 1);
+		if (rows.size() <= limit) {
+			return new LibraryPage(rows, null);
+		}
+		List<LibraryEntry> items = rows.subList(0, limit);
+		LibraryCursor next = "recent".equals(sort)
+				? LibraryCursor.after(items.get(limit - 1))
+				: LibraryCursor.at((cursor == null ? 0 : cursor.offset()) + limit);
+		return new LibraryPage(List.copyOf(items), next.encode());
 	}
 
 	/** Muda só os campos presentes no corpo (null limpa). Exige `baseUpdatedAt`. */

@@ -156,4 +156,51 @@ class LibraryIntegrationTest {
     assertEquals(404,status(()->library.delete(s.accessToken(),"gb:2")));
     assertNull(library.put(s.accessToken(),"gb:1",write("reading",null)).deletedAt());
   }
+
+  /** Filtros da listagem, um por vez. */
+  static final class Q {
+    List<String> status; String genre, sort, cursor, updatedSince; Integer limit;
+    Q status(String s) { status=List.of(s); return this; }
+    Q genre(String g) { genre=g; return this; }
+    Q sort(String s) { sort=s; return this; }
+    Q cursor(String c) { cursor=c; return this; }
+    Q limit(int l) { limit=l; return this; }
+    Q updatedSince(String u) { updatedSince=u; return this; }
+    LibraryQuery build() { return new LibraryQuery(status,null,null,null,genre,null,null,null,sort,cursor,limit,updatedSince); }
+  }
+  static Q query() { return new Q(); }
+
+  @Test void listsWithFiltersSortAndCursor() {
+    AuthResponse s=userSession(); grant(id(s));
+    for(int i=1;i<=5;i++) library.put(s.accessToken(),"gb:"+i,w(i%2==0?"finished":"reading",null).withTitle("T"+i).build());
+    LibraryPage p1=library.list(s.accessToken(),query().limit(2).build());
+    LibraryPage p2=library.list(s.accessToken(),query().limit(2).cursor(p1.nextCursor()).build());
+    LibraryPage p3=library.list(s.accessToken(),query().limit(2).cursor(p2.nextCursor()).build());
+    assertEquals(2,p1.items().size()); assertEquals(2,p2.items().size()); assertEquals(1,p3.items().size());
+    assertNull(p3.nextCursor());
+    Set<String> seen=new HashSet<>();
+    for(LibraryPage p:List.of(p1,p2,p3)) p.items().forEach(e->assertTrue(seen.add(e.bookKey())));
+    assertEquals(2,library.list(s.accessToken(),query().status("finished").build()).items().size());
+    LibraryPage byTitle=library.list(s.accessToken(),query().sort("title").limit(3).build());
+    assertEquals("T1",byTitle.items().get(0).title());
+    assertEquals("T4",library.list(s.accessToken(),query().sort("title").limit(3).cursor(byTitle.nextCursor()).build()).items().get(0).title());
+    assertEquals(400,status(()->library.list(s.accessToken(),query().sort("xyz").build())));
+    assertEquals(400,status(()->library.list(s.accessToken(),query().cursor("lixo").build())));
+  }
+  @Test void syncSeesDeletionsFromAnotherDevice() {
+    AuthResponse s=userSession(); grant(id(s));
+    LibraryEntry e=library.put(s.accessToken(),"gb:1",write("reading",null));
+    library.delete(s.accessToken(),"gb:1");
+    assertTrue(library.list(s.accessToken(),query().build()).items().isEmpty());
+    LibraryEntry tomb=library.list(s.accessToken(),query().updatedSince(e.updatedAt()).build()).items().get(0);
+    assertNotNull(tomb.deletedAt());
+    assertEquals(400,status(()->library.list(s.accessToken(),query().updatedSince("ontem").build())));
+  }
+  @Test void communityLabelIsNotAGenre() {
+    AuthResponse s=userSession(); grant(id(s));
+    library.put(s.accessToken(),"gb:1",w("reading",null).withGenre("Da comunidade").build());
+    library.put(s.accessToken(),"gb:2",w("reading",null).withGenre("Romance").build());
+    assertTrue(library.list(s.accessToken(),query().genre("Da comunidade").build()).items().isEmpty());
+    assertEquals(1,library.list(s.accessToken(),query().genre("Romance").build()).items().size());
+  }
 }
