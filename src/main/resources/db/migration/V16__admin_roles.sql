@@ -28,3 +28,13 @@ create policy "admin revisa" on public.book_submissions
 drop policy if exists "remover envio" on public.book_submissions;
 create policy "remover envio" on public.book_submissions
   for delete using (public.can_moderate() or (auth.uid() = user_id and status = 'pending'));
+
+-- O suporte vê papéis e features de qualquer conta (painel de contas). Só leitura: as políticas
+-- de escrita continuam só para superadmin.
+drop policy if exists "cada um ve seus papeis" on public.user_roles;
+create policy "cada um ve seus papeis" on public.user_roles
+  for select using (user_id = auth.uid() or public.has_role('superadmin') or public.has_role('support'));
+
+drop policy if exists "cada um ve suas features" on public.feature_access;
+create policy "cada um ve suas features" on public.feature_access
+  for select using (user_id = auth.uid() or public.has_role('superadmin') or public.has_role('support'));
