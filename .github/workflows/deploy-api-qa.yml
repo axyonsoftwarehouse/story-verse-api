@@ -1,0 +1,69 @@
+name: Deploy API QA (VPS)
+
+# API do ambiente de QA: https://api.qa.storyverse.2.29.42.104.sslip.io (stack storyverse-qa na VPS,
+# banco próprio, dados de teste). Publica em push no branch `qa` ou à mão:
+#   gh workflow run deploy-api-qa.yml -f ref=feat/minha-branch
+# Manual: story-verse-web, docs/QA.md.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag ou commit para publicar no QA
+        required: true
+        default: main
+  push:
+    branches: [qa]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: deploy-api-qa
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Definir a imagem (tag qa-<sha>)
+        run: echo "IMAGE=ghcr.io/axyonsoftwarehouse/story-verse-api:qa-$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build e publica a imagem (GHCR)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Instalar cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Assinar imagem (keyless)
+        run: cosign sign --yes "$IMAGE"
+
+      - name: Configurar chave SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          test -n "$VPS_KNOWN_HOSTS" || { echo "Configure VPS_KNOWN_HOSTS com a chave verificada da VPS"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Atualizar a API de QA na VPS
+        run: |
+          # O SHA fica no .env de QA: um restart manual não volta para outra imagem.
+          ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "cd /home/deploy/storyverse-qa && sed -i 's|^API_IMAGE=.*|API_IMAGE=$IMAGE|' .env && docker compose --project-name storyverse-qa config --quiet && docker compose --project-name storyverse-qa pull api && docker compose --project-name storyverse-qa up -d api && docker compose --project-name storyverse-qa ps api"
+
+      - name: Conferir o health da API de QA
+        run: |
+          ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.qa.storyverse.2.29.42.104.sslip.io/api/v1/health/ready'
