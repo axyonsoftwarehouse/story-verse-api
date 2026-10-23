@@ -405,7 +405,12 @@ class AdminIntegrationTest {
             .andExpect(MockMvcResultMatchers.status().is(expected)).andReturn().getResponse().getContentAsString();
       } catch (Exception e) { throw new RuntimeException(e); }
     };
-    return runtime ? asRuntime(actor,call) : call.get();
+    if (!runtime) return call.get();
+    // Resposta de erro marca a transação do asRuntime como rollback-only: o status já foi checado dentro dela.
+    java.util.concurrent.atomic.AtomicReference<String> out=new java.util.concurrent.atomic.AtomicReference<>();
+    try { asRuntime(actor,()->{ out.set(call.get()); return null; }); }
+    catch (org.springframework.transaction.UnexpectedRollbackException e) { if (expected==200) throw e; }
+    return out.get();
   }
   long libraryCount(String bearer, boolean runtime, UUID actor) throws Exception {
     String json=body(bearer,"/api/v1/admin/features/catalog",runtime,actor,200);
