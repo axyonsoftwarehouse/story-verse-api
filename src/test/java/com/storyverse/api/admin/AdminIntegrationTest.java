@@ -409,7 +409,7 @@ class AdminIntegrationTest {
   }
   long libraryCount(String bearer, boolean runtime, UUID actor) throws Exception {
     String json=body(bearer,"/api/v1/admin/features/catalog",runtime,actor,200);
-    return ((Number) new tools.jackson.databind.json.JsonMapper().readValue(json,List.class).stream()
+    return ((Number) ((List<?>) new tools.jackson.databind.json.JsonMapper().readValue(json,List.class)).stream()
         .map(o->(Map<?,?>) o).filter(m->"library".equals(m.get("feature"))).findFirst().orElseThrow().get("enabledCount")).longValue();
   }
   @Test void catalogCountsEnabledOnly() throws Exception {
