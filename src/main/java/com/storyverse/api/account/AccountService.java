@@ -63,6 +63,12 @@ public class AccountService {
 				       cover_url, created_at, reviewed_at
 				  from public.book_submissions where user_id = :uid order by created_at
 				""", Map.of("uid", userId)));
+		out.put("library", DbRows.list(jdbc, """
+				select book_key, source, status, rating, review, started_on, finished_on, dnf_reason, dnf_note,
+				       progress_percent, progress_label, title, author, cover_url, series, series_index, genre,
+				       language, created_at, updated_at, deleted_at
+				  from public.library_entries where user_id = :uid order by updated_at
+				""", Map.of("uid", userId)));
 		return out;
 	}
 
