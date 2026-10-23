@@ -485,13 +485,15 @@ class AdminIntegrationTest {
   }
   // ---- visão geral ----
   @Autowired AdminOverviewService overview;
-  void insertReport() {
+  /** Outros testes contam denúncias pendentes no banco inteiro: quem insere aqui apaga depois. */
+  UUID insertReport() {
     UUID reporter=id(user());
-    jdbc.sql("insert into public.forum_reports(reporter_id,target_type,target_id,reason_code) values(:r,'topic',gen_random_uuid(),'spam')").param("r",reporter).update();
+    return jdbc.sql("insert into public.forum_reports(reporter_id,target_type,target_id,reason_code) values(:r,'topic',gen_random_uuid(),'spam') returning id").param("r",reporter).query(UUID.class).single();
   }
   @Test void moderatorSeesOnlyModeration() throws Exception {
     AuthResponse moderator=userWithRole("moderator"); UUID mid=id(moderator);
-    pendingSubmission(); insertReport();
+    pendingSubmission(); UUID report=insertReport();
+    try {
     for (boolean runtime : new boolean[]{false,true}) {
       AdminOverview o=runtime?asRuntime(mid,()->overview.overview(moderator.accessToken())):overview.overview(moderator.accessToken());
       assertNotNull(o.moderation());
@@ -504,6 +506,7 @@ class AdminIntegrationTest {
     String json=body("Bearer "+moderator.accessToken(),"/api/v1/admin/overview",true,mid,200);
     Map<?,?> parsed=new tools.jackson.databind.json.JsonMapper().readValue(json,Map.class);
     assertNotNull(parsed.get("moderation")); assertNull(parsed.get("backup"));
+    } finally { jdbc.sql("delete from public.forum_reports where id=:id").param("id",report).update(); }
   }
   @Test void supportSeesOnlyAccounts() {
     AuthResponse support=userWithRole("support"); UUID sid=id(support);
