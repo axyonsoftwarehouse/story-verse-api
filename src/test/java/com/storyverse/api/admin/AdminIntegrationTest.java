@@ -14,6 +14,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
@@ -274,5 +276,123 @@ class AdminIntegrationTest {
     UUID unknown=UUID.randomUUID();
     assertEquals(404,status(()->users.detail(support.accessToken(),unknown)));
     assertEquals(0,audits("user.view",unknown));
+  }
+
+  // --- Contas: encerrar sessões e papéis ---
+  List<String> rolesOf(UUID uid) {
+    return jdbc.sql("select role from public.user_roles where user_id=:id order by role").param("id",uid).query(String.class).list();
+  }
+  int auditsWithRole(String action, UUID target, String role) {
+    return jdbc.sql("select count(*) from public.admin_audit_log where action=:action and target_id=:target and metadata->>'role'=:role")
+        .param("action",action).param("target",target.toString()).param("role",role).query(Integer.class).single();
+  }
+
+  @Test void supportRevokesSessions() {
+    AuthResponse target=user(); UUID targetId=id(target);
+    AuthResponse support=userWithRole("support");
+    assertEquals(targetId,auth.authenticate(target.accessToken()));
+    Map<String,Object> result=asRuntime(id(support),()->users.revokeSessions(support.accessToken(),targetId));
+    assertEquals(1,result.get("revoked"));
+    assertEquals(401,status(()->auth.authenticate(target.accessToken())));
+    assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where action='user.sessions.revoke' and target_id=:t and actor_id=:a and (metadata->>'count')::int=1")
+        .param("t",targetId.toString()).param("a",id(support)).query(Integer.class).single());
+    assertEquals(id(support),auth.authenticate(support.accessToken()));
+  }
+  @Test void cannotRevokeOwnSessions() {
+    AuthResponse support=userWithRole("support"), superadmin=userWithRole("superadmin");
+    assertEquals(403,status(()->asRuntime(id(support),()->users.revokeSessions(support.accessToken(),id(support)))));
+    assertEquals(403,status(()->users.revokeSessions(superadmin.accessToken(),id(superadmin))));
+    assertEquals(id(support),auth.authenticate(support.accessToken()));
+    assertEquals(0,audits("user.sessions.revoke",id(support)));
+  }
+  @Test void revokeSessionsPermissions() {
+    UUID target=id(user());
+    AuthResponse moderator=userWithRole("moderator"), plain=user(), support=userWithRole("support");
+    assertEquals(403,status(()->asRuntime(id(moderator),()->users.revokeSessions(moderator.accessToken(),target))));
+    assertEquals(403,status(()->asRuntime(id(plain),()->users.revokeSessions(plain.accessToken(),target))));
+    UUID unknown=UUID.randomUUID();
+    assertEquals(404,status(()->asRuntime(id(support),()->users.revokeSessions(support.accessToken(),unknown))));
+    assertEquals(0,audits("user.sessions.revoke",target));
+  }
+  @Test void superadminGrantsModeratorToConfirmedAccount() {
+    UUID target=id(user());
+    AuthResponse superadmin=userWithRole("superadmin");
+    Map<String,Object> granted=asRuntime(id(superadmin),()->users.grantRole(superadmin.accessToken(),target,"moderator"));
+    assertEquals(List.of("moderator"),granted.get("roles"));
+    assertEquals(List.of("moderator"),rolesOf(target));
+    assertEquals(id(superadmin),jdbc.sql("select granted_by from public.user_roles where user_id=:id and role='moderator'").param("id",target).query(UUID.class).single());
+    assertEquals(1,auditsWithRole("role.grant",target,"moderator"));
+    Map<String,Object> revoked=asRuntime(id(superadmin),()->users.revokeRole(superadmin.accessToken(),target,"moderator"));
+    assertEquals(List.of(),revoked.get("roles"));
+    assertEquals(List.of(),rolesOf(target));
+    assertEquals(1,auditsWithRole("role.revoke",target,"moderator"));
+  }
+  @Test void grantToUnconfirmedAccountIs409() {
+    UUID target=id(user()); unconfirmEmail(target);
+    AuthResponse superadmin=userWithRole("superadmin");
+    assertEquals(409,status(()->users.grantRole(superadmin.accessToken(),target,"support")));
+    assertEquals(List.of(),rolesOf(target));
+    assertEquals(0,audits("role.grant",target));
+    // Tirar papel de conta sem e-mail confirmado continua possível.
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'support')").param("id",target).update();
+    assertEquals(List.of(),users.revokeRole(superadmin.accessToken(),target,"support").get("roles"));
+    assertEquals(404,status(()->users.grantRole(superadmin.accessToken(),UUID.randomUUID(),"support")));
+  }
+  @Test void grantingSuperadminIs400() {
+    UUID target=id(user());
+    AuthResponse superadmin=userWithRole("superadmin");
+    assertEquals(400,status(()->users.grantRole(superadmin.accessToken(),target,"superadmin")));
+    assertEquals(400,status(()->users.grantRole(superadmin.accessToken(),target,"admin")));
+    assertEquals(List.of(),rolesOf(target));
+    UUID otherSuperadmin=withRole("superadmin");
+    assertEquals(400,status(()->users.revokeRole(superadmin.accessToken(),otherSuperadmin,"superadmin")));
+    assertEquals(List.of("superadmin"),rolesOf(otherSuperadmin));
+    // Tirar o próprio superadmin: o papel pedido é checado antes da própria conta.
+    assertEquals(400,status(()->users.revokeRole(superadmin.accessToken(),id(superadmin),"superadmin")));
+    assertEquals(List.of("superadmin"),rolesOf(id(superadmin)));
+    assertEquals(0,audits("role.grant",target)+audits("role.revoke",otherSuperadmin)+audits("role.revoke",id(superadmin)));
+  }
+  @Test void changingOwnRolesIs403() {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID self=id(superadmin);
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'moderator')").param("id",self).update();
+    assertEquals(403,status(()->asRuntime(self,()->users.grantRole(superadmin.accessToken(),self,"support"))));
+    assertEquals(403,status(()->asRuntime(self,()->users.revokeRole(superadmin.accessToken(),self,"moderator"))));
+    assertEquals(List.of("moderator","superadmin"),rolesOf(self));
+    assertEquals(0,audits("role.grant",self)+audits("role.revoke",self));
+  }
+  @Test void supportCannotChangeRoles() {
+    UUID target=id(user());
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'moderator')").param("id",target).update();
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator");
+    assertEquals(403,status(()->asRuntime(id(support),()->users.grantRole(support.accessToken(),target,"support"))));
+    assertEquals(403,status(()->asRuntime(id(support),()->users.revokeRole(support.accessToken(),target,"moderator"))));
+    assertEquals(403,status(()->asRuntime(id(moderator),()->users.grantRole(moderator.accessToken(),target,"support"))));
+    // O papel do ator vem antes da validação do papel pedido.
+    assertEquals(403,status(()->asRuntime(id(support),()->users.grantRole(support.accessToken(),target,"superadmin"))));
+    assertEquals(List.of("moderator"),rolesOf(target));
+  }
+  @Test void idempotentGrantDoesNotAudit() {
+    UUID target=id(user());
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'support')").param("id",target).update();
+    AuthResponse superadmin=userWithRole("superadmin");
+    assertEquals(List.of("support"),asRuntime(id(superadmin),()->users.grantRole(superadmin.accessToken(),target,"support")).get("roles"));
+    assertEquals(List.of("support"),users.revokeRole(superadmin.accessToken(),target,"moderator").get("roles"));
+    assertEquals(0,audits("role.grant",target)+audits("role.revoke",target));
+  }
+  @Test void rolesAndSessionsOverHttp() throws Exception {
+    UUID target=id(user());
+    AuthResponse superadmin=userWithRole("superadmin");
+    String bearer="Bearer "+superadmin.accessToken();
+    mvc.perform(MockMvcRequestBuilders.put("/api/v1/admin/users/"+target+"/roles/support").header("Authorization",bearer))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(MockMvcResultMatchers.jsonPath("$.roles[0]").value("support"));
+    mvc.perform(MockMvcRequestBuilders.delete("/api/v1/admin/users/"+target+"/roles/support").header("Authorization",bearer))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(MockMvcResultMatchers.jsonPath("$.roles").isEmpty());
+    mvc.perform(MockMvcRequestBuilders.put("/api/v1/admin/users/"+target+"/roles/superadmin").header("Authorization",bearer))
+        .andExpect(MockMvcResultMatchers.status().isBadRequest());
+    mvc.perform(MockMvcRequestBuilders.post("/api/v1/admin/users/"+target+"/sessions/revoke").header("Authorization",bearer))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(MockMvcResultMatchers.jsonPath("$.revoked").value(1));
   }
 }

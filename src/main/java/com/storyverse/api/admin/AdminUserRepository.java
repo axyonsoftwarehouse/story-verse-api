@@ -109,6 +109,40 @@ public class AdminUserRepository {
 				}).list();
 	}
 
+	/** E-mail confirmado da conta; vazio se a conta não existe. */
+	public Optional<Boolean> emailConfirmed(UUID id) {
+		return jdbc.sql("select email_confirmed_at is not null from auth.users where id = :id")
+				.param("id", id).query(Boolean.class).optional();
+	}
+
+	/** Encerra as sessões ativas (mesma definição do detalhe) e devolve quantas foram encerradas. */
+	public int revokeActiveSessions(UUID userId) {
+		return jdbc.sql("""
+				update auth.sessions set revoked_at = now()
+				 where user_id = :id and revoked_at is null and refresh_expires_at > now()
+				""").param("id", userId).update();
+	}
+
+	/** Devolve 1 se o papel foi dado agora, 0 se a conta já o tinha. */
+	public int grantRole(UUID userId, String role, UUID grantedBy) {
+		return jdbc.sql("""
+				insert into public.user_roles (user_id, role, granted_by)
+				values (:id, :role, :by)
+				on conflict (user_id, role) do nothing
+				""").param("id", userId).param("role", role).param("by", grantedBy).update();
+	}
+
+	/** Devolve 1 se o papel foi tirado agora, 0 se a conta não o tinha. */
+	public int revokeRole(UUID userId, String role) {
+		return jdbc.sql("delete from public.user_roles where user_id = :id and role = :role")
+				.param("id", userId).param("role", role).update();
+	}
+
+	public List<String> roles(UUID userId) {
+		return jdbc.sql("select role from public.user_roles where user_id = :id order by role")
+				.param("id", userId).query(String.class).list();
+	}
+
 	static String escapeLike(String value) {
 		return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
 	}
