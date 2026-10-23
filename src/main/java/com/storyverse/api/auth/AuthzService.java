@@ -58,6 +58,7 @@ public class AuthzService {
 				.orElse(false));
 	}
 
+	@Transactional(readOnly = true)
 	public void requireRole(UUID userId, String... roles) {
 		for (String role : roles) {
 			if (hasRole(userId, role)) {
@@ -67,6 +68,7 @@ public class AuthzService {
 		throw new AuthException(403, "Sem permissao.");
 	}
 
+	@Transactional(readOnly = true)
 	public void requireStaff(UUID userId) {
 		if (!isStaff(userId)) {
 			throw new AuthException(403, "Sem permissao.");
