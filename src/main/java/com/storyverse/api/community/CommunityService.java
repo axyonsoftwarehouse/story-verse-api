@@ -22,7 +22,7 @@ import com.storyverse.api.storage.StorageAccess;
 /**
  * Acervo da comunidade. O runtime usa o papel `storyverse_api` (sem ownership), então a RLS
  * continua valendo; as regras explícitas abaixo são a primeira barreira, espelhando as policies
- * de supabase/community-books.sql.
+ * de book_submissions redefinidas na V16 (V16__admin_roles.sql), que usam public.can_moderate().
  */
 @Service
 public class CommunityService {
@@ -53,7 +53,7 @@ public class CommunityService {
 			case "mine" -> repository.listMine(requireUser(accessToken));
 			case "pending" -> {
 				UUID userId = requireUser(accessToken);
-				yield isAdmin(userId) ? repository.listPending() : repository.listPendingFor(userId);
+				yield canModerate(userId) ? repository.listPending() : repository.listPendingFor(userId);
 			}
 			default -> throw new AuthException(400, "Consulta inválida.");
 		};
@@ -96,7 +96,7 @@ public class CommunityService {
 	@Transactional
 	public Map<String, Object> review(String accessToken, UUID id, Map<String, Object> body) {
 		UUID userId = requireUser(accessToken);
-		if (!isAdmin(userId)) {
+		if (!canModerate(userId)) {
 			throw new AuthException(403, "Sem permissão para revisar envios.");
 		}
 		Map<String, Object> candidate = repository.find(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
@@ -135,7 +135,7 @@ public class CommunityService {
 	public Map<String, Object> updateCover(String accessToken, UUID id, Map<String, Object> body) {
 		UUID userId = requireUser(accessToken);
 		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
-		if (!isOwner(row, userId) && !isAdmin(userId)) {
+		if (!isOwner(row, userId) && !canModerate(userId)) {
 			throw new AuthException(403, "Sem permissão para trocar a capa.");
 		}
 		String cover = covers.require(text(body.get("cover_url")));
@@ -157,7 +157,7 @@ public class CommunityService {
 		access.lockCommunity(textPath);
 		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
 		boolean pending = "pending".equals(row.get("status"));
-		if (!isAdmin(userId) && !(isOwner(row, userId) && pending)) {
+		if (!canModerate(userId) && !(isOwner(row, userId) && pending)) {
 			throw new AuthException(403, "Sem permissão para remover este envio.");
 		}
 		String authorId = String.valueOf(row.get("user_id"));
@@ -169,9 +169,9 @@ public class CommunityService {
 			storage.delete(userId, StorageBucket.PROFILE_MEDIA, coverPath);
 	}
 
-	private boolean isAdmin(UUID userId) {
+	private boolean canModerate(UUID userId) {
 		DbSession.setUser(jdbc, userId);
-		return Boolean.TRUE.equals(jdbc.sql("select public.is_admin()")
+		return Boolean.TRUE.equals(jdbc.sql("select public.can_moderate()")
 				.query((rs, rowNum) -> rs.getObject(1, Boolean.class))
 				.optional()
 				.orElse(false));
