@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -37,6 +38,21 @@ public class FeatureAdminController {
 		UUID actor = auth.authenticate(AuthTokens.bearer(authorization));
 		authz.requireRole(actor, AuthzService.SUPERADMIN);
 		return features.features(actor, userId);
+	}
+
+	@GetMapping("/catalog")
+	public List<FeatureCatalogEntry> catalog(
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		UUID actor = auth.authenticate(AuthTokens.bearer(authorization));
+		return features.catalog(actor);
+	}
+
+	@GetMapping("/{feature}/users")
+	public FeatureUsersPage users(@PathVariable String feature,
+			@RequestParam(required = false) String cursor,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		UUID actor = auth.authenticate(AuthTokens.bearer(authorization));
+		return features.usersWith(actor, feature, cursor);
 	}
 
 	@PutMapping

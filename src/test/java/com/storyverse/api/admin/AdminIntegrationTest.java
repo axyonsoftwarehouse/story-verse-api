@@ -22,6 +22,7 @@ import com.storyverse.api.auth.*;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.community.CommunityService;
 import com.storyverse.api.feature.FeatureAccessService;
+import com.storyverse.api.feature.FeatureUsersPage;
 import com.storyverse.api.rpc.RpcService;
 import com.storyverse.api.storage.*;
 
@@ -394,5 +395,87 @@ class AdminIntegrationTest {
     mvc.perform(MockMvcRequestBuilders.post("/api/v1/admin/users/"+target+"/sessions/revoke").header("Authorization",bearer))
         .andExpect(MockMvcResultMatchers.status().isOk())
         .andExpect(MockMvcResultMatchers.jsonPath("$.revoked").value(1));
+  }
+
+  // --- Features: catálogo e quem tem cada uma ---
+  String body(String bearer, String url, boolean runtime, UUID actor, int expected) {
+    Supplier<String> call=()->{
+      try {
+        return mvc.perform(MockMvcRequestBuilders.get(url).header("Authorization",bearer))
+            .andExpect(MockMvcResultMatchers.status().is(expected)).andReturn().getResponse().getContentAsString();
+      } catch (Exception e) { throw new RuntimeException(e); }
+    };
+    return runtime ? asRuntime(actor,call) : call.get();
+  }
+  long libraryCount(String bearer, boolean runtime, UUID actor) throws Exception {
+    String json=body(bearer,"/api/v1/admin/features/catalog",runtime,actor,200);
+    return ((Number) new tools.jackson.databind.json.JsonMapper().readValue(json,List.class).stream()
+        .map(o->(Map<?,?>) o).filter(m->"library".equals(m.get("feature"))).findFirst().orElseThrow().get("enabledCount")).longValue();
+  }
+  @Test void catalogCountsEnabledOnly() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String bearer="Bearer "+superadmin.accessToken();
+    long before=libraryCount(bearer,false,admin);
+    assertEquals(before,libraryCount(bearer,true,admin));
+    features.grant(admin,id(user()),"library",true);
+    features.grant(admin,id(user()),"library",false);
+    assertEquals(before+1,libraryCount(bearer,false,admin));
+    assertEquals(before+1,libraryCount(bearer,true,admin));
+    assertEquals(Set.of("library"),FeatureAccessService.known());
+    assertEquals(before+1,features.catalog(admin).stream().filter(e->e.feature().equals("library")).findFirst().orElseThrow().enabledCount());
+  }
+  @Test void featureUsersPaginates() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String bearer="Bearer "+superadmin.accessToken();
+    Set<UUID> mine=new HashSet<>();
+    for (int i=0;i<55;i++) { UUID uid=id(user()); mine.add(uid); features.grant(admin,uid,"library",true); }
+    UUID disabled=id(user()); features.grant(admin,disabled,"library",false);
+    Map<UUID,Integer> seen=new HashMap<>();
+    String cursor=null; int page=0;
+    do {
+      String url="/api/v1/admin/features/library/users"+(cursor==null?"":"?cursor="+cursor);
+      String json=body(bearer,url,page%2==1,admin,200);
+      Map<?,?> parsed=new tools.jackson.databind.json.JsonMapper().readValue(json,Map.class);
+      List<?> items=(List<?>) parsed.get("items");
+      assertTrue(items.size()<=50);
+      if (page==0) assertEquals(50,items.size());
+      for (Object o : items) {
+        Map<?,?> m=(Map<?,?>) o;
+        UUID uid=UUID.fromString(m.get("userId").toString());
+        seen.merge(uid,1,Integer::sum);
+        assertTrue(m.get("emailMasked").toString().contains("***"));
+        assertFalse(m.get("emailMasked").toString().contains("@example.invalid") && m.get("emailMasked").toString().length()>30);
+        assertNotNull(m.get("name")); assertNotNull(m.get("updatedAt"));
+      }
+      cursor=(String) parsed.get("nextCursor");
+      if (cursor!=null) assertEquals(50,items.size());
+      page++;
+    } while (cursor!=null && page<1000);
+    assertTrue(seen.values().stream().allMatch(n->n==1));
+    assertTrue(seen.keySet().containsAll(mine));
+    assertFalse(seen.containsKey(disabled));
+    FeatureUsersPage first=features.usersWith(admin,"library",null);
+    assertEquals(50,first.items().size());
+    assertNotNull(first.nextCursor());
+    assertEquals("Admin",first.items().stream().filter(r->mine.contains(r.userId())).findFirst().orElseThrow().grantedByName());
+  }
+  @Test void unknownFeatureIs400() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String bearer="Bearer "+superadmin.accessToken();
+    body(bearer,"/api/v1/admin/features/nope/users",false,admin,400);
+    body(bearer,"/api/v1/admin/features/nope/users",true,admin,400);
+    assertEquals(400,status(()->features.usersWith(admin,"nope",null)));
+    assertEquals(400,status(()->features.usersWith(admin,"library","lixo")));
+  }
+  @Test void supportCannotSeeFeatures() throws Exception {
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator"), plain=user();
+    for (AuthResponse who : List.of(support,moderator,plain)) {
+      String bearer="Bearer "+who.accessToken();
+      body(bearer,"/api/v1/admin/features/catalog",false,id(who),403);
+      body(bearer,"/api/v1/admin/features/catalog",true,id(who),403);
+      body(bearer,"/api/v1/admin/features/library/users",false,id(who),403);
+      body(bearer,"/api/v1/admin/features/library/users",true,id(who),403);
+    }
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/features/catalog")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
   }
 }
