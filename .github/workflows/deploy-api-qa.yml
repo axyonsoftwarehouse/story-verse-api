@@ -14,7 +14,7 @@ on:
       ref:
         description: Branch, tag ou commit para publicar no QA
         required: true
-        default: main
+        default: develop
   push:
     branches: [develop]
 
