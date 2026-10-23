@@ -177,4 +177,83 @@ class AdminIntegrationTest {
     assertEquals(modCover,jdbc.sql("select metadata->>'cover_url' from public.admin_audit_log where action='book_submission.cover' and target_id=:id")
         .param("id",submission.id().toString()).query(String.class).single());
   }
+
+  // --- Contas: busca e detalhe ---
+  @Autowired AdminUserService users;
+  /** Conta com e-mail e nome únicos, para a busca não esbarrar em outros testes no banco compartilhado. */
+  record Named(AuthResponse session, String email, String name) {}
+  Named named() {
+    String tag=UUID.randomUUID().toString().replace("-","").substring(0,12);
+    String email="conta-"+tag+"@example.invalid", name="Leitora "+tag;
+    return new Named((AuthResponse) auth.signup(new SignupRequest(email,"test-secret",name)),email,name);
+  }
+
+  @Test void searchByExactEmailMasksTheEmail() {
+    Named target=named();
+    AuthResponse support=userWithRole("support");
+    List<AdminUserSummary> found=users.search(support.accessToken(),"  "+target.email().toUpperCase(Locale.ROOT)+" ");
+    assertEquals(1,found.size());
+    AdminUserSummary row=found.get(0);
+    assertEquals(id(target.session()),row.id());
+    assertEquals("co***@example.invalid",row.emailMasked());
+    assertFalse(row.emailMasked().contains(target.email()));
+    assertTrue(row.emailConfirmed());
+    assertEquals(List.of(),row.roles());
+  }
+  @Test void searchByNameNeedsThreeChars() {
+    Named target=named();
+    AuthResponse support=userWithRole("support");
+    assertEquals(400,status(()->users.search(support.accessToken(),"ab")));
+    assertEquals(400,status(()->users.search(support.accessToken(),null)));
+    assertEquals(0,users.search(support.accessToken(),"%%%").size());
+    List<AdminUserSummary> found=users.search(support.accessToken(),target.name().substring(8));
+    assertEquals(List.of(id(target.session())),found.stream().map(AdminUserSummary::id).toList());
+    assertEquals(target.name(),found.get(0).name());
+  }
+  @Test void searchByUuid() {
+    UUID target=withRole("moderator");
+    AuthResponse superadmin=userWithRole("superadmin");
+    List<AdminUserSummary> found=users.search(superadmin.accessToken(),target.toString());
+    assertEquals(1,found.size());
+    assertEquals(target,found.get(0).id());
+    assertEquals(List.of("moderator"),found.get(0).roles());
+  }
+  @Test void moderatorCannotSearch() {
+    UUID target=id(user());
+    AuthResponse moderator=userWithRole("moderator");
+    assertEquals(403,status(()->users.search(moderator.accessToken(),target.toString())));
+    assertEquals(403,status(()->users.detail(moderator.accessToken(),target)));
+  }
+  @Test void detailShowsRolesFeaturesSessionsAndAuditOnlyForSuperadmin() {
+    Named target=named(); UUID targetId=id(target.session());
+    AuthResponse superadmin=userWithRole("superadmin"), support=userWithRole("support");
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'support')").param("id",targetId).update();
+    features.grant(id(superadmin),targetId,"library",true);
+    AdminUserDetail full=users.detail(superadmin.accessToken(),targetId);
+    assertEquals(target.email(),full.email());
+    assertEquals(target.name(),full.name());
+    assertTrue(full.emailConfirmed());
+    assertNotNull(full.createdAt());
+    assertEquals(List.of("support"),full.roles());
+    assertEquals(List.of("library"),full.features());
+    assertTrue(full.activeSessions()>=1);
+    assertNotNull(full.recentAudit());
+    assertEquals("feature.set",full.recentAudit().get(0).get("action"));
+    assertEquals(id(superadmin),full.recentAudit().get(0).get("actorId"));
+    AdminUserDetail limited=users.detail(support.accessToken(),targetId);
+    assertNull(limited.recentAudit());
+    assertTrue(limited.activeSessions()>=1);
+  }
+  @Test void detailIsAudited() {
+    UUID target=id(user());
+    AuthResponse support=userWithRole("support");
+    users.detail(support.accessToken(),target);
+    assertEquals(1,audits("user.view",target));
+  }
+  @Test void detailOfUnknownUserIs404() {
+    AuthResponse support=userWithRole("support");
+    UUID unknown=UUID.randomUUID();
+    assertEquals(404,status(()->users.detail(support.accessToken(),unknown)));
+    assertEquals(0,audits("user.view",unknown));
+  }
 }
