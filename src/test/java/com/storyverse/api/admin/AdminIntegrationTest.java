@@ -567,4 +567,112 @@ class AdminIntegrationTest {
     body("Bearer "+plain.accessToken(),"/api/v1/admin/overview",true,id(plain),403);
     mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/overview")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
   }
+  // ---- auditoria ----
+  @Autowired AdminAuditService auditService;
+  AdminAuditService.Filter filter(String action, String actorId, String targetType, String targetId, String from, String to, String before) {
+    return new AdminAuditService.Filter(action,actorId,targetType,targetId,from,to,before);
+  }
+  AdminAuditService.Filter byAction(String action) { return filter(action,null,null,null,null,null,null); }
+  void insertAudit(UUID actor, String action, String targetId, String createdAt) {
+    jdbc.sql("insert into public.admin_audit_log(actor_id,action,target_type,target_id,metadata,created_at) values(:a,:action,'it',:t,'{\"k\":\"v\"}'::jsonb,cast(:c as timestamptz))")
+        .param("a",actor).param("action",action).param("t",targetId).param("c",createdAt).update();
+  }
+  AdminAuditPage audit(AuthResponse who, boolean runtime, AdminAuditService.Filter f) {
+    return runtime?asRuntime(id(who),()->auditService.audit(who.accessToken(),f)):auditService.audit(who.accessToken(),f);
+  }
+  @Test void auditFiltersByActionPrefix() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String tag="it"+UUID.randomUUID().toString().replace("-","");
+    insertAudit(admin,tag+".forum.delete","a","2026-03-01T12:00:00Z");
+    insertAudit(admin,tag+".forum.pin","b","2026-03-01T12:00:01Z");
+    insertAudit(admin,tag+".user.view","c","2026-03-01T12:00:02Z");
+    insertAudit(admin,tag+"Xforum.literal","d","2026-03-01T12:00:03Z");
+    for (boolean runtime : new boolean[]{false,true}) {
+      AdminAuditPage forum=audit(superadmin,runtime,byAction(tag+".forum."));
+      assertEquals(List.of(tag+".forum.pin",tag+".forum.delete"),forum.items().stream().map(AdminAuditPage.Entry::action).toList());
+      assertNull(forum.nextBefore());
+      assertEquals(admin,forum.items().get(0).actorId());
+      assertEquals("Admin",forum.items().get(0).actorName());
+      assertEquals("v",forum.items().get(0).metadata().get("k"));
+      assertEquals(3,audit(superadmin,runtime,byAction(tag+".")).items().size());
+      // '_' e '%' valem como texto, não como curinga
+      assertEquals(0,audit(superadmin,runtime,byAction(tag+"_forum")).items().size());
+      assertEquals(0,audit(superadmin,runtime,byAction(tag+"%")).items().size());
+      assertEquals(1,audit(superadmin,runtime,filter(tag+".",null,null,"b",null,null,null)).items().size());
+      assertEquals(3,audit(superadmin,runtime,filter(tag+".",admin.toString(),"it",null,null,null,null)).items().size());
+      assertEquals(0,audit(superadmin,runtime,filter(tag+".",UUID.randomUUID().toString(),null,null,null,null,null)).items().size());
+    }
+    String json=body("Bearer "+superadmin.accessToken(),"/api/v1/admin/audit?action="+tag+".forum.",true,admin,200);
+    Map<?,?> parsed=new tools.jackson.databind.json.JsonMapper().readValue(json,Map.class);
+    assertEquals(2,((List<?>) parsed.get("items")).size());
+    assertTrue(parsed.containsKey("nextBefore")); assertNull(parsed.get("nextBefore"));
+    Map<?,?> first=(Map<?,?>) ((List<?>) parsed.get("items")).get(0);
+    assertEquals(tag+".forum.pin",first.get("action")); assertEquals("it",first.get("targetType"));
+    assertEquals("v",((Map<?,?>) first.get("metadata")).get("k")); assertNotNull(first.get("createdAt"));
+  }
+  @Test void auditPaginatesByBefore() {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String action="it."+UUID.randomUUID().toString().replace("-","")+".x";
+    jdbc.sql("insert into public.admin_audit_log(actor_id,action,target_type,target_id) select :a,:action,'it',g::text from generate_series(1,55) g")
+        .param("a",admin).param("action",action).update();
+    for (boolean runtime : new boolean[]{false,true}) {
+      AdminAuditPage first=audit(superadmin,runtime,byAction(action));
+      assertEquals(50,first.items().size());
+      assertNotNull(first.nextBefore());
+      assertEquals(first.items().get(49).id(),first.nextBefore().longValue());
+      for (int i=1;i<first.items().size();i++) assertTrue(first.items().get(i-1).id()>first.items().get(i).id());
+      AdminAuditPage second=audit(superadmin,runtime,filter(action,null,null,null,null,null,first.nextBefore().toString()));
+      assertEquals(5,second.items().size());
+      assertNull(second.nextBefore());
+      assertTrue(second.items().get(0).id()<first.nextBefore());
+    }
+  }
+  @Test void auditDateRangeIsInclusiveInSaoPaulo() {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String action="it."+UUID.randomUUID().toString().replace("-","")+".d";
+    insertAudit(admin,action,"before","2026-03-09T23:30:00-03:00");
+    insertAudit(admin,action,"start","2026-03-10T00:00:00-03:00");
+    insertAudit(admin,action,"late","2026-03-10T23:30:00-03:00");
+    insertAudit(admin,action,"after","2026-03-11T00:00:00-03:00");
+    for (boolean runtime : new boolean[]{false,true}) {
+      List<String> day=audit(superadmin,runtime,filter(action,null,null,null,"2026-03-10","2026-03-10",null)).items().stream().map(AdminAuditPage.Entry::targetId).toList();
+      assertEquals(List.of("late","start"),day);
+      assertEquals(List.of("late","start","before"),audit(superadmin,runtime,filter(action,null,null,null,null,"2026-03-10",null)).items().stream().map(AdminAuditPage.Entry::targetId).toList());
+      assertEquals(List.of("after","late","start"),audit(superadmin,runtime,filter(action,null,null,null,"2026-03-10",null,null)).items().stream().map(AdminAuditPage.Entry::targetId).toList());
+    }
+  }
+  @Test void scriptRowsHaveNullActor() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String action="it."+UUID.randomUUID().toString().replace("-","")+".s";
+    insertAudit(null,action,"s1","2026-03-01T12:00:00Z");
+    for (boolean runtime : new boolean[]{false,true}) {
+      AdminAuditPage page=audit(superadmin,runtime,byAction(action));
+      assertEquals(1,page.items().size());
+      assertNull(page.items().get(0).actorId()); assertNull(page.items().get(0).actorName());
+    }
+    String json=body("Bearer "+superadmin.accessToken(),"/api/v1/admin/audit?action="+action,true,admin,200);
+    Map<?,?> item=(Map<?,?>) ((List<?>) new tools.jackson.databind.json.JsonMapper().readValue(json,Map.class).get("items")).get(0);
+    assertTrue(item.containsKey("actorId")); assertNull(item.get("actorId")); assertNull(item.get("actorName"));
+  }
+  @Test void moderatorCannotReadAudit() throws Exception {
+    for (String role : new String[]{"moderator","support"}) {
+      AuthResponse who=userWithRole(role); UUID uid=id(who);
+      assertEquals(403,status(()->auditService.audit(who.accessToken(),byAction("it."))));
+      assertEquals(403,status(()->asRuntime(uid,()->auditService.audit(who.accessToken(),byAction("it.")))));
+      body("Bearer "+who.accessToken(),"/api/v1/admin/audit",false,uid,403);
+      body("Bearer "+who.accessToken(),"/api/v1/admin/audit",true,uid,403);
+    }
+    AuthResponse plain=user();
+    assertEquals(403,status(()->auditService.audit(plain.accessToken(),byAction("it."))));
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/audit")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
+  }
+  @Test void invalidDateIs400() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    assertEquals(400,status(()->auditService.audit(superadmin.accessToken(),filter(null,null,null,null,"10/03/2026",null,null))));
+    assertEquals(400,status(()->auditService.audit(superadmin.accessToken(),filter(null,null,null,null,null,"2026-02-30",null))));
+    assertEquals(400,status(()->auditService.audit(superadmin.accessToken(),filter(null,"não-é-uuid",null,null,null,null,null))));
+    assertEquals(400,status(()->auditService.audit(superadmin.accessToken(),filter(null,null,null,null,null,null,"abc"))));
+    String json=body("Bearer "+superadmin.accessToken(),"/api/v1/admin/audit?from=ontem",false,admin,400);
+    assertTrue(json.contains("Data inv"));
+  }
 }
