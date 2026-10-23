@@ -4,8 +4,13 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.http.MediaType;
 import org.junit.jupiter.api.function.Executable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -674,5 +679,91 @@ class AdminIntegrationTest {
     assertEquals(400,status(()->auditService.audit(superadmin.accessToken(),filter(null,null,null,null,null,null,"abc"))));
     String json=body("Bearer "+superadmin.accessToken(),"/api/v1/admin/audit?from=ontem",false,admin,400);
     assertTrue(json.contains("Data inv"));
+  }
+
+  // --- Task 8: matriz de permissões da seção 3 da spec ---
+
+  static Stream<Arguments> permissionMatrix() {
+    List<String> endpoints = List.of(
+        "overview",
+        "users.search", "users.detail", "users.sessions.revoke",
+        "roles.grant", "roles.revoke",
+        "features.list", "features.catalog", "features.users", "features.set",
+        "audit",
+        "forum.reports", "forum.topics", "forum.replies",
+        "acervo.review");
+    return Stream.of("superadmin", "moderator", "support", "none")
+        .flatMap(role -> endpoints.stream().map(endpoint -> Arguments.of(role, endpoint)));
+  }
+
+  static boolean allowedFor(String role, String endpoint) {
+    if ("none".equals(role)) return false;
+    if ("overview".equals(endpoint) || endpoint.startsWith("forum.")) return true;
+    if (endpoint.startsWith("users.")) return "superadmin".equals(role) || "support".equals(role);
+    if ("acervo.review".equals(endpoint)) return "superadmin".equals(role) || "moderator".equals(role);
+    return "superadmin".equals(role);
+  }
+
+  @ParameterizedTest(name = "{0} em {1}")
+  @MethodSource("permissionMatrix")
+  void permissionMatrix(String role, String endpoint) throws Exception {
+    AuthResponse actor = "none".equals(role) ? user() : userWithRole(role);
+    String bearer = "Bearer " + actor.accessToken();
+    UUID target = id(user());
+    int status = switch (endpoint) {
+      case "overview" -> getStatus(bearer, "/api/v1/admin/overview");
+      case "users.search" -> getStatus(bearer, "/api/v1/admin/users?q=" + target);
+      case "users.detail" -> getStatus(bearer, "/api/v1/admin/users/" + target);
+      case "users.sessions.revoke" -> postStatus(bearer, "/api/v1/admin/users/" + target + "/sessions/revoke");
+      case "roles.grant" -> putStatus(bearer, "/api/v1/admin/users/" + target + "/roles/moderator");
+      case "roles.revoke" -> deleteStatus(bearer, "/api/v1/admin/users/" + target + "/roles/moderator");
+      case "features.list" -> getStatus(bearer, "/api/v1/admin/features?userId=" + target);
+      case "features.catalog" -> getStatus(bearer, "/api/v1/admin/features/catalog");
+      case "features.users" -> getStatus(bearer, "/api/v1/admin/features/library/users");
+      case "features.set" -> putStatus(bearer, "/api/v1/admin/features",
+          "{\"userId\":\"" + target + "\",\"feature\":\"library\",\"enabled\":true}");
+      case "audit" -> getStatus(bearer, "/api/v1/admin/audit");
+      case "forum.reports" -> getStatus(bearer, "/api/v1/admin/forum/reports");
+      case "forum.topics" -> getStatus(bearer, "/api/v1/admin/forum/topics");
+      case "forum.replies" -> getStatus(bearer, "/api/v1/admin/forum/replies");
+      case "acervo.review" -> {
+        UUID submission = pendingSubmission().id();
+        yield patchStatus(bearer, "/api/v1/community/submissions/" + submission, "{\"status\":\"approved\"}");
+      }
+      default -> throw new IllegalArgumentException(endpoint);
+    };
+    assertEquals(allowedFor(role, endpoint) ? 200 : 403, status, role + " em " + endpoint);
+  }
+
+  int getStatus(String bearer, String url) throws Exception {
+    return mvc.perform(MockMvcRequestBuilders.get(url).header("Authorization", bearer))
+        .andReturn().getResponse().getStatus();
+  }
+
+  int postStatus(String bearer, String url) throws Exception {
+    return mvc.perform(MockMvcRequestBuilders.post(url).header("Authorization", bearer))
+        .andReturn().getResponse().getStatus();
+  }
+
+  int putStatus(String bearer, String url) throws Exception {
+    return mvc.perform(MockMvcRequestBuilders.put(url).header("Authorization", bearer))
+        .andReturn().getResponse().getStatus();
+  }
+
+  int putStatus(String bearer, String url, String json) throws Exception {
+    return mvc.perform(MockMvcRequestBuilders.put(url).header("Authorization", bearer)
+            .contentType(MediaType.APPLICATION_JSON).content(json))
+        .andReturn().getResponse().getStatus();
+  }
+
+  int deleteStatus(String bearer, String url) throws Exception {
+    return mvc.perform(MockMvcRequestBuilders.delete(url).header("Authorization", bearer))
+        .andReturn().getResponse().getStatus();
+  }
+
+  int patchStatus(String bearer, String url, String json) throws Exception {
+    return mvc.perform(MockMvcRequestBuilders.patch(url).header("Authorization", bearer)
+            .contentType(MediaType.APPLICATION_JSON).content(json))
+        .andReturn().getResponse().getStatus();
   }
 }

@@ -45,6 +45,19 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
   (fotos e capas), `user-books` (livros importados), `community-books` (texto do acervo). Cada um só
   na própria pasta.
 - `GET /api/v1/storage/public/{bucket}/{path}` — leitura **sem sessão** de bucket público (`profile-media`).
+- **Admin** (staff; a API confere o papel em cada rota: sem sessão → 401, sem papel → 403):
+  - `GET /api/v1/admin/overview` — visão geral (superadmin, moderator, support).
+  - `GET /api/v1/admin/users?q=` — busca por UUID, e-mail exato ou parte do nome; e-mail mascarado (superadmin, support).
+  - `GET /api/v1/admin/users/{id}` — detalhe da conta; auditoria recente só para superadmin (superadmin, support).
+  - `POST /api/v1/admin/users/{id}/sessions/revoke` — encerra as sessões da conta (superadmin, support).
+  - `PUT|DELETE /api/v1/admin/users/{id}/roles/{role}` — dá/tira `moderator` ou `support` (superadmin; nunca a própria conta nem `superadmin`).
+  - `GET /api/v1/admin/features?userId=` — features de uma conta (superadmin).
+  - `GET /api/v1/admin/features/catalog` — features conhecidas e contagem (superadmin).
+  - `GET /api/v1/admin/features/{feature}/users` — quem tem a feature, com cursor (superadmin).
+  - `PUT /api/v1/admin/features` — `{ "userId", "feature", "enabled" }`; audita na mesma transação (superadmin).
+  - `GET /api/v1/admin/audit` — auditoria filtrável e paginada, só leitura (superadmin).
+  - `GET /api/v1/admin/forum/reports|topics|replies` — filas de moderação do fórum (staff).
+  - `PATCH /api/v1/admin/forum/reports|topics|replies/{id}` — resolve ou modera (superadmin, moderator).
 - `GET /api/v1/presence/{room}?key=…` — presença por **SSE** (público): envia `event: count` com
   `{"count": n}` sempre que a contagem da sala muda. Só o número circula.
 - `GET /api/v1/ai/status` — se a IA está configurada no servidor (público).
