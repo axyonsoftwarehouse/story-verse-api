@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.storyverse.api.auth.AuthException;
 
@@ -25,7 +26,13 @@ public class ApiExceptionHandler {
 
 	@ExceptionHandler(AsyncRequestNotUsableException.class)
 	void handleClientDisconnect() {
-		// Cliente SSE desconectou: a resposta já foi encerrada e não há corpo para escrever.
+		// Cliente SSE desconectou: a resposta jǭ foi encerrada e nǜo hǭ corpo para escrever.
+	}
+
+	@ExceptionHandler(NoResourceFoundException.class)
+	ResponseEntity<ApiError> handleNotFound() {
+		return ResponseEntity.status(HttpStatus.NOT_FOUND)
+				.body(new ApiError("Recurso não encontrado.", "NOT_FOUND"));
 	}
 
 	@ExceptionHandler(Exception.class)
