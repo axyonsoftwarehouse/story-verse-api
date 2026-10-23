@@ -1,6 +1,7 @@
 package com.storyverse.api.feature;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.auth.AuthException;
+import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.common.DbSession;
 
 /**
@@ -22,9 +24,11 @@ public class FeatureAccessService {
 	private static final Set<String> KNOWN = Set.of("library");
 
 	private final JdbcClient jdbc;
+	private final AuthzService authz;
 
-	public FeatureAccessService(JdbcClient jdbc) {
+	public FeatureAccessService(JdbcClient jdbc, AuthzService authz) {
 		this.jdbc = jdbc;
+		this.authz = authz;
 	}
 
 	@Transactional(readOnly = true)
@@ -78,6 +82,14 @@ public class FeatureAccessService {
 				.param("enabled", enabled)
 				.param("actor", actorId)
 				.update();
+	}
+
+	/** Concessão pelo painel: muda a feature e grava a auditoria na mesma transação. */
+	@Transactional
+	public void grant(UUID actorId, UUID targetUserId, String feature, boolean enabled) {
+		set(actorId, targetUserId, feature, enabled);
+		authz.audit(actorId, "feature.set", "user", targetUserId.toString(),
+				Map.of("feature", feature, "enabled", enabled));
 	}
 
 	private static void validateKnown(String feature) {

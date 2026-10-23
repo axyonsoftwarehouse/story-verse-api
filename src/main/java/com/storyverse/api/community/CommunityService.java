@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -26,6 +28,8 @@ import com.storyverse.api.storage.StorageAccess;
  */
 @Service
 public class CommunityService {
+
+	private static final Logger log = LoggerFactory.getLogger(CommunityService.class);
 
 	private final CommunityRepository repository;
 	private final AuthService auth;
@@ -135,14 +139,21 @@ public class CommunityService {
 	public Map<String, Object> updateCover(String accessToken, UUID id, Map<String, Object> body) {
 		UUID userId = requireUser(accessToken);
 		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
-		if (!isOwner(row, userId) && !canModerate(userId)) {
+		boolean owner = isOwner(row, userId);
+		if (!owner && !canModerate(userId)) {
 			throw new AuthException(403, "Sem permissão para trocar a capa.");
 		}
 		String cover = covers.require(text(body.get("cover_url")));
 		if (cover == null) {
 			throw new AuthException(400, "Capa ausente.");
 		}
-		return repository.updateCover(id, cover).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+		Map<String, Object> updated = repository.updateCover(id, cover)
+				.orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+		// O dono não é auditado: a policy de insert da auditoria só aceita equipe.
+		if (!owner) {
+			authz.audit(userId, "book_submission.cover", "book_submission", id.toString(), Map.of("cover_url", cover));
+		}
+		return updated;
 	}
 
 	@Transactional
@@ -157,16 +168,34 @@ public class CommunityService {
 		access.lockCommunity(textPath);
 		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
 		boolean pending = "pending".equals(row.get("status"));
-		if (!canModerate(userId) && !(isOwner(row, userId) && pending)) {
+		boolean owner = isOwner(row, userId);
+		if (!canModerate(userId) && !(owner && pending)) {
 			throw new AuthException(403, "Sem permissão para remover este envio.");
 		}
 		String authorId = String.valueOf(row.get("user_id"));
 		String coverPath = uploadedCoverPath(String.valueOf(row.get("cover_url")));
 		repository.delete(id);
-		// Apaga texto e capa no servidor, na mesma transação: se um arquivo falhar, a linha volta.
-		storage.delete(userId, StorageBucket.COMMUNITY_BOOKS, textPath);
-		if (coverPath != null && coverPath.startsWith(authorId + "/"))
-			storage.delete(userId, StorageBucket.PROFILE_MEDIA, coverPath);
+		// O dono não é auditado: a policy de insert da auditoria só aceita equipe.
+		if (!owner) {
+			Map<String, Object> metadata = new LinkedHashMap<>();
+			metadata.put("title", String.valueOf(row.get("title")));
+			metadata.put("status", String.valueOf(row.get("status")));
+			authz.audit(userId, "book_submission.delete", "book_submission", id.toString(), metadata);
+		}
+		// Arquivos não voltam com rollback: só saem do disco depois do commit da linha e da auditoria.
+		// A permissão já foi conferida acima e os caminhos vêm da linha; só apaga o que é da pasta do autor.
+		if (textPath.startsWith(authorId + "/")) {
+			storage.removeAfterCommit(StorageBucket.COMMUNITY_BOOKS, textPath);
+		} else {
+			log.warn("Texto do envio {} fora da pasta do autor; arquivo mantido.", id);
+		}
+		if (coverPath != null) {
+			if (coverPath.startsWith(authorId + "/")) {
+				storage.removeAfterCommit(StorageBucket.PROFILE_MEDIA, coverPath);
+			} else {
+				log.warn("Capa do envio {} fora da pasta do autor; arquivo mantido.", id);
+			}
+		}
 	}
 
 	private boolean canModerate(UUID userId) {

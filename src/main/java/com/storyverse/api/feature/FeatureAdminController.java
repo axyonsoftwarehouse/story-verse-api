@@ -48,9 +48,7 @@ public class FeatureAdminController {
 		UUID actor = auth.authenticate(AuthTokens.bearer(authorization));
 		authz.requireRole(actor, AuthzService.SUPERADMIN);
 		boolean enabled = request.enabled() == null || request.enabled();
-		features.set(actor, request.userId(), request.feature(), enabled);
-		authz.audit(actor, "feature.set", "user", request.userId().toString(),
-				Map.of("feature", String.valueOf(request.feature()), "enabled", enabled));
+		features.grant(actor, request.userId(), request.feature(), enabled);
 		return Map.of("userId", request.userId().toString(), "feature", request.feature(), "enabled", enabled);
 	}
 }
