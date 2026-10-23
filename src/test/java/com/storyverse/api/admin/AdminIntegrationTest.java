@@ -244,6 +244,25 @@ class AdminIntegrationTest {
     assertNull(limited.recentAudit());
     assertTrue(limited.activeSessions()>=1);
   }
+  /** O serviço entra na transação do asRuntime (REQUIRED), então o RLS de storyverse_api vale. */
+  @Test void supportSeesOthersRolesAndFeaturesUnderRls() {
+    Named target=named(); UUID targetId=id(target.session());
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'moderator')").param("id",targetId).update();
+    features.grant(withRole("superadmin"),targetId,"library",true);
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator");
+    UUID plain=id(user());
+    // Prova de que o RLS está ativo: um leitor comum não vê os papéis de outra conta.
+    assertEquals(0,asRuntime(plain,()->jdbc.sql("select count(*) from public.user_roles where user_id=:id")
+        .param("id",targetId).query(Integer.class).single()));
+    AdminUserDetail detail=asRuntime(id(support),()->users.detail(support.accessToken(),targetId));
+    assertEquals(List.of("moderator"),detail.roles());
+    assertEquals(List.of("library"),detail.features());
+    assertNull(detail.recentAudit());
+    List<AdminUserSummary> found=asRuntime(id(support),()->users.search(support.accessToken(),targetId.toString()));
+    assertEquals(List.of("moderator"),found.get(0).roles());
+    assertEquals(403,status(()->asRuntime(id(moderator),()->users.detail(moderator.accessToken(),targetId))));
+    assertEquals(403,status(()->asRuntime(id(moderator),()->users.search(moderator.accessToken(),targetId.toString()))));
+  }
   @Test void detailIsAudited() {
     UUID target=id(user());
     AuthResponse support=userWithRole("support");
