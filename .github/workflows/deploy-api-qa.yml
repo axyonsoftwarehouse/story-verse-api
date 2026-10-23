@@ -4,6 +4,9 @@ name: Deploy API QA (VPS)
 # banco próprio, dados de teste). Publica em push no branch `qa` ou à mão:
 #   gh workflow run deploy-api-qa.yml -f ref=feat/minha-branch
 # Manual: story-verse-web, docs/QA.md.
+#
+# O código do branch (docker build) roda no job `build`, sem a chave da VPS. Só o job `deploy`
+# recebe a chave, e ele não faz checkout: troca a imagem na VPS e confere.
 on:
   workflow_dispatch:
     inputs:
@@ -16,25 +19,33 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 concurrency:
   group: deploy-api-qa
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
 
       - name: Definir a imagem (tag qa-<sha>)
-        run: echo "IMAGE=ghcr.io/axyonsoftwarehouse/story-verse-api:qa-$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        id: image
+        run: echo "image=ghcr.io/axyonsoftwarehouse/story-verse-api:qa-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build e publica a imagem (GHCR)
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker build -t "$IMAGE" .
@@ -44,8 +55,16 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Assinar imagem (keyless)
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
         run: cosign sign --yes "$IMAGE"
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+    steps:
       - name: Configurar chave SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -61,7 +80,7 @@ jobs:
         run: |
           # O SHA fica no .env de QA: um restart manual não volta para outra imagem.
           ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "cd /home/deploy/storyverse-qa && sed -i 's|^API_IMAGE=.*|API_IMAGE=$IMAGE|' .env && docker compose --project-name storyverse-qa config --quiet && docker compose --project-name storyverse-qa pull api && docker compose --project-name storyverse-qa up -d api && docker compose --project-name storyverse-qa ps api"
+            "cd /home/deploy/storyverse-qa && sed -i 's|^API_IMAGE=.*|API_IMAGE=$IMAGE|' .env && docker compose --project-name storyverse-qa config --quiet && docker compose --project-name storyverse-qa pull qa-api && docker compose --project-name storyverse-qa up -d qa-api && docker compose --project-name storyverse-qa ps qa-api"
 
       - name: Conferir o health da API de QA
         run: |
