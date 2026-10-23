@@ -144,7 +144,7 @@ class SecurityIntegrationTest {
     var row=community.create(owner.accessToken(),Map.of("title","Book","text_path",path,"rights","own_work"));
     assertThrows(AuthException.class,()->storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","changed".getBytes()));
     assertThrows(AuthException.class,()->storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path));
-    jdbc.sql("insert into public.admins(user_id) values(:id)").param("id",id(admin)).update();
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
     assertTrue(storage.readFor(id(admin),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
     community.review(admin.accessToken(),UUID.fromString(row.get("id").toString()),Map.of("status","approved"));
     assertEquals("reviewed",new String(storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path).orElseThrow()));
@@ -335,7 +335,7 @@ class SecurityIntegrationTest {
   }
   @Test void approvalRejectsSubmissionPointingToAnotherAuthorsFolder() {
     AuthResponse author=user(), victim=user(), admin=user();
-    jdbc.sql("insert into public.admins(user_id) values(:id)").param("id",id(admin)).update();
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
     String path=id(victim)+"/stolen.txt";
     storage.write(id(victim),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","victim".getBytes());
     UUID submissionId=UUID.randomUUID();

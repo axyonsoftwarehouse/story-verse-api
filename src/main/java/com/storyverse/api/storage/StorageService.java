@@ -13,9 +13,13 @@ import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.storyverse.api.auth.AuthException;
 
@@ -25,6 +29,8 @@ import com.storyverse.api.auth.AuthException;
  */
 @Service
 public class StorageService {
+
+	private static final Logger log = LoggerFactory.getLogger(StorageService.class);
 
 	private final Path baseDir;
 	private final StorageAccess access;
@@ -218,6 +224,40 @@ public class StorageService {
 			Files.deleteIfExists(target);
 		} catch (IOException exception) {
 			throw new UncheckedIOException("Falha ao apagar o arquivo", exception);
+		}
+	}
+
+	/**
+	 * Apaga um arquivo só depois do commit da transação atual (fora de transação, apaga na hora). Não
+	 * confere permissão por pessoa: quem chama já conferiu e o caminho vem do banco. Arquivo não volta
+	 * com rollback, então uma falha aqui vira aviso no log e deixa um arquivo órfão, nunca uma linha órfã.
+	 */
+	public void removeAfterCommit(StorageBucket bucket, String path) {
+		Path target;
+		try {
+			target = resolve(bucket, safePath(path));
+		} catch (AuthException exception) {
+			log.warn("Caminho inválido ao agendar remoção em {}: {}", bucket.id(), path);
+			return;
+		}
+		if (TransactionSynchronizationManager.isSynchronizationActive()) {
+			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+				@Override
+				public void afterCommit() {
+					removeQuietly(bucket, target);
+				}
+			});
+		} else {
+			removeQuietly(bucket, target);
+		}
+	}
+
+	private void removeQuietly(StorageBucket bucket, Path target) {
+		try {
+			Files.deleteIfExists(target);
+		} catch (IOException | RuntimeException exception) {
+			log.warn("Falha ao apagar arquivo em {}: {}", bucket.id(),
+					baseDir.resolve(bucket.id()).relativize(target), exception);
 		}
 	}
 
