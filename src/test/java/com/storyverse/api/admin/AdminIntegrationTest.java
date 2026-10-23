@@ -483,4 +483,85 @@ class AdminIntegrationTest {
     }
     mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/features/catalog")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
   }
+  // ---- visão geral ----
+  @Autowired AdminOverviewService overview;
+  void insertReport() {
+    UUID reporter=id(user());
+    jdbc.sql("insert into public.forum_reports(reporter_id,target_type,target_id,reason_code) values(:r,'topic',gen_random_uuid(),'spam')").param("r",reporter).update();
+  }
+  @Test void moderatorSeesOnlyModeration() throws Exception {
+    AuthResponse moderator=userWithRole("moderator"); UUID mid=id(moderator);
+    pendingSubmission(); insertReport();
+    for (boolean runtime : new boolean[]{false,true}) {
+      AdminOverview o=runtime?asRuntime(mid,()->overview.overview(moderator.accessToken())):overview.overview(moderator.accessToken());
+      assertNotNull(o.moderation());
+      assertEquals(jdbc.sql("select count(*) from public.book_submissions where status='pending'").query(Integer.class).single(),o.moderation().pendingSubmissions());
+      assertEquals(jdbc.sql("select count(*) from public.forum_reports where status='pending'").query(Integer.class).single(),o.moderation().openReports());
+      assertTrue(o.moderation().pendingSubmissions()>=1);
+      assertTrue(o.moderation().openReports()>=1);
+      assertNull(o.accounts()); assertNull(o.features()); assertNull(o.backup());
+    }
+    String json=body("Bearer "+moderator.accessToken(),"/api/v1/admin/overview",true,mid,200);
+    Map<?,?> parsed=new tools.jackson.databind.json.JsonMapper().readValue(json,Map.class);
+    assertNotNull(parsed.get("moderation")); assertNull(parsed.get("backup"));
+  }
+  @Test void supportSeesOnlyAccounts() {
+    AuthResponse support=userWithRole("support"); UUID sid=id(support);
+    for (boolean runtime : new boolean[]{false,true}) {
+      AdminOverview o=runtime?asRuntime(sid,()->overview.overview(support.accessToken())):overview.overview(support.accessToken());
+      assertNull(o.moderation()); assertNull(o.features()); assertNull(o.backup());
+      assertEquals(jdbc.sql("select count(*) from auth.users").query(Integer.class).single(),o.accounts().total());
+      assertTrue(o.accounts().newLast7Days()>=1);
+      assertTrue(o.accounts().total()>=o.accounts().newLast7Days());
+    }
+  }
+  @Test void superadminSeesAll() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    features.grant(admin,id(user()),"library",true);
+    jdbc.sql("insert into public.backup_runs(started_at,finished_at,status,size_bytes) values(now()-interval '2 minutes',now()-interval '1 minute','success',1234)").update();
+    for (boolean runtime : new boolean[]{false,true}) {
+      AdminOverview o=runtime?asRuntime(admin,()->overview.overview(superadmin.accessToken())):overview.overview(superadmin.accessToken());
+      assertNotNull(o.moderation()); assertNotNull(o.accounts());
+      assertTrue(o.features().get("library")>=1);
+      assertEquals(features.catalog(admin).stream().filter(e->e.feature().equals("library")).findFirst().orElseThrow().enabledCount(),o.features().get("library").longValue());
+      assertNotNull(o.backup());
+      assertNotNull(o.backup().status());
+    }
+    String json=body("Bearer "+superadmin.accessToken(),"/api/v1/admin/overview",true,admin,200);
+    Map<?,?> parsed=new tools.jackson.databind.json.JsonMapper().readValue(json,Map.class);
+    assertNotNull(parsed.get("moderation")); assertNotNull(parsed.get("accounts"));
+    assertNotNull(parsed.get("features")); assertNotNull(((Map<?,?>) parsed.get("backup")).get("stale"));
+  }
+  @Test void backupIsStaleWithoutRecentSuccess() {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    jdbc.sql("delete from public.backup_runs").update();
+    try {
+      AdminOverview none=asRuntime(admin,()->overview.overview(superadmin.accessToken()));
+      assertNull(none.backup().status()); assertNull(none.backup().finishedAt()); assertNull(none.backup().sizeBytes()); assertTrue(none.backup().stale());
+      jdbc.sql("insert into public.backup_runs(started_at,finished_at,status,size_bytes) values(now()-interval '30 hours 1 minute',now()-interval '30 hours','success',10)").update();
+      for (boolean runtime : new boolean[]{false,true}) {
+        AdminOverview o=runtime?asRuntime(admin,()->overview.overview(superadmin.accessToken())):overview.overview(superadmin.accessToken());
+        assertTrue(o.backup().stale()); assertEquals("success",o.backup().status()); assertEquals(10L,o.backup().sizeBytes());
+      }
+      jdbc.sql("insert into public.backup_runs(started_at,finished_at,status,size_bytes) values(now()-interval '1 hour 1 minute',now()-interval '1 hour','success',20)").update();
+      for (boolean runtime : new boolean[]{false,true}) {
+        AdminOverview o=runtime?asRuntime(admin,()->overview.overview(superadmin.accessToken())):overview.overview(superadmin.accessToken());
+        assertFalse(o.backup().stale()); assertEquals(20L,o.backup().sizeBytes()); assertNotNull(o.backup().finishedAt());
+      }
+      // Falha mais recente aparece como último, mas o alerta segue o último sucesso.
+      jdbc.sql("insert into public.backup_runs(started_at,finished_at,status) values(now()-interval '5 minutes',now()-interval '4 minutes','failed')").update();
+      AdminOverview failed=asRuntime(admin,()->overview.overview(superadmin.accessToken()));
+      assertEquals("failed",failed.backup().status()); assertFalse(failed.backup().stale());
+    } finally {
+      jdbc.sql("delete from public.backup_runs").update();
+    }
+  }
+  @Test void plainUserIs403() throws Exception {
+    AuthResponse plain=user();
+    assertEquals(403,status(()->overview.overview(plain.accessToken())));
+    assertEquals(403,status(()->asRuntime(id(plain),()->overview.overview(plain.accessToken()))));
+    body("Bearer "+plain.accessToken(),"/api/v1/admin/overview",false,id(plain),403);
+    body("Bearer "+plain.accessToken(),"/api/v1/admin/overview",true,id(plain),403);
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/overview")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
+  }
 }
