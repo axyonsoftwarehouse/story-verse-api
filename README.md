@@ -67,7 +67,7 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
   → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
 - Estante (biblioteca pessoal), só para contas com a feature `library` (sem ela: 403 `FEATURE_DISABLED`).
-  `{bookKey}` é `gb:<n>`, `cm:<uuid>` ou `local:<id>`.
+  `{bookKey}` é `gb:<n>`, `cm:<uuid>`, `cat:<uuid>` ou `local:<id>`.
   - `GET /api/v1/me/library` — lista; filtros `status` (repetível ou CSV), `author`, `series`, `language`,
     `genre`, `year`, `minRating`, `maxRating`, `sort` (`recent`, `title`, `author`, `rating`, `finished`),
     `cursor`, `limit` (até 100) → `{ "items": [...], "nextCursor" }`. Com `updatedSince=<updatedAt>`
