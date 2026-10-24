@@ -28,6 +28,7 @@ public class BillingService {
 	private final BillingRepository repository;
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
+	private final StripeGateway stripe;
 	private final boolean enabled;
 	private final String priceId;
 	private final String priceLabel;
@@ -35,6 +36,7 @@ public class BillingService {
 	private final int graceDays;
 
 	public BillingService(BillingRepository repository, AuthzService authz, JdbcClient jdbc,
+			StripeGateway stripe,
 			@Value("${app.billing.enabled:false}") boolean enabled,
 			@Value("${app.billing.price-id:}") String priceId,
 			@Value("${app.billing.price-label:R$ 9,90}") String priceLabel,
@@ -43,6 +45,7 @@ public class BillingService {
 		this.repository = repository;
 		this.authz = authz;
 		this.jdbc = jdbc;
+		this.stripe = stripe;
 		this.enabled = enabled;
 		this.priceId = priceId;
 		this.priceLabel = priceLabel;
@@ -118,6 +121,42 @@ public class BillingService {
 		out.put("plan", status.get("plan"));
 		out.put("cancelAtPeriodEnd", status.get("cancelAtPeriodEnd"));
 		return out;
+	}
+
+	/** Abre o Checkout do Stripe para a conta; cria o cliente na primeira vez. */
+	public Map<String, Object> checkout(UUID userId) {
+		requireConfigured();
+		asUser(userId);
+		Map<String, Object> subscription = repository.latestSubscription(userId).orElse(null);
+		String status = subscription == null ? "" : String.valueOf(subscription.get("status"));
+		if ("active".equals(status) || "trialing".equals(status)) {
+			throw new AuthException(409, "Esta conta já tem uma assinatura em andamento.");
+		}
+		Map<String, Object> customer = repository.customer(userId).orElse(null);
+		String customerId;
+		if (customer == null) {
+			customerId = stripe.createCustomer(repository.email(userId), userId.toString());
+			repository.upsertCustomer(userId, customerId);
+		} else {
+			customerId = String.valueOf(customer.get("stripe_customer_id"));
+		}
+		StripeGateway.Checkout checkout = stripe.checkout(customerId, userId.toString());
+		return Map.of("url", checkout.url());
+	}
+
+	/** Portal do cliente: cartão, faturas, cancelamento e recibo. */
+	public Map<String, Object> portal(UUID userId) {
+		requireConfigured();
+		asUser(userId);
+		Map<String, Object> customer = repository.customer(userId)
+				.orElseThrow(() -> new AuthException(409, "Esta conta ainda não tem cadastro no Stripe."));
+		String url = stripe.portal(String.valueOf(customer.get("stripe_customer_id")));
+		return Map.of("url", url);
+	}
+
+	private void requireConfigured() {
+		if (!enabled) throw new AuthException(503, "Assinatura ainda não está disponível.");
+		if (!stripe.configured()) throw new AuthException(503, "Assinatura ainda não está disponível.");
 	}
 
 	/** Dá acesso manual (staff/teste/fundador). Só superadmin. */
