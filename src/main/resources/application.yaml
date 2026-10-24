@@ -67,6 +67,15 @@ app:
     # Teto global diário (todas as contas). 0 = sem modo economia.
     daily-global-limit: ${AI_DAILY_GLOBAL_LIMIT:0}
     per-minute-limit: ${AI_PER_MINUTE_LIMIT:6}
+  billing:
+    # Desligado no beta: o paywall só entra quando a flag estiver true.
+    enabled: ${BILLING_ENABLED:false}
+    secret-key: ${STRIPE_SECRET_KEY:}
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+    price-id: ${STRIPE_PRICE_ID:}
+    price-label: ${BILLING_PRICE_LABEL:R$ 9,90}
+    trial-days: ${BILLING_TRIAL_DAYS:7}
+    past-due-grace-days: ${BILLING_PAST_DUE_GRACE_DAYS:3}
 
 sentry:
   dsn: ${SENTRY_DSN:}
