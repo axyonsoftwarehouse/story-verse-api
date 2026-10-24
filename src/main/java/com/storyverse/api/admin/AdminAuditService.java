@@ -102,7 +102,7 @@ public class AdminAuditService {
 	 * Exporta o CSV respeitando os filtros. O período é obrigatório e limitado a 31 dias;
 	 * o número de linhas é conferido antes de começar a transmitir.
 	 */
-	@Transactional(readOnly = true)
+	@Transactional
 	public void exportCsv(String token, Filter filter, OutputStream output) throws IOException {
 		UUID actor = auth.authenticate(token);
 		authz.requireRole(actor, AuthzService.SUPERADMIN);
