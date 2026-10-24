@@ -61,13 +61,10 @@ public class AdminUserService {
 		if (UUID_FORMAT.matcher(q).matches()) {
 			return repository.searchById(UUID.fromString(q));
 		}
-		if (q.contains("@")) {
-			return repository.searchByEmail(q);
-		}
 		if (q.length() >= MIN_NAME_LENGTH) {
-			return repository.searchByName(q);
+			return repository.searchByEmailOrName(q);
 		}
-		throw new AuthException(400, "Busque por UUID, e-mail completo ou ao menos 3 letras do nome.");
+		throw new AuthException(400, "Busque por UUID, e-mail ou ao menos 3 letras do nome.");
 	}
 
 	/** Abrir o detalhe é auditado ({@code user.view}) na mesma transação. */

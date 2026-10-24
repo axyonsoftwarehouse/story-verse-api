@@ -208,6 +208,15 @@ class AdminIntegrationTest {
     assertTrue(row.emailConfirmed());
     assertEquals(List.of(),row.roles());
   }
+  @Test void searchByPartialEmailFindsTheAccount() {
+    Named target=named();
+    AuthResponse support=userWithRole("support");
+    String localPart=target.email().substring(0,target.email().indexOf('@'));
+    List<AdminUserSummary> found=users.search(support.accessToken(),localPart);
+    assertEquals(List.of(id(target.session())),found.stream().map(AdminUserSummary::id).toList());
+    assertEquals(target.name(),found.get(0).name());
+    assertFalse(found.get(0).emailMasked().contains(target.email()));
+  }
   @Test void searchByNameNeedsThreeChars() {
     Named target=named();
     AuthResponse support=userWithRole("support");
