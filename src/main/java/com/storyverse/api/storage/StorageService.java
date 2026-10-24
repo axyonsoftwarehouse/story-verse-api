@@ -144,6 +144,8 @@ public class StorageService {
 					&& head[3] == 'F' && head[4] == '-';
 			case "application/epub+zip" -> n >= 4 && head[0] == 'P' && head[1] == 'K'
 					&& head[2] == 0x03 && head[3] == 0x04;
+			case "application/zip" -> n >= 4 && head[0] == 'P' && head[1] == 'K'
+					&& head[2] == 0x03 && head[3] == 0x04;
 			case "text/plain" -> isText(file);
 			default -> false;
 		};
@@ -349,6 +351,7 @@ public class StorageService {
 		if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
 		if (lower.endsWith(".png")) return "image/png";
 		if (lower.endsWith(".gz")) return "application/gzip";
+		if (lower.endsWith(".zip")) return "application/zip";
 		if (lower.endsWith(".txt")) return "text/plain";
 		return "application/octet-stream";
 	}

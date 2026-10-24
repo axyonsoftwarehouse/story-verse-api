@@ -102,6 +102,7 @@ public class StorageController {
 		if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return MediaType.IMAGE_JPEG;
 		if (lower.endsWith(".png")) return MediaType.IMAGE_PNG;
 		if (lower.endsWith(".gz")) return MediaType.parseMediaType("application/gzip");
+		if (lower.endsWith(".zip")) return MediaType.parseMediaType("application/zip");
 		if (lower.endsWith(".txt")) return MediaType.TEXT_PLAIN;
 		return MediaType.APPLICATION_OCTET_STREAM;
 	}

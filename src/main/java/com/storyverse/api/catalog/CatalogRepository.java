@@ -145,7 +145,7 @@ public class CatalogRepository {
 					 text_path, original_path, original_content_type, char_count, checksum, cover_url,
 					 status, featured, sort_order, published_at, created_by)
 				values
-					(:id, :book_key, 'admin', null, :title, :author, :genre, :language, :series,
+					(:id, :book_key, :source, null, :title, :author, :genre, :language, :series,
 					 :series_index, :description, :page_count, :rights, :rights_note, 'catalog-books',
 					 :text_path, :original_path, :original_content_type, :char_count, :checksum, :cover_url,
 					 :status, :featured, :sort_order, :published_at, :created_by)
