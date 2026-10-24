@@ -169,6 +169,15 @@ public class AuthService {
 		});
 	}
 
+	/** Abrir o link de recuperação não pode pedir a senha nova antes de saber se ele ainda vale. */
+	@Transactional(readOnly = true)
+	public void validateResetToken(String token) {
+		if (token == null || token.isBlank()
+				|| !emailTokens.isValid(EmailTokenRepository.RESET_PASSWORD, tokens.hash(token))) {
+			throw new AuthException(400, "Link inválido ou expirado.");
+		}
+	}
+
 	@Transactional
 	public void resetPassword(String token, String password) {
 		passwords.validate(password, null, null);

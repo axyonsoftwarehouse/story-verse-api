@@ -365,6 +365,17 @@ class SecurityIntegrationTest {
     assertNotNull(auth.login(new LoginRequest(email,"new-secret")).accessToken());
     assertThrows(AuthException.class,()->auth.resetPassword(reset,"another-secret"));
   }
+  @Test void resetLinkCanBeCheckedBeforeAskingForTheNewPassword() {
+    AuthResponse session=user();UUID uid=id(session);
+    String reset=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(reset),java.time.Instant.now().plusSeconds(3600));
+    assertDoesNotThrow(()->auth.validateResetToken(reset));
+    assertDoesNotThrow(()->auth.validateResetToken(reset));
+    String expired=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(expired),java.time.Instant.now().minusSeconds(1));
+    assertEquals(400,assertThrows(AuthException.class,()->auth.validateResetToken(expired)).status());
+    assertEquals(400,assertThrows(AuthException.class,()->auth.validateResetToken(reset)).status());
+  }
   @Test void resendingConfirmationKeepsEarlierLinksValidUntilOneIsUsed() {
     AuthResponse session=user();UUID uid=id(session);
     jdbc.sql("update auth.users set email_confirmed_at=null where id=:id").param("id",uid).update();
