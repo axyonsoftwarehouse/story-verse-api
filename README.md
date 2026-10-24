@@ -133,6 +133,7 @@ Endpoints de confirmacao, recuperacao e perfil:
 - `POST /api/v1/auth/confirm-email` - `{ "token" }` -> sessao (o link confirma e ja entra).
 - `POST /api/v1/auth/resend-confirmation` - `{ "email" }` -> 202, sempre resposta generica.
 - `POST /api/v1/auth/forgot-password` - `{ "email" }` -> 202, sempre resposta generica.
+- `POST /api/v1/auth/reset-password/validate` - `{ "token" }` -> 204 se o link ainda vale; 400 se expirou/foi usado (nao consome o token).
 - `POST /api/v1/auth/reset-password` - `{ "token", "password" }` -> 204; revoga as sessoes.
 - `POST /api/v1/auth/change-password` - `{ "currentPassword", "newPassword" }` com Bearer -> 204.
 - `PATCH /api/v1/auth/profile` - `{ "name", "avatar", "photo", "cover" }` com Bearer -> usuario atualizado.

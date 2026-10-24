@@ -52,6 +52,19 @@ public class EmailTokenRepository {
 				.update();
 	}
 
+	/** Confere se o link ainda vale sem gastá-lo (a tela de senha nova mostra o erro antes). */
+	public boolean isValid(String kind, String tokenHash) {
+		return jdbc.sql("""
+				select 1 from auth.email_tokens
+				 where token_hash = :hash and kind = :kind and used_at is null and expires_at > now()
+				""")
+				.param("hash", tokenHash)
+				.param("kind", kind)
+				.query(Integer.class)
+				.optional()
+				.isPresent();
+	}
+
 	public Optional<UUID> consume(String kind, String tokenHash) {
 		return jdbc.sql("""
 				update auth.email_tokens
