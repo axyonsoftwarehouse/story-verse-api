@@ -123,6 +123,8 @@ public class BillingWebhookService {
 		params.put("trial_end", timestamp(state.trialEnd()));
 		params.put("canceled_at", timestamp(state.canceledAt()));
 		params.put("latest_invoice_status", invoiceStatus);
+		params.put("amount_cents", state.amountCents());
+		params.put("currency", state.currency());
 		repository.upsertSubscription(params);
 	}
 

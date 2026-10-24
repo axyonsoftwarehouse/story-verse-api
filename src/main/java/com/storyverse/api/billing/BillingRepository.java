@@ -67,10 +67,12 @@ public class BillingRepository {
 		return DbRows.one(jdbc, """
 				insert into public.billing_subscriptions
 					(user_id, stripe_subscription_id, stripe_price_id, status, current_period_start,
-					 current_period_end, cancel_at_period_end, trial_end, canceled_at, latest_invoice_status)
+					 current_period_end, cancel_at_period_end, trial_end, canceled_at, latest_invoice_status,
+					 amount_cents, currency)
 				values
 					(:user_id, :stripe_subscription_id, :stripe_price_id, :status, :current_period_start,
-					 :current_period_end, :cancel_at_period_end, :trial_end, :canceled_at, :latest_invoice_status)
+					 :current_period_end, :cancel_at_period_end, :trial_end, :canceled_at, :latest_invoice_status,
+					 :amount_cents, :currency)
 				on conflict (stripe_subscription_id) do update
 				   set user_id = excluded.user_id,
 				       stripe_price_id = excluded.stripe_price_id,
@@ -84,6 +86,8 @@ public class BillingRepository {
 				       canceled_at = coalesce(excluded.canceled_at, billing_subscriptions.canceled_at),
 				       latest_invoice_status = coalesce(excluded.latest_invoice_status,
 				           billing_subscriptions.latest_invoice_status),
+				       amount_cents = coalesce(excluded.amount_cents, billing_subscriptions.amount_cents),
+				       currency = coalesce(excluded.currency, billing_subscriptions.currency),
 				       updated_at = now()
 				 returning *
 				""", params);
@@ -135,6 +139,50 @@ public class BillingRepository {
 	public String email(UUID userId) {
 		return jdbc.sql("select email from auth.users where id = :id")
 				.param("id", userId).query(String.class).optional().orElse(null);
+	}
+
+	// ---- Admin financeiro ------------------------------------------------------------------
+
+	public Map<String, Object> adminSummary(java.time.Instant from, java.time.Instant to) {
+		Map<String, Object> params = new java.util.LinkedHashMap<>();
+		params.put("from", java.sql.Timestamp.from(from));
+		params.put("to", java.sql.Timestamp.from(to));
+		return DbRows.one(jdbc, """
+				select
+				  count(*) filter (where status = 'active') as active,
+				  count(*) filter (where status = 'trialing') as trialing,
+				  count(*) filter (where status = 'past_due') as past_due,
+				  count(*) filter (where status = 'canceled') as canceled,
+				  count(*) filter (where created_at between :from and :to) as new_count,
+				  count(*) filter (where canceled_at between :from and :to) as canceled_count,
+				  count(*) filter (where latest_invoice_status = 'payment_failed') as failed,
+				  coalesce(sum(amount_cents) filter (where status = 'active'), 0) as mrr_cents
+				  from public.billing_subscriptions
+				""", params).orElse(Map.of());
+	}
+
+	public List<Map<String, Object>> adminSubscriptions(String status, String q) {
+		Map<String, Object> params = new java.util.LinkedHashMap<>();
+		params.put("status", status == null ? "" : status);
+		params.put("q", q == null || q.isBlank() ? "" : "%" + q.strip() + "%");
+		return DbRows.list(jdbc, """
+				select s.*, u.email
+				  from public.billing_subscriptions s
+				  join auth.users u on u.id = s.user_id
+				 where (:status = '' or s.status = :status)
+				   and (:q = '' or u.email ilike :q)
+				 order by s.updated_at desc
+				 limit 50
+				""", params);
+	}
+
+	public Optional<Map<String, Object>> adminSubscription(UUID id) {
+		return DbRows.one(jdbc, """
+				select s.*, u.email
+				  from public.billing_subscriptions s
+				  join auth.users u on u.id = s.user_id
+				 where s.id = :id
+				""", Map.of("id", id));
 	}
 
 	// ---- Webhook ---------------------------------------------------------------------------
