@@ -2,6 +2,7 @@ package com.storyverse.api.admin;
 
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.*;
+import java.time.*;
 import java.util.*;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -61,10 +62,14 @@ class AdminIntegrationTest {
   @Autowired StorageAccess storageAccess;
   @Autowired CommunityService community;
   @Autowired FeatureAccessService features;
+  @Autowired SanctionService sanctions;
+  @Autowired SessionRepository sessions;
+  @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
   @Autowired PlatformTransactionManager transactions;
 
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Admin")); }
+  AuthResponse loginFor(AuthResponse session) { return (AuthResponse) auth.login(new LoginRequest(session.user().email(), "test-secret")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
   AuthResponse userWithRole(String role) {
     AuthResponse session=user();
@@ -452,6 +457,95 @@ class AdminIntegrationTest {
     mvc.perform(MockMvcRequestBuilders.post("/api/v1/admin/users/"+target+"/sessions/revoke").header("Authorization",bearer))
         .andExpect(MockMvcResultMatchers.status().isOk())
         .andExpect(MockMvcResultMatchers.jsonPath("$.revoked").value(1));
+  }
+
+  // --- San??es ---
+  @Test void warningDoesNotBlockAndAppearsOnLogin() {
+    AuthResponse target=user(); UUID admin=withRole("superadmin");
+    sanctions.apply(admin,id(target),"warning","Leia as regras da comunidade.",Instant.now().plus(Duration.ofDays(7)));
+    AuthResponse login=loginFor(target);
+    assertEquals(id(target),id(login));
+    assertNotNull(login.activeWarning());
+    assertEquals("warning",login.activeWarning().kind());
+  }
+  @Test void suspensionBlocksLoginAndRevokesSessions() {
+    AuthResponse target=user(); UUID admin=withRole("superadmin");
+    assertEquals(id(target),auth.authenticate(target.accessToken()));
+    sanctions.apply(admin,id(target),"suspension","Pagamento em atraso.",Instant.now().plus(Duration.ofDays(3)));
+    assertThrows(AccountSanctionedException.class,()->loginFor(target));
+    assertEquals(401,status(()->auth.authenticate(target.accessToken())));
+  }
+  @Test void suspensionBlocksRefreshAndAuthenticatedRequests() {
+    AuthResponse target=user(); UUID admin=withRole("superadmin"); UUID targetId=id(target);
+    sanctions.apply(admin,targetId,"suspension","Motivo",Instant.now().plus(Duration.ofDays(1)));
+    String access=tokens.newToken(), refresh=tokens.newToken();
+    sessions.create(targetId,tokens.hash(access),Instant.now().plusSeconds(300),tokens.hash(refresh),Instant.now().plus(Duration.ofDays(1)));
+    assertThrows(AccountSanctionedException.class,()->auth.authenticate(access));
+    assertThrows(AccountSanctionedException.class,()->auth.refresh(refresh));
+  }
+  @Test void expiredSuspensionDoesNotBlock() {
+    AuthResponse target=user(); UUID targetId=id(target);
+    jdbc.sql("""
+        insert into public.user_sanctions(user_id,kind,reason,expires_at)
+        values (:id,'suspension','Vencida',now()-interval '1 day')
+        """).param("id",targetId).update();
+    sanctions.invalidate(targetId);
+    assertEquals(id(target),id(loginFor(target)));
+  }
+  @Test void banBlocksUntilRevoked() {
+    AuthResponse target=user(); UUID admin=withRole("superadmin");
+    Sanction ban=sanctions.apply(admin,id(target),"ban","Descumprimento grave.",null);
+    assertThrows(AccountSanctionedException.class,()->loginFor(target));
+    Sanction revoked=sanctions.revoke(admin,ban.id(),"Recurso aceito.");
+    assertNotNull(revoked.revokedAt());
+    assertEquals(id(target),id(loginFor(target)));
+    assertEquals(1,audits("sanction.create",id(target)));
+    assertEquals(1,audits("sanction.revoke",id(target)));
+  }
+  @Test void sanctionValidationsPermissionsAndStaffTarget() {
+    AuthResponse admin=userWithRole("superadmin"); UUID adminId=id(admin);
+    AuthResponse target=user(); UUID targetId=id(target);
+    assertEquals(403,status(()->sanctions.apply(adminId,adminId,"warning","x",null)));
+    assertEquals(403,status(()->sanctions.apply(adminId,withRole("moderator"),"warning","x",null)));
+    assertEquals(400,status(()->sanctions.apply(adminId,targetId,"warning"," ",null)));
+    assertEquals(400,status(()->sanctions.apply(adminId,targetId,"suspension","x",null)));
+    assertEquals(400,status(()->sanctions.apply(adminId,targetId,"suspension","x",Instant.now().minusSeconds(1))));
+    assertEquals(400,status(()->sanctions.apply(adminId,targetId,"ban","x",Instant.now().plusSeconds(60))));
+    assertEquals(400,status(()->sanctions.apply(adminId,targetId,"nope","x",null)));
+    AuthResponse support=userWithRole("support");
+    assertEquals(403,status(()->sanctions.apply(id(support),targetId,"warning","x",null)));
+    AuthResponse moderator=userWithRole("moderator");
+    assertNotNull(sanctions.list(id(moderator),"active",null,null,null,20));
+    assertEquals(403,status(()->sanctions.apply(id(moderator),targetId,"warning","x",null)));
+  }
+  @Test void historyAndListMaskEmailsAndPaginate() {
+    AuthResponse admin=userWithRole("superadmin"); UUID adminId=id(admin);
+    AuthResponse first=user(), second=user();
+    sanctions.apply(adminId,id(first),"warning","Aviso A",null);
+    sanctions.apply(adminId,id(second),"suspension","Suspens?o B",Instant.now().plus(Duration.ofDays(2)));
+    List<Sanction> history=sanctions.history(adminId,id(first),20);
+    assertEquals(1,history.size());
+    assertEquals("warning",history.get(0).kind());
+    assertTrue(history.get(0).emailMasked().contains("***"));
+    SanctionPage page1=sanctions.list(adminId,"active",null,null,null,1);
+    assertEquals(1,page1.items().size());
+    assertNotNull(page1.nextCursor());
+    SanctionPage page2=sanctions.list(adminId,"active",null,null,page1.nextCursor(),1);
+    assertEquals(1,page2.items().size());
+    assertNotEquals(page1.items().get(0).id(),page2.items().get(0).id());
+    assertTrue(page2.items().get(0).emailMasked().contains("***"));
+  }
+  @Test void suspendedLoginReturnsCodeAndReason() throws Exception {
+    AuthResponse target=user(); UUID admin=withRole("superadmin");
+    sanctions.apply(admin,id(target),"suspension","Pagamento em atraso.",Instant.now().plus(Duration.ofDays(3)));
+    mvc.perform(MockMvcRequestBuilders.post("/api/v1/auth/login")
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("{\"email\":\""+target.user().email()+"\",\"password\":\"test-secret\"}"))
+        .andExpect(MockMvcResultMatchers.status().isForbidden())
+        .andExpect(MockMvcResultMatchers.jsonPath("$.code").value("ACCOUNT_SANCTIONED"))
+        .andExpect(MockMvcResultMatchers.jsonPath("$.kind").value("suspension"))
+        .andExpect(MockMvcResultMatchers.jsonPath("$.reason").value("Pagamento em atraso."))
+        .andExpect(MockMvcResultMatchers.jsonPath("$.expiresAt").exists());
   }
 
   // --- Features: catálogo e quem tem cada uma ---

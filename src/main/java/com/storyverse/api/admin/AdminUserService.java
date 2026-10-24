@@ -37,15 +37,17 @@ public class AdminUserService {
 	private final AuthService auth;
 	private final AuthzService authz;
 	private final FeatureAccessService features;
+	private final SanctionService sanctions;
 	private final JdbcClient jdbc;
 	private final RateLimitGate limits;
 
 	public AdminUserService(AdminUserRepository repository, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits) {
+			FeatureAccessService features, SanctionService sanctions, JdbcClient jdbc, RateLimitGate limits) {
 		this.repository = repository;
 		this.auth = auth;
 		this.authz = authz;
 		this.features = features;
+		this.sanctions = sanctions;
 		this.jdbc = jdbc;
 		this.limits = limits;
 	}
@@ -135,9 +137,10 @@ public class AdminUserService {
 		List<Map<String, Object>> audit = authz.hasRole(actor, AuthzService.SUPERADMIN)
 				? repository.recentAudit(id)
 				: null;
+		List<Sanction> targetSanctions = sanctions.history(actor, id, 20);
 		authz.audit(actor, "user.view", "user", id.toString(), Map.of());
 		return new AdminUserDetail(row.id(), row.name(), row.email(), row.emailConfirmed(), row.createdAt(),
-				row.lastSignInAt(), row.roles(), targetFeatures, row.activeSessions(), audit);
+				row.lastSignInAt(), row.roles(), targetFeatures, row.activeSessions(), audit, targetSanctions);
 	}
 
 	/** Encerra as sessões ativas da conta e audita {@code user.sessions.revoke} na mesma transação. */

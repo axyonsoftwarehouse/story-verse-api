@@ -22,7 +22,7 @@ class AuthCookieTest {
 	@Test
 	void loginSetsHttpOnlyCookieAndDoesNotExposeRefreshTokenInBody() {
 		AuthService service = mock(AuthService.class);
-		when(service.login(any())).thenReturn(new AuthResponse("access", "refresh", 1800, USER));
+		when(service.login(any())).thenReturn(new AuthResponse("access", "refresh", 1800, USER, null));
 		AuthController controller = new AuthController(service, new AuthCookieService(true, "Lax"));
 		MockHttpServletResponse response = new MockHttpServletResponse();
 
@@ -41,7 +41,7 @@ class AuthCookieTest {
 	@Test
 	void refreshReadsTheCookieWhenTheBodyIsMissing() {
 		AuthService service = mock(AuthService.class);
-		when(service.refresh("refresh")).thenReturn(new AuthResponse("new-access", "new-refresh", 1800, USER));
+		when(service.refresh("refresh")).thenReturn(new AuthResponse("new-access", "new-refresh", 1800, USER, null));
 		AuthController controller = new AuthController(service, new AuthCookieService(true, "Lax"));
 		MockHttpServletRequest request = new MockHttpServletRequest();
 		request.setCookies(new Cookie(AuthCookieService.NAME, "refresh"));
