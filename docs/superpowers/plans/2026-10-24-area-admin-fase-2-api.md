@@ -20,7 +20,7 @@
 - Sanções expiradas deixam de valer sem job; a consulta sempre compara `expires_at` com `now()`.
 - Métricas: números agregados, sem PII; superadmin apenas; cache de 5 minutos por intervalo.
 - Auditoria: exportação somente leitura, no máximo 31 dias e 50.000 linhas; registrar `audit.export` com ator, filtros e quantidade.
-- Migração nova é `V18__admin_phase2.sql` (a última é `V17_3`).
+- Migrações novas: `V18__admin_phase2_accounts.sql` (2A) e `V19__admin_phase2_metrics.sql` (2C).
 - Erros em português com `AuthException(status, mensagem, code?)`; JSON camelCase e `Instant` ISO-8601.
 - Nunca logar e-mail completo; não editar `src/test/resources/schema-postgres.sql` para tabelas de aplicação.
 
@@ -28,7 +28,7 @@
 
 1. **Lista de contas em endpoint próprio.** `GET /api/v1/admin/users?q=` continua existindo (lista simples, compatível com o web atual). A lista nova com filtros e cursor fica em `GET /api/v1/admin/users/list`; o bloco inicial em `GET /api/v1/admin/users/recent`. Assim a API pode subir antes do web sem quebrar a busca antiga.
 2. **Sem assinatura.** `AdminUserSummary`/`AdminUserDetail` não ganham `subscriptionStatus`/`subscription` nesta fase.
-3. **Métricas via funções de agregação `security definer`.** `reading_days` e `library_entries` são fechadas por RLS; em vez de abrir SELECT para o runtime, a V18 cria funções que devolvem só agregados (sem `user_id`) e concede EXECUTE a `storyverse_api`.
+3. **Métricas via funções de agregação `security definer`.** `reading_days` e `library_entries` são fechadas por RLS; em vez de abrir SELECT para o runtime, a V19 cria funções que devolvem só agregados (sem `user_id`) e concede EXECUTE a `storyverse_api`.
 4. **Retenção:** Dn = conta da coorte que teve pelo menos um dia com `reading_days.seconds > 0` entre o cadastro e o dia do cadastro + n (inclusive). Coorte por semana de cadastro; o rótulo no web deixa claro “leu nos primeiros N dias”.
 5. **DAU/leitores ativos:** `count(distinct user_id)` de `reading_days` com `seconds > 0` no dia. “Contas ativas” por sessão não entra no primeiro corte para não somar duas definições.
 6. **Exportação CSV em streaming:** `HttpServletResponse` + `JdbcTemplate.query` com `RowCallbackHandler`. Delimitador `;`, BOM UTF-8, campos com aspas quando necessário; `createdAt` em ISO-8601 UTC.
@@ -58,10 +58,12 @@ Um método: `./mvnw -q test -Dtest=AdminIntegrationTest#nomeDoMetodo`.
 
 ---
 
-## Task 1: Migração V18 (índices e funções de métricas)
+## Task 1: Migração V18 (índices da 2A)
+
+> Nota de entrega: a V18 desta fase contém só os índices. As funções de métricas foram movidas para a V19 (Task 5), para a 2A não carregar o risco da 2C.
 
 **Files**
-- Create: `src/main/resources/db/migration/V18__admin_phase2.sql`
+- Create: `src/main/resources/db/migration/V18__admin_phase2_accounts.sql`
 - Create: `src/test/java/com/storyverse/api/admin/AdminPhase2MigrationTest.java` (ou cobrir no AdminIntegrationTest)
 
 **Interfaces**
@@ -187,6 +189,7 @@ Um método: `./mvnw -q test -Dtest=AdminIntegrationTest#nomeDoMetodo`.
 ## Task 5: Métricas de produto (2C)
 
 **Files**
+- Create: `src/main/resources/db/migration/V19__admin_phase2_metrics.sql` (as funções descritas na Task 1 original)
 - Create: `src/main/java/com/storyverse/api/admin/AdminMetricsController.java`
 - Create: `src/main/java/com/storyverse/api/admin/AdminMetricsService.java`
 - Create: `src/main/java/com/storyverse/api/admin/AdminMetrics*.java` (records)
