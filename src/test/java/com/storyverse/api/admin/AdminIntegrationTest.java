@@ -235,6 +235,49 @@ class AdminIntegrationTest {
     assertEquals(target,found.get(0).id());
     assertEquals(List.of("moderator"),found.get(0).roles());
   }
+  @Test void recentAccountsAreMaskedAndNewestFirst() {
+    Named target=named();
+    AuthResponse support=userWithRole("support");
+    List<AdminUserSummary> rows=users.recent(support.accessToken(),50);
+    AdminUserSummary row=rows.stream().filter(r->r.id().equals(id(target.session()))).findFirst().orElseThrow();
+    assertTrue(row.emailMasked().contains("***"));
+    assertFalse(row.emailMasked().contains(target.email()));
+    assertNotNull(row.createdAt());
+    assertNotNull(row.roles());
+  }
+  @Test void listPaginatesWithoutDuplicating() {
+    String tag=UUID.randomUUID().toString().replace("-","").substring(0,12);
+    AuthResponse support=userWithRole("support");
+    AuthResponse first=(AuthResponse)auth.signup(new SignupRequest("a-"+tag+"@example.invalid","test-secret","ZZ "+tag));
+    AuthResponse second=(AuthResponse)auth.signup(new SignupRequest("b-"+tag+"@example.invalid","test-secret","ZZ "+tag));
+    AdminUserPage page1=users.list(support.accessToken(),"ZZ "+tag,null,null,null,1);
+    assertEquals(List.of(id(second)),page1.items().stream().map(AdminUserSummary::id).toList());
+    assertNotNull(page1.nextCursor());
+    AdminUserPage page2=users.list(support.accessToken(),"ZZ "+tag,null,null,page1.nextCursor(),1);
+    assertEquals(List.of(id(first)),page2.items().stream().map(AdminUserSummary::id).toList());
+    assertNull(page2.nextCursor());
+  }
+  @Test void listFiltersByRoleAndFeature() {
+    AuthResponse support=userWithRole("support");
+    AuthResponse target=userWithRole("support");
+    AdminUserPage byRole=users.list(support.accessToken(),id(target).toString(),"support",null,null,20);
+    assertEquals(List.of(id(target)),byRole.items().stream().map(AdminUserSummary::id).toList());
+
+    UUID plain=id(user());
+    AuthResponse superadmin=userWithRole("superadmin");
+    features.grant(id(superadmin),plain,"library",true);
+    AdminUserPage byFeature=users.list(support.accessToken(),plain.toString(),null,"library",null,20);
+    assertEquals(List.of(plain),byFeature.items().stream().map(AdminUserSummary::id).toList());
+    assertTrue(users.list(support.accessToken(),plain.toString(),null,"nope",null,20).items().isEmpty());
+  }
+  @Test void listRejectsInvalidFiltersAndModerator() {
+    AuthResponse support=userWithRole("support");
+    assertEquals(400,status(()->users.list(support.accessToken(),"ab",null,null,null,20)));
+    assertEquals(400,status(()->users.list(support.accessToken(),null,"chefe",null,null,20)));
+    AuthResponse moderator=userWithRole("moderator");
+    assertEquals(403,status(()->users.list(moderator.accessToken(),null,null,null,null,20)));
+    assertEquals(403,status(()->users.recent(moderator.accessToken(),20)));
+  }
   @Test void moderatorCannotSearch() {
     UUID target=id(user());
     AuthResponse moderator=userWithRole("moderator");

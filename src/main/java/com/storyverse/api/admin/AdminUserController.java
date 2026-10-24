@@ -34,6 +34,24 @@ public class AdminUserController {
 		return service.search(AuthTokens.bearer(authorization), q);
 	}
 
+	@GetMapping("/recent")
+	public List<AdminUserSummary> recent(
+			@RequestParam(defaultValue = "20") int limit,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.recent(AuthTokens.bearer(authorization), limit);
+	}
+
+	@GetMapping("/list")
+	public AdminUserPage list(
+			@RequestParam(required = false) String q,
+			@RequestParam(required = false) String role,
+			@RequestParam(required = false) String feature,
+			@RequestParam(required = false) String cursor,
+			@RequestParam(defaultValue = "20") int limit,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.list(AuthTokens.bearer(authorization), q, role, feature, cursor, limit);
+	}
+
 	@GetMapping("/{id}")
 	public AdminUserDetail detail(
 			@PathVariable UUID id,

@@ -1,6 +1,7 @@
 package com.storyverse.api.admin;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,8 +27,11 @@ public class AdminUserService {
 			"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 	private static final int SEARCHES_PER_MINUTE = 30;
 	private static final int MIN_NAME_LENGTH = 3;
+	private static final int MAX_PAGE_SIZE = 50;
 	/** Pelo painel só estes papéis mudam; {@code superadmin} só pelo script na VPS. */
 	private static final Set<String> PANEL_ROLES = Set.of(AuthzService.MODERATOR, AuthzService.SUPPORT);
+	private static final Set<String> ACCOUNT_ROLES = Set.of(
+			AuthzService.SUPERADMIN, AuthzService.MODERATOR, AuthzService.SUPPORT);
 
 	private final AdminUserRepository repository;
 	private final AuthService auth;
@@ -65,6 +69,58 @@ public class AdminUserService {
 			return repository.searchByEmailOrName(q);
 		}
 		throw new AuthException(400, "Busque por UUID, e-mail ou ao menos 3 letras do nome.");
+	}
+
+	/** Bloco "contas recentes": sem cursor, no máximo 50. */
+	@Transactional(readOnly = true)
+	public List<AdminUserSummary> recent(String token, int limit) {
+		UUID actor = auth.authenticate(token);
+		requireAccountsAccess(actor);
+		DbSession.setUser(jdbc, actor);
+		return repository.recent(clamp(limit));
+	}
+
+	/** Lista filtrável com cursor. Sem filtros, devolve as contas mais recentes. */
+	@Transactional(readOnly = true)
+	public AdminUserPage list(String token, String query, String role, String feature, String cursor, int limit) {
+		UUID actor = auth.authenticate(token);
+		requireAccountsAccess(actor);
+		limits.check("admin-user-list:" + actor, SEARCHES_PER_MINUTE, Duration.ofMinutes(1));
+		DbSession.setUser(jdbc, actor);
+		String q = query == null ? "" : query.strip();
+		UUID id = null;
+		String pattern = null;
+		if (!q.isEmpty()) {
+			if (UUID_FORMAT.matcher(q).matches()) {
+				id = UUID.fromString(q);
+			} else if (q.length() >= MIN_NAME_LENGTH) {
+				pattern = "%" + AdminUserRepository.escapeLike(q) + "%";
+			} else {
+				throw new AuthException(400, "Busque por UUID, e-mail ou ao menos 3 letras do nome.");
+			}
+		}
+		String roleFilter = blankToNull(role);
+		if (roleFilter != null && !ACCOUNT_ROLES.contains(roleFilter)) {
+			throw new AuthException(400, "Papel inválido para o filtro.");
+		}
+		int pageSize = clamp(limit);
+		List<AdminUserSummary> rows = repository.list(
+				id, pattern, roleFilter, blankToNull(feature), AdminCursor.decode(cursor), pageSize + 1);
+		String next = null;
+		if (rows.size() > pageSize) {
+			rows = rows.subList(0, pageSize);
+			AdminUserSummary last = rows.get(rows.size() - 1);
+			next = AdminCursor.from(Instant.ofEpochMilli(last.createdAt().toEpochMilli()), last.id()).encode();
+		}
+		return new AdminUserPage(rows, next);
+	}
+
+	private static int clamp(int limit) {
+		return Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
+	}
+
+	private static String blankToNull(String value) {
+		return value == null || value.isBlank() ? null : value.strip();
 	}
 
 	/** Abrir o detalhe é auditado ({@code user.view}) na mesma transação. */

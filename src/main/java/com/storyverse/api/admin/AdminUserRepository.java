@@ -27,7 +27,7 @@ public class AdminUserRepository {
 	/** Papéis de cada conta na mesma consulta (sem N+1). */
 	private static final String SUMMARY_COLUMNS = """
 			select u.id, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name, u.email,
-			       u.email_confirmed_at is not null as email_confirmed, u.created_at,
+			       u.email_confirmed_at is not null as email_confirmed, u.created_at, u.last_sign_in_at,
 			       coalesce((select array_agg(r.role::text order by r.role)
 			                   from public.user_roles r where r.user_id = u.id), '{}'::text[]) as roles
 			  from auth.users u
@@ -55,6 +55,68 @@ public class AdminUserRepository {
 				.param("pattern", "%" + escapeLike(part) + "%")
 				.param("limit", SEARCH_LIMIT)
 				.query(AdminUserRepository::summary).list();
+	}
+
+	/** As contas mais recentes, sem cursor (bloco inicial do painel). */
+	public List<AdminUserSummary> recent(int limit) {
+		return jdbc.sql(SUMMARY_COLUMNS + """
+				 order by u.created_at desc, u.id desc
+				 limit :limit
+				""")
+				.param("limit", limit)
+				.query(AdminUserRepository::summary).list();
+	}
+
+	/**
+	 * Lista filtrada com keyset por {@code (created_at, id)}. {@code pattern} já vem com os
+	 * curingas; {@code role}/{@code feature} são correspondências exatas.
+	 */
+	public List<AdminUserSummary> list(UUID id, String pattern, String role, String feature,
+			AdminCursor cursor, int limit) {
+		StringBuilder sql = new StringBuilder(SUMMARY_COLUMNS).append(" where 1 = 1");
+		Map<String, Object> params = new LinkedHashMap<>();
+		if (id != null) {
+			sql.append(" and u.id = :id");
+			params.put("id", id);
+		}
+		if (pattern != null) {
+			sql.append("""
+					 and (u.email ilike :pattern escape '\\'
+					   or (u.raw_user_meta_data->>'name') ilike :pattern escape '\\')
+					""");
+			params.put("pattern", pattern);
+		}
+		if (role != null) {
+			sql.append("""
+					 and exists (select 1 from public.user_roles r
+					              where r.user_id = u.id and r.role = :role)
+					""");
+			params.put("role", role);
+		}
+		if (feature != null) {
+			sql.append("""
+					 and exists (select 1 from public.feature_access f
+					              where f.user_id = u.id and f.feature = :feature and f.enabled)
+					""");
+			params.put("feature", feature);
+		}
+		if (cursor != null) {
+			sql.append("""
+					 and (date_trunc('milliseconds', u.created_at), u.id) < (:cursorTime, :cursorId)
+					""");
+			params.put("cursorTime", Timestamp.from(cursor.time()));
+			params.put("cursorId", cursor.id());
+		}
+		sql.append("""
+				 order by date_trunc('milliseconds', u.created_at) desc, u.id desc
+				 limit :limit
+				""");
+		params.put("limit", limit);
+		var spec = jdbc.sql(sql.toString());
+		for (Map.Entry<String, Object> param : params.entrySet()) {
+			spec = spec.param(param.getKey(), param.getValue());
+		}
+		return spec.query(AdminUserRepository::summary).list();
 	}
 
 	/** Dados da conta, sem features nem auditoria (o serviço completa). */
@@ -147,6 +209,7 @@ public class AdminUserRepository {
 				EmailMask.mask(rs.getString("email")),
 				rs.getBoolean("email_confirmed"),
 				instant(rs, "created_at"),
+				instant(rs, "last_sign_in_at"),
 				strings(rs.getArray("roles")));
 	}
 

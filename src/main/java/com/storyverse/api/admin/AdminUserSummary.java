@@ -6,5 +6,5 @@ import java.util.UUID;
 
 /** Uma conta na busca do painel. O e-mail vem sempre mascarado. */
 public record AdminUserSummary(UUID id, String name, String emailMasked, boolean emailConfirmed,
-		Instant createdAt, List<String> roles) {
+		Instant createdAt, Instant lastSignInAt, List<String> roles) {
 }
