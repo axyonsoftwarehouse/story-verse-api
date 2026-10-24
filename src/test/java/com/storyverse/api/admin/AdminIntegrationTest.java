@@ -1,6 +1,8 @@
 package com.storyverse.api.admin;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.*;
 import java.util.*;
@@ -863,6 +865,38 @@ class AdminIntegrationTest {
     assertEquals(400,status(()->auditService.audit(superadmin.accessToken(),filter(null,null,null,null,null,null,"abc"))));
     String json=body("Bearer "+superadmin.accessToken(),"/api/v1/admin/audit?from=ontem",false,admin,400);
     assertTrue(json.contains("Data inv"));
+  }
+
+  @Test void auditCsvExportRespectsFiltersAndAudits() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin"); UUID admin=id(superadmin);
+    String tag="csv"+UUID.randomUUID().toString().replace("-","");
+    insertAudit(admin,tag+".x","a","2026-03-01T12:00:00Z");
+    insertAudit(admin,tag+".y","b","2026-03-02T12:00:00Z");
+    ByteArrayOutputStream out=new ByteArrayOutputStream();
+    auditService.exportCsv(superadmin.accessToken(),
+        filter(tag+".",null,null,null,"2026-03-01","2026-03-31",null),out);
+    String csv=out.toString(StandardCharsets.UTF_8);
+    assertTrue(csv.startsWith("\uFEFF"));
+    assertTrue(csv.contains("id;createdAt;actor;action;targetType;targetId;metadata"));
+    assertTrue(csv.contains(tag+".x"));
+    assertTrue(csv.contains(tag+".y"));
+    assertEquals(1,audits("audit.export","export"));
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/audit/export?from=2026-03-01&to=2026-03-31&action="+tag+".")
+        .header("Authorization","Bearer "+superadmin.accessToken()))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(MockMvcResultMatchers.content().contentTypeCompatibleWith("text/csv"))
+        .andExpect(MockMvcResultMatchers.content().string(org.hamcrest.Matchers.containsString(tag+".x")));
+  }
+  @Test void auditCsvExportRejectsBadPeriodAndPermissions() throws Exception {
+    AuthResponse superadmin=userWithRole("superadmin");
+    ByteArrayOutputStream out=new ByteArrayOutputStream();
+    assertEquals(400,status(()->auditService.exportCsv(superadmin.accessToken(),
+        filter(null,null,null,null,null,null,null),out)));
+    assertEquals(400,status(()->auditService.exportCsv(superadmin.accessToken(),
+        filter(null,null,null,null,"2026-01-01","2026-03-01",null),out)));
+    AuthResponse support=userWithRole("support");
+    assertEquals(403,status(()->auditService.exportCsv(support.accessToken(),
+        filter(null,null,null,null,"2026-03-01","2026-03-02",null),out)));
   }
 
   // --- Task 8: matriz de permissões da seção 3 da spec ---
