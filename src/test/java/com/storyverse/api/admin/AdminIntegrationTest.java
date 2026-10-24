@@ -515,7 +515,8 @@ class AdminIntegrationTest {
     AuthResponse support=userWithRole("support");
     assertEquals(403,status(()->sanctions.apply(id(support),targetId,"warning","x",null)));
     AuthResponse moderator=userWithRole("moderator");
-    assertEquals(403,status(()->sanctions.list(id(moderator),"active",null,null,null,20)));
+    assertNotNull(sanctions.list(id(moderator),"active",null,null,null,20));
+    assertEquals(403,status(()->sanctions.apply(id(moderator),targetId,"warning","x",null)));
   }
   @Test void historyAndListMaskEmailsAndPaginate() {
     AuthResponse admin=userWithRole("superadmin"); UUID adminId=id(admin);
