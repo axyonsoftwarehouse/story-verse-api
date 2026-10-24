@@ -44,22 +44,15 @@ public class AdminUserRepository {
 				.param("id", id).query(AdminUserRepository::summary).list();
 	}
 
-	public List<AdminUserSummary> searchByEmail(String email) {
+	/** Busca por parte do e-mail ou do nome (sem exigir o domínio nem o e-mail completo). */
+	public List<AdminUserSummary> searchByEmailOrName(String part) {
 		return jdbc.sql(SUMMARY_COLUMNS + """
-				 where lower(u.email) = lower(:q)
-				 order by u.created_at desc
-				 limit :limit
-				""").param("q", email).param("limit", SEARCH_LIMIT).query(AdminUserRepository::summary).list();
-	}
-
-	/** {@code namePart} é escapado aqui: {@code %}, {@code _} e a barra invertida valem como texto. */
-	public List<AdminUserSummary> searchByName(String namePart) {
-		return jdbc.sql(SUMMARY_COLUMNS + """
-				 where (u.raw_user_meta_data->>'name') ilike :pattern escape '\\'
+				 where u.email ilike :pattern escape '\\'
+				    or (u.raw_user_meta_data->>'name') ilike :pattern escape '\\'
 				 order by u.created_at desc
 				 limit :limit
 				""")
-				.param("pattern", "%" + escapeLike(namePart) + "%")
+				.param("pattern", "%" + escapeLike(part) + "%")
 				.param("limit", SEARCH_LIMIT)
 				.query(AdminUserRepository::summary).list();
 	}
