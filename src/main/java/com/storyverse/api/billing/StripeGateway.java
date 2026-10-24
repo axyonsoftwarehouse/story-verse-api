@@ -142,14 +142,6 @@ public class StripeGateway {
 		}
 	}
 
-	public Map<String, String> metadata(Event event) {
-		return Map.of();
-	}
-
-	public Map<String, String> metadata(Event event) {
-		return Map.of();
-	}
-
 	private void requireConfigured() {
 		if (!configured()) {
 			throw new IllegalStateException("Assinatura indisponível: Stripe não configurado.");

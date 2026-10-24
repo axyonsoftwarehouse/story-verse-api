@@ -124,6 +124,7 @@ public class BillingService {
 	}
 
 	/** Abre o Checkout do Stripe para a conta; cria o cliente na primeira vez. */
+	@Transactional
 	public Map<String, Object> checkout(UUID userId) {
 		requireConfigured();
 		asUser(userId);
@@ -145,6 +146,7 @@ public class BillingService {
 	}
 
 	/** Portal do cliente: cartão, faturas, cancelamento e recibo. */
+	@Transactional
 	public Map<String, Object> portal(UUID userId) {
 		requireConfigured();
 		asUser(userId);

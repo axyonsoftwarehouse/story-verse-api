@@ -89,8 +89,11 @@ public class BillingWebhookService {
 
 	private void invoice(StripeObject object) {
 		if (!(object instanceof Invoice invoice)) throw new AuthException(500, "Fatura inválida.");
-		if (invoice.getSubscription() == null) return;
-		subscription(invoice.getSubscription(), invoice.getStatus());
+		String subscriptionId = invoice.getParent() == null || invoice.getParent().getSubscriptionDetails() == null
+				? null
+				: invoice.getParent().getSubscriptionDetails().getSubscription();
+		if (subscriptionId == null) return;
+		subscription(subscriptionId, invoice.getStatus());
 	}
 
 	private void subscription(StripeObject object, String invoiceStatus) {
@@ -125,8 +128,12 @@ public class BillingWebhookService {
 
 	private static StripeObject object(Event event) {
 		StripeObject object = event.getDataObjectDeserializer().getObject().orElse(null);
-		if (object == null) object = event.getDataObjectDeserializer().deserializeUnsafe();
-		return object;
+		if (object != null) return object;
+		try {
+			return event.getDataObjectDeserializer().deserializeUnsafe();
+		} catch (com.stripe.exception.EventDataObjectDeserializationException exception) {
+			throw new AuthException(500, "Evento do Stripe sem objeto legível.");
+		}
 	}
 
 	private static Timestamp timestamp(Long seconds) {
