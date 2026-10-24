@@ -15,6 +15,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.common.RateLimitGate;
 import com.storyverse.api.common.SecurityEvents;
 import com.storyverse.api.feature.FeatureAccessService;
@@ -39,6 +40,7 @@ public class AuthService {
 	private final AuthzService authz;
 	private final SecurityEvents security;
 	private final FeatureAccessService featureAccess;
+	private final BillingService billing;
 	private final boolean requireEmailConfirmation;
 	private final Duration confirmationTtl;
 	private final Duration resetTtl;
@@ -55,6 +57,7 @@ public class AuthService {
 			AuthzService authz,
 			SecurityEvents security,
 			FeatureAccessService featureAccess,
+			BillingService billing,
 			@Value("${app.auth.require-email-confirmation:true}") boolean requireEmailConfirmation,
 			@Value("${app.auth.confirmation-ttl:PT24H}") Duration confirmationTtl,
 			@Value("${app.auth.reset-ttl:PT1H}") Duration resetTtl) {
@@ -71,6 +74,7 @@ public class AuthService {
 		this.authz = authz;
 		this.security = security;
 		this.featureAccess = featureAccess;
+		this.billing = billing;
 		this.requireEmailConfirmation = requireEmailConfirmation;
 		this.confirmationTtl = confirmationTtl;
 		this.resetTtl = resetTtl;
@@ -290,7 +294,7 @@ public class AuthService {
 	public CapabilitiesResponse capabilities(String accessToken) {
 		SessionRow session = requireSession(accessToken, false);
 		return new CapabilitiesResponse(List.copyOf(authz.roles(session.userId())),
-				featureAccess.features(session.userId()));
+				featureAccess.features(session.userId()), billing.capabilities(session.userId()));
 	}
 
 	/** Id do usuário da sessão (Bearer). Usado pelos módulos de dados. */

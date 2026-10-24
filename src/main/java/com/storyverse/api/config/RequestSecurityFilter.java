@@ -4,12 +4,15 @@ import java.io.IOException;
 import java.time.Duration;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.common.RateLimitGate;
 
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class RequestSecurityFilter extends OncePerRequestFilter {
   private final RateLimitGate limits;
   public RequestSecurityFilter(RateLimitGate limits) { this.limits = limits; }
