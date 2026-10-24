@@ -1,0 +1,20 @@
+package com.storyverse.api.admin;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+
+/** Números agregados da fase 2C. Sem PII: contas/leitura/features/retenção. */
+public record AdminMetrics(Accounts accounts, Reading reading, Map<String, Long> features,
+		List<Retention> retention) {
+
+	public record Accounts(long total, long new7, long new30, long confirmed, long staff) {
+	}
+
+	public record Reading(long activeReaders, long minutes, long booksStarted, long booksFinished,
+			long shelfEntries) {
+	}
+
+	public record Retention(LocalDate cohortWeek, long cohortSize, long d1, long d7, long d30) {
+	}
+}
