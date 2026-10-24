@@ -63,6 +63,7 @@ class AdminIntegrationTest {
   @Autowired CommunityService community;
   @Autowired FeatureAccessService features;
   @Autowired SanctionService sanctions;
+  @Autowired AdminMetricsService metrics;
   @Autowired SessionRepository sessions;
   @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
@@ -546,6 +547,43 @@ class AdminIntegrationTest {
         .andExpect(MockMvcResultMatchers.jsonPath("$.kind").value("suspension"))
         .andExpect(MockMvcResultMatchers.jsonPath("$.reason").value("Pagamento em atraso."))
         .andExpect(MockMvcResultMatchers.jsonPath("$.expiresAt").exists());
+  }
+
+  // --- M?tricas (2C) ---
+  @Test void metricsRequireSuperadmin() {
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator");
+    assertEquals(403,status(()->metrics.overview(support.accessToken(),null,null)));
+    assertEquals(403,status(()->metrics.readingSeries(moderator.accessToken(),null,null,"day")));
+    assertEquals(403,status(()->metrics.retention(support.accessToken(),null,null)));
+  }
+  @Test void metricsOverviewReadingAndRetentionWork() {
+    AuthResponse admin=userWithRole("superadmin"); UUID target=id(user());
+    jdbc.sql("""
+        insert into public.reading_days(user_id,day,seconds)
+        values (:id, current_date - 1, 600)
+        on conflict (user_id,day) do update set seconds=600
+        """).param("id",target).update();
+    String from=LocalDate.now().minusDays(7).toString(), to=LocalDate.now().toString();
+    AdminMetrics overview=metrics.overview(admin.accessToken(),from,to);
+    assertTrue(overview.accounts().total()>0);
+    assertTrue(overview.accounts().confirmed()>0);
+    assertNotNull(overview.features());
+    assertNotNull(overview.retention());
+    List<AdminMetricsReadingPoint> days=metrics.readingSeries(admin.accessToken(),from,to,"day");
+    assertFalse(days.isEmpty());
+    assertTrue(days.stream().allMatch(p->p.activeReaders()>=0 && p.minutes()>=0));
+    List<AdminMetricsReadingPoint> weeks=metrics.readingSeries(admin.accessToken(),from,to,"week");
+    assertFalse(weeks.isEmpty());
+    assertNotNull(metrics.retention(admin.accessToken(),from,to));
+    AdminMetrics runtime=asRuntime(id(admin),()->metrics.overview(admin.accessToken(),LocalDate.now().minusDays(8).toString(),to));
+    assertNotNull(runtime);
+  }
+  @Test void metricsRejectInvalidRange() {
+    AuthResponse admin=userWithRole("superadmin");
+    assertEquals(400,status(()->metrics.overview(admin.accessToken(),"2026-01-02","2026-01-01")));
+    assertEquals(400,status(()->metrics.overview(admin.accessToken(),"2026-01-01","2026-05-01")));
+    assertEquals(400,status(()->metrics.overview(admin.accessToken(),"lixo",null)));
+    assertEquals(400,status(()->metrics.readingSeries(admin.accessToken(),null,null,"year")));
   }
 
   // --- Features: catálogo e quem tem cada uma ---
