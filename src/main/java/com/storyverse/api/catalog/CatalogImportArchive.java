@@ -33,11 +33,26 @@ public class CatalogImportArchive {
 
 	public Extracted extract(byte[] zipBytes, Path directory) {
 		if (zipBytes == null || zipBytes.length == 0) throw new AuthException(400, "O arquivo ZIP está vazio.");
+		return extract(new java.io.ByteArrayInputStream(zipBytes), directory);
+	}
+
+	/** Lê o ZIP do disco em streaming (um lote de 200 MB não precisa caber inteiro na memória). */
+	public Extracted extract(Path zipPath, Path directory) {
+		try (InputStream input = new java.io.BufferedInputStream(Files.newInputStream(zipPath))) {
+			return extract(input, directory);
+		} catch (AuthException exception) {
+			throw exception;
+		} catch (IOException exception) {
+			throw new AuthException(400, "Não foi possível abrir o ZIP.");
+		}
+	}
+
+	private Extracted extract(InputStream input, Path directory) {
 		Map<String, Path> files = new LinkedHashMap<>();
 		Path metadata = null;
 		long total = 0;
 		int entries = 0;
-		try (ZipInputStream zip = new ZipInputStream(new java.io.ByteArrayInputStream(zipBytes))) {
+		try (ZipInputStream zip = new ZipInputStream(input)) {
 			ZipEntry entry;
 			while ((entry = zip.getNextEntry()) != null) {
 				if (entry.isDirectory()) continue;

@@ -93,7 +93,7 @@ public class CatalogImportService {
 			throw new AuthException(400, "O arquivo precisa estar na sua pasta de importações.");
 		}
 		boolean dryRun = bool(body, "dryRun", false);
-		byte[] archive = storage.read(StorageBucket.CATALOG_IMPORTS, archivePath)
+		Path archive = storage.file(StorageBucket.CATALOG_IMPORTS, archivePath)
 				.orElseThrow(() -> new AuthException(400, "Pacote de importação não encontrado."));
 		String fileName = text(body, "fileName");
 		if (fileName == null) fileName = archivePath.substring(archivePath.lastIndexOf('/') + 1);
