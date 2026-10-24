@@ -141,7 +141,8 @@ public class AdminUserRepository {
 						strings(rs.getArray("roles")),
 						List.of(),
 						rs.getInt("active_sessions"),
-						null)).optional();
+						null,
+						List.of())).optional();
 	}
 
 	/** As últimas entradas da auditoria com a conta como alvo, mais novas primeiro. */
