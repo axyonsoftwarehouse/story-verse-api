@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
+import com.storyverse.api.catalog.CatalogRepository;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.storage.StorageService;
@@ -38,9 +39,10 @@ public class CommunityService {
 	private final StorageService storage;
 	private final StorageAccess access;
 	private final CoverUrlPolicy covers;
+	private final CatalogRepository catalog;
 
 	public CommunityService(CommunityRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc,
-			StorageService storage, StorageAccess access, CoverUrlPolicy covers) {
+			StorageService storage, StorageAccess access, CoverUrlPolicy covers, CatalogRepository catalog) {
 		this.repository = repository;
 		this.auth = auth;
 		this.authz = authz;
@@ -48,6 +50,7 @@ public class CommunityService {
 		this.storage = storage;
 		this.access = access;
 		this.covers = covers;
+		this.catalog = catalog;
 	}
 
 	@Transactional(readOnly = true)
@@ -127,6 +130,9 @@ public class CommunityService {
 		try {
 			Map<String, Object> reviewed = repository.review(params)
 					.orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+			if ("approved".equals(status)) {
+				catalog.promoteApproved(id);
+			}
 			authz.audit(userId, "book_submission.review", "book_submission", id.toString(),
 					Map.of("status", status, "note", note == null ? "" : note));
 			return reviewed;

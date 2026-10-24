@@ -140,6 +140,10 @@ public class StorageService {
 			case "image/webp" -> n >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F'
 					&& head[3] == 'F' && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P';
 			case "application/gzip" -> n >= 2 && (head[0] & 0xFF) == 0x1F && (head[1] & 0xFF) == 0x8B;
+			case "application/pdf" -> n >= 5 && head[0] == '%' && head[1] == 'P' && head[2] == 'D'
+					&& head[3] == 'F' && head[4] == '-';
+			case "application/epub+zip" -> n >= 4 && head[0] == 'P' && head[1] == 'K'
+					&& head[2] == 0x03 && head[3] == 0x04;
 			case "text/plain" -> isText(file);
 			default -> false;
 		};
