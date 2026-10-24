@@ -1,5 +1,6 @@
 package com.storyverse.api.catalog;
 
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.http.MediaType;
@@ -19,9 +20,11 @@ import com.storyverse.api.auth.AuthTokens;
 public class CatalogController {
 
 	private final CatalogService service;
+	private final CatalogCollectionService collections;
 
-	public CatalogController(CatalogService service) {
+	public CatalogController(CatalogService service, CatalogCollectionService collections) {
 		this.service = service;
+		this.collections = collections;
 	}
 
 	@GetMapping("/books")
@@ -40,7 +43,19 @@ public class CatalogController {
 
 	@GetMapping("/books/{bookKey}")
 	public Map<String, Object> get(@PathVariable String bookKey) {
-		return service.get(bookKey);
+		Map<String, Object> book = service.get(bookKey);
+		book.put("collections", collections.collectionsForBookKey(bookKey));
+		return book;
+	}
+
+	@GetMapping("/collections")
+	public List<Map<String, Object>> collections() {
+		return collections.publicList();
+	}
+
+	@GetMapping("/collections/{slug}")
+	public Map<String, Object> collection(@PathVariable String slug) {
+		return collections.publicGet(slug);
 	}
 
 	@GetMapping(value = "/books/{bookKey}/text", produces = MediaType.TEXT_PLAIN_VALUE)

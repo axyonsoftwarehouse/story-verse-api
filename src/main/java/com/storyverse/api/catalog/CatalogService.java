@@ -93,6 +93,16 @@ public class CatalogService {
 	@Transactional
 	public Map<String, Object> create(String token, Map<String, Object> body) {
 		UUID actor = moderator(token);
+		return createInternal(actor, body, "admin");
+	}
+
+	/** Criação usada pela importação em lote: sem autenticar de novo, com origem `import`. */
+	@Transactional
+	public Map<String, Object> createForImport(UUID actor, Map<String, Object> body) {
+		return createInternal(actor, body, "import");
+	}
+
+	private Map<String, Object> createInternal(UUID actor, Map<String, Object> body, String source) {
 		String title = required(body, "title");
 		String originalPath = required(body, "originalPath");
 		String originalType = required(body, "originalContentType");
@@ -118,6 +128,7 @@ public class CatalogService {
 		Map<String, Object> params = new LinkedHashMap<>();
 		params.put("id", id);
 		params.put("book_key", bookKey);
+		params.put("source", source);
 		params.put("title", title);
 		params.put("author", text(body, "author"));
 		params.put("genre", text(body, "genre"));
@@ -143,7 +154,7 @@ public class CatalogService {
 			Map<String, Object> created = repository.insert(params)
 					.orElseThrow(() -> new AuthException(400, "Não foi possível criar o livro."));
 			authz.audit(actor, "catalog.create", "catalog_book", id.toString(),
-					Map.of("bookKey", bookKey, "status", status, "title", title));
+					Map.of("bookKey", bookKey, "status", status, "title", title, "source", source));
 			return created;
 		} catch (DataAccessException exception) {
 			throw new AuthException(400, DbErrors.message(exception));

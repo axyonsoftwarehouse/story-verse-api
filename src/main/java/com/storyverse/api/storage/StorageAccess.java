@@ -32,7 +32,7 @@ public class StorageAccess {
 
   public boolean readable(UUID user, StorageBucket bucket, String path) {
     com.storyverse.api.common.DbSession.setUser(jdbc, user);
-    if (bucket == StorageBucket.CATALOG_BOOKS) return canModerate(user);
+    if (bucket == StorageBucket.CATALOG_BOOKS || bucket == StorageBucket.CATALOG_IMPORTS) return canModerate(user);
     if (bucket.publiclyReadable() || path.startsWith(user + "/")) return true;
     return bucket == StorageBucket.COMMUNITY_BOOKS && (canModerate(user) || approvedOwnedByAuthor(path));
   }
