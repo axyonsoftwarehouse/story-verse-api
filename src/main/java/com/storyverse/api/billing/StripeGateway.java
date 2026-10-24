@@ -32,7 +32,7 @@ public class StripeGateway {
 
 	public record SubscriptionState(String id, String customerId, String priceId, String status,
 			Long currentPeriodStart, Long currentPeriodEnd, boolean cancelAtPeriodEnd,
-			Long trialEnd, Long canceledAt) {
+			Long trialEnd, Long canceledAt, Long amountCents, String currency) {
 	}
 
 	private final String secretKey;
@@ -118,13 +118,16 @@ public class StripeGateway {
 		try {
 			Subscription subscription = Subscription.retrieve(subscriptionId);
 			var items = subscription.getItems().getData();
-			String price = items.isEmpty() ? "" : items.get(0).getPrice().getId();
+			var price = items.isEmpty() ? null : items.get(0).getPrice();
+			String priceId = price == null ? "" : price.getId();
+			Long amount = price == null ? null : price.getUnitAmount();
+			String currency = price == null ? null : price.getCurrency();
 			Long periodStart = items.isEmpty() ? null : items.get(0).getCurrentPeriodStart();
 			Long periodEnd = items.isEmpty() ? null : items.get(0).getCurrentPeriodEnd();
-			return new SubscriptionState(subscription.getId(), subscription.getCustomer(), price,
+			return new SubscriptionState(subscription.getId(), subscription.getCustomer(), priceId,
 					subscription.getStatus(), periodStart, periodEnd,
 					Boolean.TRUE.equals(subscription.getCancelAtPeriodEnd()),
-					subscription.getTrialEnd(), subscription.getCanceledAt());
+					subscription.getTrialEnd(), subscription.getCanceledAt(), amount, currency);
 		} catch (StripeException exception) {
 			throw new IllegalStateException("Não foi possível consultar a assinatura.", exception);
 		}
