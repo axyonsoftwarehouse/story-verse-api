@@ -7,6 +7,7 @@ import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.common.DbRows;
 
@@ -36,6 +37,7 @@ public class BillingRepository {
 				Map.of("id", customerId));
 	}
 
+	@Transactional
 	public void upsertCustomer(UUID userId, String customerId) {
 		beginWrite();
 		DbRows.update(jdbc, """
@@ -59,6 +61,7 @@ public class BillingRepository {
 				Map.of("id", id));
 	}
 
+	@Transactional
 	public Optional<Map<String, Object>> upsertSubscription(Map<String, Object> params) {
 		beginWrite();
 		return DbRows.one(jdbc, """
@@ -104,6 +107,7 @@ public class BillingRepository {
 				""", Map.of("id", userId));
 	}
 
+	@Transactional
 	public Map<String, Object> createGrant(UUID userId, String reason, java.time.Instant expiresAt, UUID actor) {
 		beginWrite();
 		Map<String, Object> params = new java.util.LinkedHashMap<>();
@@ -118,6 +122,7 @@ public class BillingRepository {
 				""", params).orElseThrow();
 	}
 
+	@Transactional
 	public int revokeGrant(UUID id, UUID actor) {
 		beginWrite();
 		return DbRows.update(jdbc, """
@@ -146,6 +151,7 @@ public class BillingRepository {
 				""").param("id", stripeEventId).query(Boolean.class).single());
 	}
 
+	@Transactional
 	public void beginEvent(String stripeEventId, String type) {
 		beginWrite();
 		DbRows.update(jdbc, """
@@ -156,6 +162,7 @@ public class BillingRepository {
 				""", Map.of("id", stripeEventId, "type", type));
 	}
 
+	@Transactional
 	public void finishEvent(String stripeEventId, String error) {
 		beginWrite();
 		Map<String, Object> params = new java.util.LinkedHashMap<>();

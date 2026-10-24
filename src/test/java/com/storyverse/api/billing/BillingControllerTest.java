@@ -29,4 +29,13 @@ class BillingControllerTest {
 		mockMvc.perform(get("/api/v1/billing/status"))
 				.andExpect(status().isUnauthorized());
 	}
+
+	@Test
+	void webhookWithoutSignatureIsRejected() throws Exception {
+		mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+						.post("/api/v1/billing/webhook")
+						.contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+						.content("{}"))
+				.andExpect(status().isBadRequest());
+	}
 }
