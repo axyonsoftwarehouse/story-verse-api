@@ -16,7 +16,7 @@ final class CatalogImportCsv {
 
 	static final int MAX_BYTES = 2 * 1024 * 1024;
 	static final int MAX_ROWS = 500;
-	private static final List<String> REQUIRED = List.of("file", "title", "rights");
+	private static final List<String> REQUIRED = List.of("file", "rights");
 
 	private CatalogImportCsv() {
 	}

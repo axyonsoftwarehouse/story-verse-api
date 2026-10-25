@@ -161,8 +161,7 @@ public class CatalogImportService {
 		Path path = CatalogImportArchive.file(files, file);
 		if (path == null) return new Item(line, file, "error", "Arquivo não encontrado no ZIP.", null);
 
-		String title = value(row, "title");
-		if (title == null) return new Item(line, file, "error", "Informe o título.", null);
+		String titleRow = value(row, "title");
 		String rights = value(row, "rights");
 		if (rights == null || !RIGHTS.contains(rights)) {
 			return new Item(line, file, "error", "Direitos inválidos (public_domain, own_work ou free_license).", null);
@@ -197,6 +196,13 @@ public class CatalogImportService {
 		} catch (IOException exception) {
 			return new Item(line, file, "error", "Não foi possível ler o arquivo.", null);
 		}
+		String title = titleRow != null ? titleRow : extracted.title();
+		if (title == null) title = titleFromFile(file);
+		if (title == null) {
+			return new Item(line, file, "error", "Informe o t?tulo ou use um arquivo com metadados.", null);
+		}
+		String author = value(row, "author") != null ? value(row, "author") : extracted.author();
+		String language = value(row, "language") != null ? value(row, "language") : extracted.language();
 		String checksum = sha256(extracted.text());
 		Optional<Map<String, Object>> duplicate = catalog.findByChecksum(checksum);
 		if (duplicate.isPresent()) {
@@ -218,13 +224,13 @@ public class CatalogImportService {
 		try {
 			Map<String, Object> body = new LinkedHashMap<>();
 			body.put("title", title);
-			body.put("author", value(row, "author"));
+			body.put("author", author);
 			body.put("genre", value(row, "genre"));
-			body.put("language", "en".equals(value(row, "language")) ? "en" : "pt");
+			body.put("language", "en".equals(language) ? "en" : "pt");
 			body.put("series", value(row, "series"));
 			body.put("seriesIndex", seriesIndex);
 			body.put("description", value(row, "description"));
-			if (pageCount != null) body.put("pageCount", pageCount);
+			body.put("pageCount", pageCount != null ? pageCount : extracted.pageCount());
 			body.put("rights", rights);
 			body.put("rightsNote", value(row, "rights_note"));
 			body.put("coverUrl", value(row, "cover_url"));
@@ -329,6 +335,12 @@ public class CatalogImportService {
 	private static String extensionFor(String file) {
 		int dot = file.lastIndexOf('.');
 		return dot >= 0 ? file.substring(dot).toLowerCase(Locale.ROOT) : ".txt";
+	}
+
+	private static String titleFromFile(String file) {
+		String base = file.replaceAll("\\.[^.]+$", "")
+				.replace('_', ' ').replace('-', ' ').replaceAll("\\s+", " ").strip();
+		return base.isBlank() ? null : base;
 	}
 
 	private static BigDecimal decimal(String value) {

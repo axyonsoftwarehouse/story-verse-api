@@ -44,6 +44,33 @@ class CatalogTextExtractorTest {
 	}
 
 	@Test
+	void readsEpubTitleAuthorAndLanguage() throws Exception {
+		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+		try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
+			zip.putNextEntry(new ZipEntry("META-INF/container.xml"));
+			zip.write("""
+					<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>
+					""".getBytes(StandardCharsets.UTF_8));
+			zip.closeEntry();
+			zip.putNextEntry(new ZipEntry("OEBPS/content.opf"));
+			zip.write("""
+					<package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/">
+					<metadata><dc:title>Coelho maldito</dc:title><dc:creator>Bora Chung</dc:creator>
+					<dc:language>pt-BR</dc:language></metadata></package>
+					""".getBytes(StandardCharsets.UTF_8));
+			zip.closeEntry();
+			zip.putNextEntry(new ZipEntry("OEBPS/ch1.xhtml"));
+			zip.write("<html><body><p>Era uma vez um coelho.</p></body></html>".getBytes(StandardCharsets.UTF_8));
+			zip.closeEntry();
+		}
+		CatalogTextExtractor.Extracted extracted = extractor.extract(bytes.toByteArray(),
+				"application/epub+zip");
+		assertEquals("Coelho maldito", extracted.title());
+		assertEquals("Bora Chung", extracted.author());
+		assertEquals("pt", extracted.language());
+	}
+
+	@Test
 	void extractsPdfTextAndPages() throws Exception {
 		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 		try (PDDocument document = new PDDocument()) {
@@ -56,10 +83,14 @@ class CatalogTextExtractorTest {
 				stream.showText("Hello catalog");
 				stream.endText();
 			}
+			document.getDocumentInformation().setTitle("Cat?logo PDF");
+			document.getDocumentInformation().setAuthor("Equipe QA");
 			document.save(bytes);
 		}
 		CatalogTextExtractor.Extracted extracted = extractor.extract(bytes.toByteArray(), "application/pdf");
 		assertTrue(extracted.text().contains("Hello catalog"));
 		assertEquals(1, extracted.pageCount());
+		assertEquals("Cat?logo PDF", extracted.title());
+		assertEquals("Equipe QA", extracted.author());
 	}
 }
