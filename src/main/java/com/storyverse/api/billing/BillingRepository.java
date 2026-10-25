@@ -67,12 +67,12 @@ public class BillingRepository {
 		return DbRows.one(jdbc, """
 				insert into public.billing_subscriptions
 					(user_id, stripe_subscription_id, stripe_price_id, status, current_period_start,
-					 current_period_end, cancel_at_period_end, trial_end, canceled_at, latest_invoice_status,
-					 amount_cents, currency)
+					 current_period_end, cancel_at_period_end, trial_end, canceled_at, ended_at,
+					 latest_invoice_status, amount_cents, currency)
 				values
 					(:user_id, :stripe_subscription_id, :stripe_price_id, :status, :current_period_start,
-					 :current_period_end, :cancel_at_period_end, :trial_end, :canceled_at, :latest_invoice_status,
-					 :amount_cents, :currency)
+					 :current_period_end, :cancel_at_period_end, :trial_end, :canceled_at, :ended_at,
+					 :latest_invoice_status, :amount_cents, :currency)
 				on conflict (stripe_subscription_id) do update
 				   set user_id = excluded.user_id,
 				       stripe_price_id = excluded.stripe_price_id,
@@ -84,6 +84,7 @@ public class BillingRepository {
 				       cancel_at_period_end = excluded.cancel_at_period_end,
 				       trial_end = coalesce(excluded.trial_end, billing_subscriptions.trial_end),
 				       canceled_at = coalesce(excluded.canceled_at, billing_subscriptions.canceled_at),
+				       ended_at = coalesce(excluded.ended_at, billing_subscriptions.ended_at),
 				       latest_invoice_status = coalesce(excluded.latest_invoice_status,
 				           billing_subscriptions.latest_invoice_status),
 				       amount_cents = coalesce(excluded.amount_cents, billing_subscriptions.amount_cents),

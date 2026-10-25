@@ -215,7 +215,12 @@ public class BillingService {
 				return new Access(until != null && now.isBefore(until), "past_due", iso(until));
 			}
 			case "canceled" -> {
-				return new Access(periodEnd != null && now.isBefore(periodEnd), "canceled", iso(periodEnd));
+				// ended_at é o fim real: cancelamento imediato termina agora, cancelamento no fim
+				// do período termina quando o período acabar. Olhar só o período dava um mês de
+				// acesso de graça para quem cancelou hoje (visto no QA em 25/10).
+				Instant endedAt = instant(subscription.get("ended_at"));
+				Instant until = endedAt != null ? endedAt : periodEnd;
+				return new Access(until != null && now.isBefore(until), "canceled", iso(until));
 			}
 			default -> {
 				return new Access(false, status, null);

@@ -58,6 +58,21 @@ class BillingServiceTest {
 	}
 
 	@Test
+	void cancelamosAgoraCortaOAcessoAgora() {
+		// Cancelamento imediato: a Stripe manda ended_at = agora e mantém current_period_end
+		// no fim do período pago. Olhar só o período deixava o cliente lendo de graça até lá.
+		Map<String, Object> canceladaAgora = Map.of(
+				"status", "canceled",
+				"ended_at", Instant.now().minusSeconds(60).toString(),
+				"current_period_end", Instant.now().plusSeconds(30L * 24 * 3600).toString());
+		assertFalse(BillingService.evaluate(canceladaAgora, 3).active());
+		// Sem ended_at (assinatura antiga sincronizada antes da coluna), vale o período.
+		assertTrue(BillingService.evaluate(Map.of(
+				"status", "canceled",
+				"current_period_end", Instant.now().plusSeconds(3600).toString()), 3).active());
+	}
+
+	@Test
 	void unpaidEIncompleteNaoLiberam() {
 		assertFalse(BillingService.evaluate(Map.of("status", "unpaid"), 3).active());
 		assertFalse(BillingService.evaluate(Map.of("status", "incomplete"), 3).active());
