@@ -30,12 +30,15 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 	private final BillingService billing;
 	private final AuthService auth;
 	private final boolean enabled;
+	private final String[] allowedOrigins;
 
 	public BillingAccessFilter(BillingService billing, AuthService auth,
-			@Value("${app.billing.enabled:false}") boolean enabled) {
+			@Value("${app.billing.enabled:false}") boolean enabled,
+			@Value("${app.cors.allowed-origins:https://storyverse.2.29.42.104.sslip.io}") String[] allowedOrigins) {
 		this.billing = billing;
 		this.auth = auth;
 		this.enabled = enabled;
+		this.allowedOrigins = allowedOrigins;
 	}
 
 	@Override
@@ -54,10 +57,30 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 			chain.doFilter(request, response);
 		} catch (AuthException error) {
 			if (!response.isCommitted()) {
+				// Este filtro roda antes do MVC, então o CORS do CorsConfig não entra: sem estes
+				// cabeçalhos o navegador esconde a resposta e o app mostra "sem conexão" em vez
+				// de "assinatura necessária" (ou "entre na sua conta").
+				applyCors(request, response);
 				response.setStatus(error.status());
 				response.setContentType("application/json;charset=UTF-8");
 				String code = error.code() == null ? "" : ",\"code\":\"" + error.code() + "\"";
 				response.getWriter().write("{\"error\":\"" + escape(error.getMessage()) + "\"" + code + "}");
+			}
+		}
+	}
+
+	/** Só devolve a origem exata quando ela está na lista permitida (nunca curinga com credenciais). */
+	private void applyCors(HttpServletRequest request, HttpServletResponse response) {
+		String origin = request.getHeader("Origin");
+		if (origin == null || origin.isBlank()) {
+			return;
+		}
+		for (String allowed : allowedOrigins) {
+			if (origin.equals(allowed.trim())) {
+				response.setHeader("Access-Control-Allow-Origin", origin);
+				response.setHeader("Access-Control-Allow-Credentials", "true");
+				response.addHeader("Vary", "Origin");
+				return;
 			}
 		}
 	}
