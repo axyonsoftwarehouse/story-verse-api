@@ -1,12 +1,16 @@
 package com.storyverse.api.billing;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.UUID;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.core.annotation.AnnotationUtils;
+import org.springframework.transaction.annotation.Transactional;
 
 class BillingServiceTest {
 
@@ -55,5 +59,17 @@ class BillingServiceTest {
 		assertFalse(BillingService.evaluate(Map.of("status", "unpaid"), 3).active());
 		assertFalse(BillingService.evaluate(Map.of("status", "incomplete"), 3).active());
 		assertFalse(BillingService.evaluate(Map.of("status", "paused"), 3).active());
+	}
+
+	/**
+	 * requireAccess chama access() por auto-invocação, então o @Transactional dele não vale:
+	 * sem transação própria o set_config(..., true) do RLS se perde e até quem tem plano leva 402.
+	 * Este teste trava a anotação para a regressão não voltar silenciosa.
+	 */
+	@Test
+	void requireAccessPrecisaDeTransacaoPropria() throws Exception {
+		Transactional anotacao = AnnotationUtils.findAnnotation(
+				BillingService.class.getMethod("requireAccess", UUID.class), Transactional.class);
+		assertNotNull(anotacao, "requireAccess precisa de @Transactional para o RLS enxergar a assinatura");
 	}
 }

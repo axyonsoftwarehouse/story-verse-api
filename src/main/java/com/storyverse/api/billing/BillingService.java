@@ -83,6 +83,13 @@ public class BillingService {
 		return evaluate(subscription, graceDays);
 	}
 
+	/**
+	 * Checagem usada pelo filtro em toda rota /api/. Precisa de transação própria:
+	 * {@link #access} é chamado por auto-invocação (não passa pelo proxy do Spring) e faz
+	 * `set_config(..., true)` para o RLS — sem transação esse ajuste vale só para a instrução
+	 * e some, a assinatura fica invisível e TODO mundo com plano levava 402.
+	 */
+	@Transactional(readOnly = true)
 	public void requireAccess(UUID userId) {
 		if (enabled && !access(userId).active()) {
 			throw new AuthException(402, "Assinatura necessária.", "SUBSCRIPTION_REQUIRED");
