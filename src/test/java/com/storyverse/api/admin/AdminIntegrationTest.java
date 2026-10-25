@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.*;
 import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.*;
@@ -28,6 +30,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
 import com.storyverse.api.common.DbSession;
+import com.storyverse.api.catalog.CatalogImportService;
 import com.storyverse.api.community.CommunityService;
 import com.storyverse.api.feature.FeatureAccessService;
 import com.storyverse.api.feature.FeatureUsersPage;
@@ -66,6 +69,7 @@ class AdminIntegrationTest {
   @Autowired FeatureAccessService features;
   @Autowired SanctionService sanctions;
   @Autowired AdminMetricsService metrics;
+  @Autowired CatalogImportService catalogImports;
   @Autowired SessionRepository sessions;
   @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
@@ -897,6 +901,41 @@ class AdminIntegrationTest {
     AuthResponse support=userWithRole("support");
     assertEquals(403,status(()->auditService.exportCsv(support.accessToken(),
         filter(null,null,null,null,"2026-03-01","2026-03-02",null),out)));
+  }
+
+  @Test void catalogBatchImportExecutesUnderRuntimeRole() throws Exception {
+    AuthResponse admin=userWithRole("superadmin"); UUID adminId=id(admin);
+    String tag=UUID.randomUUID().toString().replace("-","");
+    String path=adminId+"/lote-"+tag+".zip";
+    ByteArrayOutputStream zipBytes=new ByteArrayOutputStream();
+    try (ZipOutputStream zip=new ZipOutputStream(zipBytes)) {
+      zip.putNextEntry(new ZipEntry("metadata.csv"));
+      zip.write("file,rights\nlivro.txt,public_domain\n".getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+      zip.putNextEntry(new ZipEntry("livro.txt"));
+      zip.write(("Era uma vez um livro de teste. ".repeat(20)).getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+    }
+    storage.write(adminId, StorageBucket.CATALOG_IMPORTS, path, "application/zip", zipBytes.toByteArray());
+    String fileName="lote-"+tag+".zip";
+    try {
+      Map<String,Object> result=asRuntime(adminId,()->catalogImports.run(admin.accessToken(),
+          Map.of("archivePath",path,"fileName",fileName,"dryRun",false)));
+      assertEquals(1,((Number)result.get("imported")).intValue());
+      assertEquals(0,((Number)result.get("skipped")).intValue());
+      assertEquals("livro",jdbc.sql("""
+          select title from public.catalog_books
+           where source='import' and created_by=:a order by created_at desc limit 1
+          """).param("a",adminId).query(String.class).single());
+    } finally {
+      jdbc.sql("""
+          delete from public.catalog_import_items
+           where import_id in (select id from public.catalog_imports where file_name=:f)
+          """).param("f",fileName).update();
+      jdbc.sql("delete from public.catalog_imports where file_name=:f").param("f",fileName).update();
+      jdbc.sql("delete from public.catalog_books where source='import' and created_by=:a and title='livro'")
+          .param("a",adminId).update();
+    }
   }
 
   // --- Task 8: matriz de permissões da seção 3 da spec ---
