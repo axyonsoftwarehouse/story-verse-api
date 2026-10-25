@@ -114,6 +114,7 @@ public class ForumService {
 			throw new AuthException(403, "Este topico esta fechado para novas respostas.");
 		}
 		String content = content(body.get("body"));
+		String spoiler = spoiler(body.get("spoilerLevel"));
 		UUID parentId = uuid(body.get("parentId"));
 		if (parentId != null) {
 			Map<String, Object> parent = repository.replyState(parentId)
@@ -128,7 +129,7 @@ public class ForumService {
 		limits.check("forum-reply:" + userId, 10, Duration.ofMinutes(10));
 		chargeDaily(userId, "forum_reply", 50);
 		String status = trusted(userId) ? "published" : "pending";
-		UUID id = repository.insertReply(topicId, userId, parentId, content, status);
+		UUID id = repository.insertReply(topicId, userId, parentId, content, status, spoiler);
 		return repository.reply(userId, id).orElseThrow(() -> new AuthException(500, "Resposta nao criada."));
 	}
 
@@ -276,7 +277,13 @@ public class ForumService {
 		if (!"published".equals(reply.get("status"))) {
 			throw new AuthException(409, "A resposta precisa estar publicada.");
 		}
-		repository.acceptReply(topicId, replyId);
+		repository.acceptReply(topicId, replyId, userId);
+		// A trilha de auditoria só aceita INSERT da equipe (RLS). O aceite do autor
+		// fica gravado no próprio tópico (accepted_by/accepted_at).
+		if (authz.isStaff(userId)) {
+			authz.audit(userId, "forum.reply.accept", "forum_reply", replyId.toString(),
+					Map.of("topicId", topicId.toString()));
+		}
 		return repository.topic(userId, topicId).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
 	}
 

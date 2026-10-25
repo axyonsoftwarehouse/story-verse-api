@@ -454,7 +454,12 @@ class SecurityIntegrationTest {
     UUID topicId=UUID.fromString(topic.get("id").toString());
     assertEquals("published",topic.get("status"));
 
-    Map<String,Object> reply=forum.createReply(user.accessToken(),topicId,Map.of("body","Leia devagar."));
+    Map<String,Object> reply=forum.createReply(user.accessToken(),topicId,
+        Map.of("body","Leia devagar.","spoilerLevel","chapter"));
+    assertEquals("chapter",reply.get("spoiler_level"),"a resposta guarda o spoiler");
+    AuthException spoilerInvalido=assertThrows(AuthException.class,()->forum.createReply(
+        user.accessToken(),topicId,Map.of("body","x","spoilerLevel","final")));
+    assertEquals(400,spoilerInvalido.status());
     UUID replyId=UUID.fromString(reply.get("id").toString());
     assertEquals("published",reply.get("status"));
 
@@ -480,6 +485,11 @@ class SecurityIntegrationTest {
     Map<String,Object> accepted=forum.acceptReply(user.accessToken(),topicId,
         Map.of("replyId",replyId.toString()));
     assertEquals(replyId.toString(),String.valueOf(accepted.get("accepted_reply_id")));
+    assertEquals(uid,jdbc.sql("select accepted_by from public.forum_topics where id=:id")
+        .param("id",topicId).query(UUID.class).single(),"quem aceitou fica gravado no tópico");
+    assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log "
+        + "where action='forum.reply.accept' and target_id=:id").param("id",replyId.toString())
+        .query(Integer.class).single(),"aceite da equipe entra na auditoria");
   }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";
