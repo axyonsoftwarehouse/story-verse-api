@@ -199,7 +199,13 @@ public class BillingRepository {
 				""").param("id", stripeEventId).query(Boolean.class).single());
 	}
 
-	@Transactional
+	/**
+	 * Abre o evento em transação própria (REQUIRES_NEW de propósito): a linha precisa estar
+	 * COMMITADA antes da sincronização, senão o {@link #finishEvent} — que também roda em
+	 * transação nova — não enxerga a linha e o update não pega nada. É o que fazia o evento
+	 * ficar com processed_at nulo mesmo quando dava certo.
+	 */
+	@Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
 	public void beginEvent(String stripeEventId, String type) {
 		beginWrite();
 		DbRows.update(jdbc, """
