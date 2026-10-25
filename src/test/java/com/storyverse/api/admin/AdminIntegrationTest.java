@@ -938,6 +938,100 @@ class AdminIntegrationTest {
     }
   }
 
+  /** Lote misto: entra o livro válido, a cópia idêntica é pulada e a linha inválida vira erro. */
+  @Test void catalogBatchImportHandlesDuplicatesAndErrors() {
+    AuthResponse admin=userWithRole("superadmin"); UUID adminId=id(admin);
+    String tag=UUID.randomUUID().toString().replace("-","").substring(0,8);
+    String path=adminId+"/lote-misto-"+tag+".zip";
+    String fileName="lote-misto-"+tag+".zip";
+    String texto="Texto do livro de teste do lote misto. ".repeat(12);
+    ByteArrayOutputStream zipBytes=new ByteArrayOutputStream();
+    try (ZipOutputStream zip=new ZipOutputStream(zipBytes)) {
+      zip.putNextEntry(new ZipEntry("metadata.csv"));
+      zip.write(("file,title,rights\n"
+          +"um.txt,Livro um "+tag+",public_domain\n"
+          +"um-copia.txt,Copia "+tag+",public_domain\n"
+          +"sumido.txt,Sumido "+tag+",public_domain\n"
+          +"direitos.txt,Direitos "+tag+",copyrighted\n").getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+      for (String nome : List.of("um.txt","um-copia.txt")) {
+        zip.putNextEntry(new ZipEntry(nome));
+        zip.write(texto.getBytes(StandardCharsets.UTF_8));
+        zip.closeEntry();
+      }
+      zip.putNextEntry(new ZipEntry("direitos.txt"));
+      zip.write("Outro texto, com direitos invalidos.".getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+    } catch (Exception e) { throw new RuntimeException(e); }
+    storage.write(adminId, StorageBucket.CATALOG_IMPORTS, path, "application/zip", zipBytes.toByteArray());
+    try {
+      Map<String,Object> result=asRuntime(adminId,()->catalogImports.run(admin.accessToken(),
+          Map.of("archivePath",path,"fileName",fileName,"dryRun",false)));
+      assertEquals(1,((Number)result.get("imported")).intValue(),"um livro importado: "+result);
+      assertEquals(1,((Number)result.get("skipped")).intValue(),"a cópia idêntica é pulada: "+result);
+      List<?> items=(List<?>)result.get("items");
+      long erros=items.stream().filter(i->"error".equals(((Map<?,?>)i).get("status"))).count();
+      assertEquals(2,erros,"arquivo ausente e direitos inválidos: "+items);
+    } finally {
+      jdbc.sql("""
+          delete from public.catalog_import_items
+           where import_id in (select id from public.catalog_imports where file_name=:f)
+          """).param("f",fileName).update();
+      jdbc.sql("delete from public.catalog_imports where file_name=:f").param("f",fileName).update();
+      jdbc.sql("delete from public.catalog_books where source='import' and created_by=:a")
+          .param("a",adminId).update();
+    }
+  }
+
+  /** A coleção é curadoria: a ordem salva no painel manda na listagem pública da coleção. */
+  @Test void catalogCollectionOrderWinsOnPublicListing() throws Exception {
+    String tag=UUID.randomUUID().toString().replace("-","").substring(0,8);
+    UUID collection=UUID.randomUUID(), older=UUID.randomUUID(), newer=UUID.randomUUID();
+    String slug="ordem-"+tag;
+    OffsetDateTime base=OffsetDateTime.now().withNano(0);
+    jdbc.sql("insert into public.catalog_collections (id,slug,title,status) values (:id,:slug,:title,'published')")
+        .param("id",collection).param("slug",slug).param("title","Ordem "+tag).update();
+    // "Zeta" é o mais antigo e o último em ordem alfabética: assim a ordem da coleção, a de
+    // publicação e a de título são todas diferentes.
+    insertPublicBook(older,"cat:"+older,"Zeta "+tag,base.minusDays(2));
+    insertPublicBook(newer,"cat:"+newer,"Alfa "+tag,base);
+    jdbc.sql("insert into public.catalog_collection_books (collection_id,book_id,sort_order) values (:c,:b,:o)")
+        .param("c",collection).param("b",older).param("o",1).update();
+    jdbc.sql("insert into public.catalog_collection_books (collection_id,book_id,sort_order) values (:c,:b,:o)")
+        .param("c",collection).param("b",newer).param("o",2).update();
+    try {
+      String byCollection=publicListJson(slug,null);
+      assertTrue(byCollection.indexOf("Zeta "+tag) < byCollection.indexOf("Alfa "+tag),
+          "a ordem da coleção manda na listagem: "+byCollection);
+      String byTitle=publicListJson(slug,"title");
+      assertTrue(byTitle.indexOf("Alfa "+tag) < byTitle.indexOf("Zeta "+tag),
+          "título continua mandando quando é pedido: "+byTitle);
+    } finally {
+      jdbc.sql("delete from public.catalog_collections where id=:id").param("id",collection).update();
+      jdbc.sql("delete from public.catalog_books where id=:a or id=:b")
+          .param("a",older).param("b",newer).update();
+    }
+  }
+
+  void insertPublicBook(UUID id,String key,String title,OffsetDateTime published) {
+    jdbc.sql("""
+        insert into public.catalog_books
+          (id,book_key,source,title,language,rights,text_path,status,published_at)
+        values (:id,:key,'admin',:title,'pt','public_domain',:path,'published',:published)
+        """)
+      .param("id",id).param("key",key).param("title",title)
+      .param("path",id+".txt").param("published",published).update();
+  }
+
+  String publicListJson(String slug,String sort) throws Exception {
+    var request=MockMvcRequestBuilders.get("/api/v1/catalog/books")
+        .param("collection",slug).param("limit","20");
+    if (sort!=null) request=request.param("sort",sort);
+    return mvc.perform(request)
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+  }
+
   // --- Task 8: matriz de permissões da seção 3 da spec ---
 
   static Stream<Arguments> permissionMatrix() {
