@@ -35,7 +35,7 @@ public class ForumRepository {
 	private static final String TOPIC_DETAIL = TOPIC_LIST.replace("left(t.body, 320) as excerpt", "t.body as body");
 
 	private static final String REPLY_LIST = """
-			select r.id, r.topic_id, r.author_id, r.parent_id, r.body, r.status, r.reaction_count,
+			select r.id, r.topic_id, r.author_id, r.parent_id, r.body, r.status, r.spoiler_level, r.reaction_count,
 			       r.created_at, r.updated_at,
 			       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name,
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as author_avatar,
@@ -178,10 +178,11 @@ public class ForumRepository {
 				.single();
 	}
 
-	public UUID insertReply(UUID topicId, UUID authorId, UUID parentId, String body, String status) {
+	public UUID insertReply(UUID topicId, UUID authorId, UUID parentId, String body, String status,
+			String spoilerLevel) {
 		return jdbc.sql("""
-				insert into public.forum_replies (topic_id, author_id, parent_id, body, status)
-				values (:topicId, :authorId, :parentId, :body, :status)
+				insert into public.forum_replies (topic_id, author_id, parent_id, body, status, spoiler_level)
+				values (:topicId, :authorId, :parentId, :body, :status, :spoilerLevel)
 				returning id
 				""")
 				.param("topicId", topicId)
@@ -189,6 +190,7 @@ public class ForumRepository {
 				.param("parentId", parentId)
 				.param("body", body)
 				.param("status", status)
+				.param("spoilerLevel", spoilerLevel == null ? "none" : spoilerLevel)
 				.query((rs, rowNum) -> rs.getObject("id", UUID.class))
 				.single();
 	}
@@ -256,12 +258,14 @@ public class ForumRepository {
 				""").param("id", id).param("status", status).update();
 	}
 
-	public void acceptReply(UUID topicId, UUID replyId) {
+	public void acceptReply(UUID topicId, UUID replyId, UUID actorId) {
 		jdbc.sql("""
 				update public.forum_topics
-				   set accepted_reply_id = :replyId, updated_at = now()
+				   set accepted_reply_id = :replyId, accepted_by = :actorId,
+				       accepted_at = now(), updated_at = now()
 				 where id = :topicId
-				""").param("topicId", topicId).param("replyId", replyId).update();
+				""").param("topicId", topicId).param("replyId", replyId)
+				.param("actorId", actorId).update();
 	}
 
 	public boolean reactionExists(UUID userId, String targetType, UUID targetId) {
