@@ -9,6 +9,8 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.auth.AuthException;
@@ -21,6 +23,8 @@ import com.storyverse.api.common.DbSession;
  */
 @Service
 public class BillingService {
+
+	private static final Logger log = LoggerFactory.getLogger(BillingService.class);
 
 	public record Access(boolean active, String reason, String accessUntil) {
 	}
@@ -195,12 +199,16 @@ public class BillingService {
 		Instant periodEnd = instant(subscription.get("current_period_end"));
 		Instant trialEnd = instant(subscription.get("trial_end"));
 		switch (status) {
+			// Fail-closed: sem data (ou com data ilegível) NÃO libera acesso. Um registro sem
+			// current_period_end/trial_end é dado incompleto — liberar por isso é paywall aberto.
 			case "trialing" -> {
 				Instant until = trialEnd != null ? trialEnd : periodEnd;
-				return new Access(until == null || now.isBefore(until), "trial", iso(until));
+				return new Access(until != null && now.isBefore(until), "trial", iso(until));
 			}
 			case "active" -> {
-				return new Access(periodEnd == null || now.isBefore(periodEnd), "active", iso(periodEnd));
+				// Período vencido sem carência: a Stripe manda past_due no webhook; enquanto isso o
+				// acesso cai. Carência é regra de past_due (app.billing.past-due-grace-days).
+				return new Access(periodEnd != null && now.isBefore(periodEnd), "active", iso(periodEnd));
 			}
 			case "past_due" -> {
 				Instant until = periodEnd == null ? null : periodEnd.plus(Duration.ofDays(graceDays));
@@ -228,9 +236,12 @@ public class BillingService {
 			try {
 				return Instant.parse(text);
 			} catch (RuntimeException exception) {
+				// Silêncio aqui já custou caro: a data virava null e o acesso ficava liberado.
+				log.warn("Data de assinatura ilegível, tratando como ausente: {}", text);
 				return null;
 			}
 		}
+		log.warn("Tipo inesperado em data de assinatura: {}", value.getClass().getName());
 		return null;
 	}
 }
