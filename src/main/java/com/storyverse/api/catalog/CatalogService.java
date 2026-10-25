@@ -103,7 +103,7 @@ public class CatalogService {
 	}
 
 	private Map<String, Object> createInternal(UUID actor, Map<String, Object> body, String source) {
-		String title = required(body, "title");
+		String titleInput = text(body, "title");
 		String originalPath = required(body, "originalPath");
 		String originalType = required(body, "originalContentType");
 		String rights = required(body, "rights");
@@ -114,6 +114,10 @@ public class CatalogService {
 		byte[] original = storage.read(StorageBucket.CATALOG_BOOKS, originalPath)
 				.orElseThrow(() -> new AuthException(400, "Arquivo original não encontrado."));
 		CatalogTextExtractor.Extracted extracted = extractor.extract(original, originalType);
+		String title = titleInput != null ? titleInput : extracted.title();
+		if (title == null) {
+			throw new AuthException(400, "Informe o título ou use um arquivo com metadados.");
+		}
 		String checksum = sha256(extracted.text());
 		Map<String, Object> duplicate = repository.findByChecksum(checksum).orElse(null);
 		if (duplicate != null && !bool(body, "allowDuplicate", false)) {
@@ -130,9 +134,11 @@ public class CatalogService {
 		params.put("book_key", bookKey);
 		params.put("source", source);
 		params.put("title", title);
-		params.put("author", text(body, "author"));
+		params.put("author", text(body, "author") != null ? text(body, "author") : extracted.author());
 		params.put("genre", text(body, "genre"));
-		params.put("language", language(body, "pt"));
+		String language = text(body, "language");
+		if (language == null) language = extracted.language();
+		params.put("language", "en".equals(language) ? "en" : "pt");
 		params.put("series", text(body, "series"));
 		params.put("series_index", decimal(body, "seriesIndex", null));
 		params.put("description", text(body, "description"));

@@ -42,6 +42,13 @@ class CatalogImportCsvTest {
 	}
 
 	@Test
+	void tituloPodeVirDoArquivo() {
+		List<Map<String, String>> rows = CatalogImportCsv.parse("file,rights\nlivro.epub,public_domain\n");
+		assertEquals("livro.epub", rows.get(0).get("file"));
+		assertEquals("public_domain", rows.get(0).get("rights"));
+	}
+
+	@Test
 	void recusaAspasNaoFechadas() {
 		assertThrows(AuthException.class,
 				() -> CatalogImportCsv.parse("file,title,rights\n\"livro.txt,Livro,public_domain\n"));
