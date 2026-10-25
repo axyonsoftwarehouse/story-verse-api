@@ -70,6 +70,7 @@ class AdminIntegrationTest {
   @Autowired SanctionService sanctions;
   @Autowired AdminMetricsService metrics;
   @Autowired CatalogImportService catalogImports;
+  @Autowired com.storyverse.api.billing.BillingAdminService billingAdmin;
   @Autowired SessionRepository sessions;
   @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
@@ -981,6 +982,14 @@ class AdminIntegrationTest {
       jdbc.sql("delete from public.catalog_books where source='import' and created_by=:a")
           .param("a",adminId).update();
     }
+  }
+
+  /** O resumo do financeiro grava auditoria: precisa de transação de escrita, não readOnly. */
+  @Test void billingSummaryWorksUnderRuntimeRole() {
+    AuthResponse admin=userWithRole("superadmin"); UUID adminId=id(admin);
+    Map<String,Object> summary=asRuntime(adminId,() -> billingAdmin.summary(admin.accessToken(), null, null));
+    assertTrue(summary.containsKey("from"), "resumo traz o período: "+summary);
+    assertTrue(summary.containsKey("to"), "resumo traz o período: "+summary);
   }
 
   /** A coleção é curadoria: a ordem salva no painel manda na listagem pública da coleção. */

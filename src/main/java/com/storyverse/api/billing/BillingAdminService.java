@@ -33,7 +33,8 @@ public class BillingAdminService {
 		this.jdbc = jdbc;
 	}
 
-	@Transactional(readOnly = true)
+	// A leitura grava auditoria (authz.audit): transação somente-leitura recusaria o INSERT.
+	@Transactional
 	public Map<String, Object> summary(String token, String fromRaw, String toRaw) {
 		UUID actor = superadmin(token);
 		Instant to = toRaw == null || toRaw.isBlank() ? Instant.now() : instant(toRaw);
@@ -53,7 +54,7 @@ public class BillingAdminService {
 		return repository.adminSubscriptions(status, q).stream().map(BillingAdminService::mask).toList();
 	}
 
-	@Transactional(readOnly = true)
+	@Transactional
 	public Map<String, Object> subscription(String token, UUID id) {
 		UUID actor = superadmin(token);
 		Map<String, Object> row = repository.adminSubscription(id)
