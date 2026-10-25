@@ -13,6 +13,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * O fechamento do evento de webhook. Rode só contra um PostgreSQL descartável.
@@ -45,6 +47,9 @@ class BillingWebhookIntegrationTest {
 
 	@Autowired
 	JdbcClient jdbc;
+
+	@Autowired
+	PlatformTransactionManager transactions;
 
 	record Linha(String processado, String erro, int tentativas) {}
 
@@ -94,5 +99,37 @@ class BillingWebhookIntegrationTest {
 
 		assertEquals(2, evento(id).tentativas(), "a segunda entrega soma tentativa em vez de duplicar a linha");
 		assertNotNull(evento(id).processado());
+	}
+
+	/** Fluxo real: beginEvent e finishEvent dentro de uma transação externa (a do handle). */
+	@Test
+	void eventoFechadoDentroDaTransacaoDoHandleFicaProcessado() {
+		String id = "evt_test_handle_" + UUID.randomUUID();
+		new TransactionTemplate(transactions).executeWithoutResult(status -> {
+			repository.beginEvent(id, "customer.subscription.created");
+			repository.finishEvent(id, null);
+		});
+
+		assertNotNull(evento(id).processado(), "o update do finishEvent precisa enxergar a linha do beginEvent");
+	}
+
+	/** Se a sincronização falhar, o registro do evento continua (é a trilha de auditoria). */
+	@Test
+	void eventoContinuaRegistradoQuandoASincronizacaoFalha() {
+		String id = "evt_test_rollback_" + UUID.randomUUID();
+		try {
+			new TransactionTemplate(transactions).executeWithoutResult(status -> {
+				repository.beginEvent(id, "customer.subscription.created");
+				throw new IllegalStateException("falha ao sincronizar");
+			});
+		} catch (IllegalStateException esperado) {
+			// a transação externa reverte; o evento já foi commitado em transação própria
+		}
+		// finishEvent roda em transação nova, como o handler faz no catch
+		repository.finishEvent(id, "falha ao sincronizar");
+
+		Linha linha = evento(id);
+		assertNull(linha.processado(), "com erro o evento fica pendente");
+		assertEquals("falha ao sincronizar", linha.erro());
 	}
 }
