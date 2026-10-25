@@ -112,9 +112,10 @@ class BillingServiceTest {
 		 * acesso fica ativo (a condição é `until == null || now.isBefore(until)`).
 		 */
 		@Test
-		void semNenhumaDataFicaAtivo() {
+		void semNenhumaDataFicaInativo() {
+			// Fail-closed: trial sem trial_end nem current_period_end é dado incompleto.
 			BillingService.Access acesso = BillingService.evaluate(Map.of("status", "trialing"), 3);
-			assertTrue(acesso.active());
+			assertFalse(acesso.active());
 			assertEquals("trial", acesso.reason());
 			assertNull(acesso.accessUntil());
 		}
@@ -152,9 +153,10 @@ class BillingServiceTest {
 		 * (a condição é `periodEnd == null || now.isBefore(periodEnd)`).
 		 */
 		@Test
-		void semPeriodEndFicaAtivo() {
+		void semPeriodEndFicaInativo() {
+			// Fail-closed: assinatura ativa sem current_period_end não libera acesso.
 			BillingService.Access acesso = BillingService.evaluate(Map.of("status", "active"), 3);
-			assertTrue(acesso.active());
+			assertFalse(acesso.active());
 			assertEquals("active", acesso.reason());
 			assertNull(acesso.accessUntil());
 		}
@@ -251,22 +253,26 @@ class BillingServiceTest {
 		 * O efeito depende do status: active/trialing ficam ativos; past_due/canceled, inativos.
 		 */
 		@Test
-		void textoInvalidoNaoLanca() {
+		void textoInvalidoNaoLancaENaoLibera() {
+			// Antes a data ilegível virava null e o active ficava liberado.
 			assertFalse(BillingService.evaluate(assinatura(
-					"status", "past_due",
+					"status", "active",
 					"current_period_end", "não-é-data"), 3).active());
+			assertFalse(BillingService.evaluate(assinatura(
+					"status", "trialing",
+					"trial_end", "31/12/2026"), 3).active());
 		}
 
 		@Test
-		void tipoNaoSuportadoNaoLanca() {
+		void tipoNaoSuportadoNaoLancaENaoLibera() {
 			assertFalse(BillingService.evaluate(assinatura(
-					"status", "past_due",
+					"status", "active",
 					"current_period_end", 12345), 3).active());
 		}
 
 		@Test
-		void dataNulaDeixaActiveAtivo() {
-			assertTrue(BillingService.evaluate(assinatura(
+		void dataNulaDeixaActiveInativo() {
+			assertFalse(BillingService.evaluate(assinatura(
 					"status", "active",
 					"current_period_end", null), 3).active());
 		}
