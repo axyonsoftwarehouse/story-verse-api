@@ -210,7 +210,16 @@ public class BillingRepository {
 				""", Map.of("id", stripeEventId, "type", type));
 	}
 
-	@Transactional
+	/**
+	 * Fecha o evento. O cast de :error é obrigatório: sem ele o Postgres não consegue
+	 * inferir o tipo do parâmetro quando a mensagem vem nula e recusa o update inteiro
+	 * ("could not determine data type of parameter $1") — era o que derrubava TODA entrega
+	 * de webhook, inclusive as bem-sucedidas.
+	 *
+	 * <p>REQUIRES_NEW porque o chamador pode estar registrando uma falha: se a transação
+	 * dele for revertida, o evento continua registrado com o erro.
+	 */
+	@Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
 	public void finishEvent(String stripeEventId, String error) {
 		beginWrite();
 		Map<String, Object> params = new java.util.LinkedHashMap<>();
@@ -218,8 +227,8 @@ public class BillingRepository {
 		params.put("error", error);
 		DbRows.update(jdbc, """
 				update public.billing_events
-				   set processed_at = case when :error is null then now() else processed_at end,
-				       error = :error
+				   set processed_at = case when cast(:error as text) is null then now() else processed_at end,
+				       error = cast(:error as text)
 				 where stripe_event_id = :id
 				""", params);
 	}
