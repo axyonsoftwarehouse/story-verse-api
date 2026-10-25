@@ -22,12 +22,25 @@ public class CatalogRepository {
 
 	public List<Map<String, Object>> listPublished(String q, String genre, String language, String author,
 			String collection, Boolean featured, String sort, int limit, int offset) {
+		boolean inCollection = collection != null && !collection.isBlank();
 		StringBuilder sql = new StringBuilder("""
 				select b.book_key, b.title, b.author, b.genre, b.language, b.series, b.series_index,
 				       b.description, b.page_count, b.cover_url, b.featured, b.published_at
 				  from public.catalog_books b
-				 where b.status = 'published'
 				""");
+		if (inCollection) {
+			// A coleção é curadoria: quem abre uma coleção vê primeiro o livro que o painel deixou
+			// primeiro (`catalog_collection_books.sort_order`), e não o publicado mais recentemente.
+			sql.append("""
+					  left join public.catalog_collection_books ccb
+					         on ccb.book_id = b.id
+					        and ccb.collection_id = (select c.id
+					                                   from public.catalog_collections c
+					                                  where c.slug = :collection
+					                                    and c.status = 'published')
+					""");
+		}
+		sql.append(" where b.status = 'published'\n");
 		Map<String, Object> params = new LinkedHashMap<>();
 		if (q != null && !q.isBlank()) {
 			sql.append(" and (b.title ilike :q or coalesce(b.author, '') ilike :q"
@@ -63,7 +76,9 @@ public class CatalogRepository {
 			case "title" -> " order by lower(b.title), b.id";
 			case "author" -> " order by lower(coalesce(b.author, '')), lower(b.title), b.id";
 			case "featured" -> " order by b.sort_order, b.published_at desc nulls last, b.id";
-			default -> " order by b.published_at desc nulls last, b.id";
+			default -> inCollection
+					? " order by ccb.sort_order nulls last, b.published_at desc nulls last, b.id"
+					: " order by b.published_at desc nulls last, b.id";
 		});
 		sql.append(" limit :limit offset :offset");
 		params.put("limit", limit);
