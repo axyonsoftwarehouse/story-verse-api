@@ -18,6 +18,7 @@ import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
@@ -64,16 +65,19 @@ public class CatalogImportService {
 		this.jdbc = jdbc;
 	}
 
+	@Transactional(readOnly = true)
 	public List<Map<String, Object>> list(String token) {
 		moderator(token);
 		return imports.list();
 	}
 
+	@Transactional(readOnly = true)
 	public Map<String, Object> get(String token, UUID id) {
 		moderator(token);
 		return detail(id);
 	}
 
+	@Transactional(readOnly = true)
 	public String errorsCsv(String token, UUID id) {
 		moderator(token);
 		StringBuilder csv = new StringBuilder("linha,arquivo,situacao,mensagem\n");
@@ -86,6 +90,7 @@ public class CatalogImportService {
 		return csv.toString();
 	}
 
+	@Transactional
 	public Map<String, Object> run(String token, Map<String, Object> body) {
 		UUID actor = moderator(token);
 		String archivePath = required(body, "archivePath");
