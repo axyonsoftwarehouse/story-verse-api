@@ -609,6 +609,70 @@ class AdminIntegrationTest {
     assertTrue(weeks.get(weeks.size()-1).signups()>=2, "a semana corrente conta as contas novas: "+weeks);
   }
 
+  // --- Atividade da comunidade (2.6) ---
+  /** Insere no fórum com a hora de São Paulo (AAAA-MM-DD HH:MM); devolve o id. */
+  UUID forumTopic(UUID author, String created, String status) {
+    return jdbc.sql("""
+        insert into public.forum_topics(space_id,author_id,title,body,status,deleted_at,created_at)
+        values ((select id from public.forum_spaces where slug='duvidas'),:author,'Tópico','corpo',:status,
+          case when :status='deleted' then now() end,
+          cast(:created as text)::timestamp at time zone 'America/Sao_Paulo')
+        returning id
+        """).param("author",author).param("status",status).param("created",created).query(UUID.class).single();
+  }
+  @Test void communityMetricsRequireSuperadminAndValidRange() {
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator"), admin=userWithRole("superadmin");
+    assertEquals(403,status(()->metrics.communitySeries(support.accessToken(),null,null,"day")));
+    assertEquals(403,status(()->metrics.communitySeries(moderator.accessToken(),null,null,"day")));
+    assertEquals(400,status(()->metrics.communitySeries(admin.accessToken(),"2026-01-01","2026-05-01","day")));
+    assertEquals(400,status(()->metrics.communitySeries(admin.accessToken(),null,null,"year")));
+  }
+  @Test void communityMetricsCountPerBucketIncludingModeratedItems() {
+    AuthResponse admin=userWithRole("superadmin"); UUID author=id(user()), reporter=id(user());
+    // 2024-02-05 é segunda-feira. 23:30 em São Paulo já é o dia seguinte em UTC.
+    UUID first=forumTopic(author,"2024-02-05 23:30","published");
+    forumTopic(author,"2024-02-06 00:10","hidden");
+    forumTopic(author,"2024-02-06 09:00","deleted");
+    jdbc.sql("""
+        insert into public.forum_replies(topic_id,author_id,body,status,created_at)
+        values (:topic,:author,'resposta','hidden','2024-02-06 10:00'::timestamp at time zone 'America/Sao_Paulo')
+        """).param("topic",first).param("author",author).update();
+    jdbc.sql("""
+        insert into public.forum_reports(reporter_id,target_type,target_id,reason_code,status,created_at)
+        values (:reporter,'topic',:topic,'spam','actioned','2024-02-07 12:00'::timestamp at time zone 'America/Sao_Paulo')
+        """).param("reporter",reporter).param("topic",first).update();
+    // Fora do período: 2024-02-12 00:00 em São Paulo.
+    forumTopic(author,"2024-02-12 00:00","published");
+
+    List<AdminMetricsCommunityPoint> days=asRuntime(id(admin),
+        ()->metrics.communitySeries(admin.accessToken(),"2024-02-05","2024-02-11","day"));
+    assertEquals(7,days.size(),"um ponto por dia, vazios com zero: "+days);
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-05"),1,0,0),days.get(0));
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-06"),2,1,0),days.get(1));
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-07"),0,0,1),days.get(2));
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-11"),0,0,0),days.get(6));
+
+    List<AdminMetricsCommunityPoint> weeks=metrics.communitySeries(admin.accessToken(),"2024-02-05","2024-02-12","week");
+    assertEquals(List.of(
+        new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-05"),3,1,1),
+        new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-12"),1,0,0)),weeks);
+  }
+  @Test void communityMetricsOverHttp() throws Exception {
+    AuthResponse admin=userWithRole("superadmin");
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/metrics/community")
+            .param("from","2023-01-02").param("to","2023-01-03").param("group","day")
+            .header("Authorization","Bearer "+admin.accessToken()))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(MockMvcResultMatchers.jsonPath("$[0].bucket").value("2023-01-02"))
+        .andExpect(MockMvcResultMatchers.jsonPath("$[1].topics").value(0))
+        .andExpect(MockMvcResultMatchers.jsonPath("$[1].replies").value(0))
+        .andExpect(MockMvcResultMatchers.jsonPath("$[1].reports").value(0));
+    AuthResponse support=userWithRole("support");
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/metrics/community")
+            .header("Authorization","Bearer "+support.accessToken()))
+        .andExpect(MockMvcResultMatchers.status().isForbidden());
+  }
+
   // --- Financeiro no tempo (série e conversão) ---
   /** Insere uma assinatura com datas de São Paulo (AAAA-MM-DD HH:MM). */
   void subscription(String stripeId, UUID owner, String status, String created, String trialEnd, String canceled) {
