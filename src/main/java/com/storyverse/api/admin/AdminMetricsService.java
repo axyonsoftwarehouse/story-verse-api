@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
 
@@ -22,6 +23,8 @@ public class AdminMetricsService {
 	private final AuthService auth;
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
+	private static final int MAX_TOP_BOOKS = 20;
+
 	private final ShortCache cache = new ShortCache(Duration.ofMinutes(5));
 
 	public AdminMetricsService(AuthService auth, AuthzService authz, JdbcClient jdbc) {
@@ -67,8 +70,8 @@ public class AdminMetricsService {
 			return cached;
 		}
 		String sql = bucket.equals("week")
-				? "select bucket, active_readers, seconds, books_started, books_finished, signups from public.admin_metrics_weekly(:from, :to)"
-				: "select day as bucket, active_readers, seconds, books_started, books_finished, signups from public.admin_metrics_daily(:from, :to)";
+				? "select bucket, active_readers, seconds, books_started, books_finished, signups, pages from public.admin_metrics_weekly(:from, :to)"
+				: "select day as bucket, active_readers, seconds, books_started, books_finished, signups, pages from public.admin_metrics_daily(:from, :to)";
 		List<AdminMetricsReadingPoint> rows = jdbc.sql(sql)
 				.param("from", Date.valueOf(range.from()))
 				.param("to", Date.valueOf(range.to()))
@@ -78,7 +81,8 @@ public class AdminMetricsService {
 						Math.round(rs.getLong("seconds") / 60.0),
 						rs.getLong("books_started"),
 						rs.getLong("books_finished"),
-						rs.getLong("signups")))
+						rs.getLong("signups"),
+						rs.getLong("pages")))
 				.list();
 		cache.put(key, rows);
 		return rows;
@@ -118,9 +122,38 @@ public class AdminMetricsService {
 		return rows;
 	}
 
+	/** Livros do acervo mais lidos no período, pela estante. {@code limit} de 1 a 20 (padrão 10). */
+	@Transactional(readOnly = true)
+	public List<AdminTopBook> topBooks(String token, String from, String to, Integer limit) {
+		requireMetricsAccess(token);
+		AdminRange range = AdminRange.parse(from, to);
+		int size = limit == null ? 10 : limit;
+		if (size < 1 || size > MAX_TOP_BOOKS) {
+			throw new AuthException(400, "O limite vai de 1 a " + MAX_TOP_BOOKS + ".");
+		}
+		String key = "top-books|" + size + "|" + range.from() + "|" + range.to();
+		List<AdminTopBook> cached = cache.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		List<AdminTopBook> rows = jdbc.sql("""
+				select book_key, title, author, readers, finished
+				  from public.admin_metrics_top_books(:from, :to, :limit)
+				""")
+				.param("from", Date.valueOf(range.from()))
+				.param("to", Date.valueOf(range.to()))
+				.param("limit", size)
+				.query((rs, rowNum) -> new AdminTopBook(
+						rs.getString("book_key"), rs.getString("title"), rs.getString("author"),
+						rs.getLong("readers"), rs.getLong("finished")))
+				.list();
+		cache.put(key, rows);
+		return rows;
+	}
+
 	private AdminMetrics.Reading readingSummary(AdminRange range) {
 		return jdbc.sql("""
-				select active_readers, seconds, books_started, books_finished, entries_created
+				select active_readers, seconds, books_started, books_finished, entries_created, pages
 				  from public.admin_metrics_reading(:from, :to)
 				""")
 				.param("from", Date.valueOf(range.from()))
@@ -130,7 +163,8 @@ public class AdminMetricsService {
 						Math.round(rs.getLong("seconds") / 60.0),
 						rs.getLong("books_started"),
 						rs.getLong("books_finished"),
-						rs.getLong("entries_created")))
+						rs.getLong("entries_created"),
+						rs.getLong("pages")))
 				.single();
 	}
 

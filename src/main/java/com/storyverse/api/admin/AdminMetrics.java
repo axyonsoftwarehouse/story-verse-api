@@ -13,8 +13,9 @@ public record AdminMetrics(Accounts accounts, Reading reading, Map<String, Long>
 			long staff) {
 	}
 
+	/** {@code pages}: páginas lidas, 1 página = 250 palavras (ver V26__reading_days_pages.sql). */
 	public record Reading(long activeReaders, long minutes, long booksStarted, long booksFinished,
-			long shelfEntries) {
+			long shelfEntries, long pages) {
 	}
 
 	public record Retention(LocalDate cohortWeek, long cohortSize, long d1, long d7, long d30) {

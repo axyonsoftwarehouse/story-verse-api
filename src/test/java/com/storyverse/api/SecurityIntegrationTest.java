@@ -172,6 +172,28 @@ class SecurityIntegrationTest {
     Number credit=(Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true));
     assertTrue(credit.intValue()>=15 && credit.intValue()<=16);
   }
+  @Test void reportedPagesAreCappedByServerTimeAndKeepTheHighestValue() {
+    AuthResponse user=user();UUID uid=id(user);
+    String today=jdbc.sql("select ((now() at time zone 'America/Sao_Paulo')::date)::text").query(String.class).single();
+    java.util.function.Supplier<Integer> pages=()->jdbc.sql("select coalesce(max(pages),0) from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single();
+    // Sem tempo contado pelo servidor, o dia não ganha páginas (nem linha nova).
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",5))));
+    assertEquals(0,jdbc.sql("select count(*) from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single());
+    jdbc.sql("insert into public.reading_days(user_id,day,seconds) values(:id,cast(:day as date),600)").param("id",uid).param("day",today).update();
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",50))));
+    assertEquals(50,pages.get());
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",30))));
+    assertEquals(50,pages.get(),"vale o maior valor do dia");
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",900))));
+    assertEquals(100,pages.get(),"no máximo 1 página a cada 6 segundos contados pelo servidor");
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,43200)));
+    assertEquals(100,pages.get(),"o formato antigo continua aceito e não mexe nas páginas");
+    assertEquals(600,jdbc.sql("select seconds from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single());
+    for(Object bad:List.of(-1,1.5,1001,"10"))
+      assertThrows(RuntimeException.class,()->rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("pages",bad)))),"páginas inválidas: "+bad);
+    assertThrows(RuntimeException.class,()->rpc.call(uid,"report_reading",Map.of("p_days",Map.of("ontem",Map.of("pages",1)))));
+    assertEquals(100,pages.get());
+  }
   @Test void runtimeRoleCannotWriteWalletsOrReadAnotherAccountsState() {
     AuthResponse a=user(), b=user();
     jdbc.sql("insert into public.reading_state(user_id,data) values(:id,'{}'::jsonb)").param("id",id(b)).update();
