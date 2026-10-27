@@ -88,6 +88,26 @@ public class AdminMetricsService {
 		return rows;
 	}
 
+	/** Tópicos, respostas e denúncias criados por bucket; os buckets vazios vêm com zero. */
+	@Transactional(readOnly = true)
+	public List<AdminMetricsCommunityPoint> communitySeries(String token, String from, String to, String group) {
+		requireMetricsAccess(token);
+		AdminRange range = AdminRange.parse(from, to);
+		String bucket = AdminRange.group(group);
+		String key = "community|" + bucket + "|" + range.from() + "|" + range.to();
+		return cache.get(key, () -> jdbc.sql("""
+				select bucket, topics, replies, reports
+				  from public.admin_metrics_community(:from, :to, :group)
+				""")
+				.param("from", Date.valueOf(range.from()))
+				.param("to", Date.valueOf(range.to()))
+				.param("group", bucket)
+				.query((rs, rowNum) -> new AdminMetricsCommunityPoint(
+						rs.getObject("bucket", LocalDate.class),
+						rs.getLong("topics"), rs.getLong("replies"), rs.getLong("reports")))
+				.list());
+	}
+
 	@Transactional(readOnly = true)
 	public List<AdminMetrics.Retention> retention(String token, String from, String to) {
 		requireMetricsAccess(token);
