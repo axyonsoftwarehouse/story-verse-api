@@ -160,13 +160,18 @@ class ForumIntegrationTest {
     UUID author=id(user());
     String slug=space();
     int last=0;
-    for (int i=0; i<11; i++) {
-      UUID topic=topic(slug,author,"2026-01-01T00:00:00Z",false,"published");
-      try {
-        forum.report(reporter.accessToken(),Map.of("targetType","topic","targetId",topic.toString(),"reasonCode","spam"));
-      } catch (AuthException error) {
-        last=error.status();
+    try {
+      for (int i=0; i<11; i++) {
+        UUID topic=topic(slug,author,"2026-01-01T00:00:00Z",false,"published");
+        try {
+          forum.report(reporter.accessToken(),Map.of("targetType","topic","targetId",topic.toString(),"reasonCode","spam"));
+        } catch (AuthException error) {
+          last=error.status();
+        }
       }
+    } finally {
+      // O banco é compartilhado: outras suítes contam as denúncias pendentes.
+      jdbc.sql("delete from public.forum_reports where reporter_id=:id").param("id",id(reporter)).update();
     }
     assertEquals(429,last);
   }
