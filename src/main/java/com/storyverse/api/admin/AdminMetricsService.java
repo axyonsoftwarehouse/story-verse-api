@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
 
@@ -22,6 +23,8 @@ public class AdminMetricsService {
 	private final AuthService auth;
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
+	private static final int MAX_TOP_BOOKS = 20;
+
 	private final ShortCache cache = new ShortCache(Duration.ofMinutes(5));
 
 	public AdminMetricsService(AuthService auth, AuthzService authz, JdbcClient jdbc) {
@@ -95,6 +98,35 @@ public class AdminMetricsService {
 			return cached;
 		}
 		List<AdminMetrics.Retention> rows = retentionRows(range);
+		cache.put(key, rows);
+		return rows;
+	}
+
+	/** Livros do acervo mais lidos no período, pela estante. {@code limit} de 1 a 20 (padrão 10). */
+	@Transactional(readOnly = true)
+	public List<AdminTopBook> topBooks(String token, String from, String to, Integer limit) {
+		requireMetricsAccess(token);
+		AdminRange range = AdminRange.parse(from, to);
+		int size = limit == null ? 10 : limit;
+		if (size < 1 || size > MAX_TOP_BOOKS) {
+			throw new AuthException(400, "O limite vai de 1 a " + MAX_TOP_BOOKS + ".");
+		}
+		String key = "top-books|" + size + "|" + range.from() + "|" + range.to();
+		List<AdminTopBook> cached = cache.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		List<AdminTopBook> rows = jdbc.sql("""
+				select book_key, title, author, readers, finished
+				  from public.admin_metrics_top_books(:from, :to, :limit)
+				""")
+				.param("from", Date.valueOf(range.from()))
+				.param("to", Date.valueOf(range.to()))
+				.param("limit", size)
+				.query((rs, rowNum) -> new AdminTopBook(
+						rs.getString("book_key"), rs.getString("title"), rs.getString("author"),
+						rs.getLong("readers"), rs.getLong("finished")))
+				.list();
 		cache.put(key, rows);
 		return rows;
 	}

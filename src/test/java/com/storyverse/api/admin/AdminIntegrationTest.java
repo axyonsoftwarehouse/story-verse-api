@@ -612,6 +612,57 @@ class AdminIntegrationTest {
     assertTrue(weeks.get(weeks.size()-1).signups()>=2, "a semana corrente conta as contas novas: "+weeks);
   }
 
+  // --- Livros mais lidos (2.5) ---
+  /** Uma linha da estante; started/finished em AAAA-MM-DD ou null. */
+  void shelf(UUID owner, String bookKey, String status, String started, String finished, String deleted) {
+    Map<String,Object> params=new HashMap<>();
+    params.put("user",owner); params.put("key",bookKey); params.put("status",status);
+    params.put("source",bookKey.startsWith("gb:")?"gutenberg":bookKey.startsWith("cm:")?"community":"local");
+    params.put("started",started); params.put("finished",finished); params.put("deleted",deleted);
+    jdbc.sql("""
+        insert into public.library_entries(user_id,book_key,source,status,title,author,review,started_on,finished_on,deleted_at)
+        values (:user,:key,:source,:status,'Título '||:key,'Autora','resenha privada',
+                cast(:started as date),cast(:finished as date),cast(:deleted as timestamptz))
+        """).params(params).update();
+  }
+  @Test void topBooksRequireSuperadminAndValidateParams() {
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator"), admin=userWithRole("superadmin");
+    assertEquals(403,status(()->metrics.topBooks(support.accessToken(),null,null,null)));
+    assertEquals(403,status(()->metrics.topBooks(moderator.accessToken(),null,null,10)));
+    assertEquals(400,status(()->metrics.topBooks(admin.accessToken(),"2026-01-01","2026-05-01",10)));
+    assertEquals(400,status(()->metrics.topBooks(admin.accessToken(),null,null,21)));
+    assertEquals(400,status(()->metrics.topBooks(admin.accessToken(),null,null,0)));
+  }
+  @Test void topBooksRankCatalogBooksAndSkipLocalOnes() {
+    AuthResponse admin=userWithRole("superadmin");
+    // Período em 2019 para não cruzar com o que outros testes gravam hoje.
+    String popular="gb:"+(900000+new Random().nextInt(99999)), community="cm:"+UUID.randomUUID();
+    String local="local:-"+(1+new Random().nextInt(99999)), wanted="gb:"+(800000+new Random().nextInt(99999));
+    UUID a=id(user()), b=id(user()), c=id(user()), d=id(user());
+    shelf(a,popular,"finished","2019-03-02","2019-03-10",null);
+    shelf(b,popular,"finished",null,"2019-03-12",null);
+    shelf(c,popular,"reading","2019-03-05",null,null);
+    shelf(d,popular,"finished","2019-03-01","2019-03-03","2019-03-20 12:00-03");
+    shelf(a,community,"reading","2019-03-04",null,null);
+    shelf(b,community,"finished","2019-01-01","2019-02-01",null);
+    shelf(c,community,"finished","2019-03-06","2019-04-20",null);
+    for (UUID owner:List.of(a,b,c,d)) {
+      shelf(owner,local,"finished","2019-03-02","2019-03-04",null);
+      shelf(owner,wanted,"want_to_read","2019-03-02",null,null);
+    }
+    String from="2019-03-01", to="2019-03-31";
+    List<AdminTopBook> top=metrics.topBooks(admin.accessToken(),from,to,null);
+    assertEquals(List.of(popular,community),top.stream().map(AdminTopBook::bookKey).toList(), top.toString());
+    assertEquals(3,top.get(0).readers()); assertEquals(2,top.get(0).finished());
+    assertEquals(2,top.get(1).readers()); assertEquals(0,top.get(1).finished());
+    assertEquals("Título "+popular,top.get(0).title());
+    assertEquals("Autora",top.get(0).author());
+    assertEquals(List.of(popular),metrics.topBooks(admin.accessToken(),from,to,1).stream().map(AdminTopBook::bookKey).toList());
+    // Como o papel de runtime (RLS ligada), o superadmin vê a estante de todos.
+    List<AdminTopBook> runtime=asRuntime(id(admin),()->metrics.topBooks(admin.accessToken(),from,"2019-03-30",null));
+    assertEquals(List.of(popular,community),runtime.stream().map(AdminTopBook::bookKey).toList());
+  }
+
   // --- Financeiro no tempo (série e conversão) ---
   /** Insere uma assinatura com datas de São Paulo (AAAA-MM-DD HH:MM). */
   void subscription(String stripeId, UUID owner, String status, String created, String trialEnd, String canceled) {

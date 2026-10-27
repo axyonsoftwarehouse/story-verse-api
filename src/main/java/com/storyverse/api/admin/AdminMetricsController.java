@@ -45,4 +45,13 @@ public class AdminMetricsController {
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		return service.retention(AuthTokens.bearer(authorization), from, to);
 	}
+
+	@GetMapping("/top-books")
+	public List<AdminTopBook> topBooks(
+			@RequestParam(required = false) String from,
+			@RequestParam(required = false) String to,
+			@RequestParam(required = false) Integer limit,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.topBooks(AuthTokens.bearer(authorization), from, to, limit);
+	}
 }
