@@ -74,6 +74,7 @@ class AdminIntegrationTest {
   @Autowired com.storyverse.api.billing.BillingAdminService billingAdmin;
   @Autowired com.storyverse.api.billing.BillingSnapshotJob snapshotJob;
   @Autowired AdminHealthService health;
+  @Autowired AdminTrafficService traffic;
   @Autowired SessionRepository sessions;
   @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
@@ -690,6 +691,17 @@ class AdminIntegrationTest {
     snapshotJob.snapshot();
     assertEquals(1,jdbc.sql("select count(*) from public.billing_daily_snapshots where day=:d")
         .param("d",java.sql.Date.valueOf(today)).query(Integer.class).single());
+  }
+
+  // --- Tráfego (Umami) ---
+  @Test void trafficWithoutUmamiConfigStillAnswers() {
+    AuthResponse admin=userWithRole("superadmin"), support=userWithRole("support");
+    assertEquals(403,status(()->traffic.traffic(support.accessToken(),null,null)));
+    assertEquals(400,status(()->traffic.traffic(admin.accessToken(),"2026-01-01","2026-05-01")));
+    AdminTraffic result=traffic.traffic(admin.accessToken(),"2026-10-01","2026-10-07");
+    assertEquals(LocalDate.parse("2026-10-01"),result.from());
+    assertNull(result.traffic());
+    assertEquals("Umami não configurado.",result.error());
   }
 
   // --- Saúde (Sentry) ---

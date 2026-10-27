@@ -56,6 +56,8 @@ class AdminControllerTest {
 				.andExpect(status().isUnauthorized());
 		mockMvc.perform(get("/api/v1/admin/billing/series?group=week"))
 				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/admin/traffic"))
+				.andExpect(status().isUnauthorized());
 	}
 
 	@Test
