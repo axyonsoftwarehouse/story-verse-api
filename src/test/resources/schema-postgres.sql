@@ -138,6 +138,13 @@ create table if not exists public.reading_days (
   primary key (user_id, day)
 );
 
+-- Dias com request autenticado (DAU/WAU/MAU do painel). Grants e policy do runtime: V27.
+create table if not exists public.activity_days (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  day date not null,
+  primary key (user_id, day)
+);
+
 create table if not exists public.ranking_profiles (
   user_id uuid primary key references auth.users (id) on delete cascade,
   name text not null,
@@ -172,6 +179,7 @@ alter table public.diamond_wallets enable row level security;
 alter table public.diamond_ledger enable row level security;
 alter table public.streak_freezes enable row level security;
 alter table public.reading_days enable row level security;
+alter table public.activity_days enable row level security;
 alter table public.ranking_profiles enable row level security;
 alter table public.weekly_closings enable row level security;
 alter table public.weekly_awards enable row level security;
@@ -182,7 +190,7 @@ grant insert, update, delete on public.book_submissions to authenticated;
 grant select, insert, update on public.reading_state to authenticated;
 -- Diamantes e ranking: sem grants, só as funções (security definer) mexem nessas tabelas.
 revoke all on public.diamond_wallets, public.diamond_ledger, public.streak_freezes,
-              public.reading_days, public.ranking_profiles, public.weekly_closings, public.weekly_awards
+              public.reading_days, public.activity_days, public.ranking_profiles, public.weekly_closings, public.weekly_awards
   from anon, authenticated;
 
 create or replace function public.is_admin()
