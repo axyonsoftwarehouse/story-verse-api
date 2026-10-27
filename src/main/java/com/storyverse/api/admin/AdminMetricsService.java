@@ -67,8 +67,8 @@ public class AdminMetricsService {
 			return cached;
 		}
 		String sql = bucket.equals("week")
-				? "select bucket, active_readers, seconds, books_started, books_finished, signups from public.admin_metrics_weekly(:from, :to)"
-				: "select day as bucket, active_readers, seconds, books_started, books_finished, signups from public.admin_metrics_daily(:from, :to)";
+				? "select bucket, active_readers, seconds, books_started, books_finished, signups, pages from public.admin_metrics_weekly(:from, :to)"
+				: "select day as bucket, active_readers, seconds, books_started, books_finished, signups, pages from public.admin_metrics_daily(:from, :to)";
 		List<AdminMetricsReadingPoint> rows = jdbc.sql(sql)
 				.param("from", Date.valueOf(range.from()))
 				.param("to", Date.valueOf(range.to()))
@@ -78,7 +78,8 @@ public class AdminMetricsService {
 						Math.round(rs.getLong("seconds") / 60.0),
 						rs.getLong("books_started"),
 						rs.getLong("books_finished"),
-						rs.getLong("signups")))
+						rs.getLong("signups"),
+						rs.getLong("pages")))
 				.list();
 		cache.put(key, rows);
 		return rows;
@@ -100,7 +101,7 @@ public class AdminMetricsService {
 
 	private AdminMetrics.Reading readingSummary(AdminRange range) {
 		return jdbc.sql("""
-				select active_readers, seconds, books_started, books_finished, entries_created
+				select active_readers, seconds, books_started, books_finished, entries_created, pages
 				  from public.admin_metrics_reading(:from, :to)
 				""")
 				.param("from", Date.valueOf(range.from()))
@@ -110,7 +111,8 @@ public class AdminMetricsService {
 						Math.round(rs.getLong("seconds") / 60.0),
 						rs.getLong("books_started"),
 						rs.getLong("books_finished"),
-						rs.getLong("entries_created")))
+						rs.getLong("entries_created"),
+						rs.getLong("pages")))
 				.single();
 	}
 

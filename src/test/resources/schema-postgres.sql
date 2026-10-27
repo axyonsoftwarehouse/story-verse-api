@@ -134,6 +134,8 @@ create table if not exists public.reading_days (
   user_id uuid not null references auth.users (id) on delete cascade,
   day date not null,
   seconds integer not null default 0 check (seconds between 0 and 43200),
+  -- Páginas lidas no dia (1 página = 250 palavras; ver V26__reading_days_pages.sql).
+  pages integer not null default 0 check (pages between 0 and 1000),
   updated_at timestamptz not null default now(),
   primary key (user_id, day)
 );
