@@ -53,6 +53,11 @@ class AdminTrafficUmamiTest {
 	}
 
 	private void handle(HttpExchange exchange) throws IOException {
+		// Como o Umami (Node) na VPS: um pedido com "Upgrade: h2c" fecha a conexão sem resposta.
+		if (exchange.getRequestHeaders().containsKey("Upgrade")) {
+			exchange.close();
+			return;
+		}
 		String path = exchange.getRequestURI().getPath();
 		String query = exchange.getRequestURI().getRawQuery();
 		requests.add(path + "?" + query);

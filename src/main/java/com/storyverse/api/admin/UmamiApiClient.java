@@ -24,7 +24,12 @@ public class UmamiApiClient {
 	private static final JsonMapper JSON = JsonMapper.builder().build();
 	private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
-	private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+	// HTTP/1.1 fixo: em http:// o padrão (HTTP/2) manda "Upgrade: h2c", e o Umami (Node) fecha a
+	// conexão sem resposta, o que chega aqui como IOException.
+	private final HttpClient http = HttpClient.newBuilder()
+			.version(HttpClient.Version.HTTP_1_1)
+			.connectTimeout(Duration.ofSeconds(3))
+			.build();
 	private final String baseUrl;
 	private final String username;
 	private final String password;
