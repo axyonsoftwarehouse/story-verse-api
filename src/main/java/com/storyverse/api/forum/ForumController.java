@@ -19,7 +19,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.storyverse.api.auth.AuthTokens;
 
-/** Forum publico: leitura sem sessao; escrita exige conta confirmada. */
+/**
+ * Forum. Com a cobranca ligada, o BillingAccessFilter exige sessao e assinatura em todas as rotas;
+ * sem ela, a leitura nao exige sessao. Escrever sempre exige conta.
+ */
 @RestController
 @RequestMapping("/api/v1/forum")
 public class ForumController {

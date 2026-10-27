@@ -64,13 +64,13 @@ public class ForumService {
 	@Transactional(readOnly = true)
 	public Map<String, Object> topic(String token, UUID id) {
 		UUID viewer = optionalUser(token);
-		return repository.topic(viewer, id).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
+		return visibleTopic(viewer, id);
 	}
 
 	@Transactional(readOnly = true)
 	public ForumPage replies(String token, UUID topicId, String cursor, Integer limit) {
 		UUID viewer = optionalUser(token);
-		repository.topic(viewer, topicId).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
+		visibleTopic(viewer, topicId);
 		int size = limit(limit);
 		List<Map<String, Object>> rows = repository.replies(viewer, topicId, ForumCursor.decode(cursor), size);
 		return page(rows, size, "created_at", true);
@@ -143,6 +143,9 @@ public class ForumService {
 		if (!staff && !author) {
 			throw new AuthException(403, "Sem permissao para editar este topico.");
 		}
+		if (!staff) {
+			requireEditable(state);
+		}
 		if (!staff && author && olderThanEditWindow(state.get("created_at"))) {
 			throw new AuthException(403, "O prazo de edicao deste topico terminou.");
 		}
@@ -151,7 +154,8 @@ public class ForumService {
 		String bookKey = body.containsKey("bookKey") ? bookKey(text(body.get("bookKey"))) : null;
 		String chapterRef = body.containsKey("chapterRef") ? limitText(text(body.get("chapterRef")), 200) : null;
 		String spoiler = body.containsKey("spoilerLevel") ? spoiler(body.get("spoilerLevel")) : null;
-		repository.updateTopicContent(id, title, content, bookKey, chapterRef, spoiler);
+		repository.updateTopicContent(id, title, content, bookKey, chapterRef, spoiler,
+				statusAfterEdit(userId, staff, state.get("status")));
 		return repository.topic(userId, id).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
 	}
 
@@ -176,10 +180,15 @@ public class ForumService {
 		if (!staff && !author) {
 			throw new AuthException(403, "Sem permissao para editar esta resposta.");
 		}
+		if (!staff) {
+			requireEditable(state);
+		}
 		if (!staff && author && olderThanEditWindow(state.get("created_at"))) {
 			throw new AuthException(403, "O prazo de edicao desta resposta terminou.");
 		}
-		repository.updateReplyContent(id, content(body.get("body")));
+		String content = body.containsKey("body") ? content(body.get("body")) : null;
+		String spoiler = body.containsKey("spoilerLevel") ? spoiler(body.get("spoilerLevel")) : null;
+		repository.updateReplyContent(id, content, spoiler, statusAfterEdit(userId, staff, state.get("status")));
 		return repository.reply(userId, id).orElseThrow(() -> new AuthException(404, "Resposta nao encontrada."));
 	}
 
@@ -197,7 +206,7 @@ public class ForumService {
 	@Transactional
 	public Map<String, Object> reactToTopic(String token, UUID topicId) {
 		UUID userId = requireUser(token);
-		repository.topic(userId, topicId).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
+		visibleTopic(userId, topicId);
 		boolean liked = toggleReaction(userId, "topic", topicId);
 		return Map.of("liked", liked, "reactionCount", repository.reactionCount("topic", topicId));
 	}
@@ -205,7 +214,7 @@ public class ForumService {
 	@Transactional
 	public Map<String, Object> reactToReply(String token, UUID replyId) {
 		UUID userId = requireUser(token);
-		repository.reply(userId, replyId).orElseThrow(() -> new AuthException(404, "Resposta nao encontrada."));
+		visibleReply(userId, replyId);
 		boolean liked = toggleReaction(userId, "reply", replyId);
 		return Map.of("liked", liked, "reactionCount", repository.reactionCount("reply", replyId));
 	}
@@ -213,7 +222,7 @@ public class ForumService {
 	@Transactional
 	public Map<String, Object> toggleBookmark(String token, UUID topicId) {
 		UUID userId = requireUser(token);
-		repository.topic(userId, topicId).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
+		visibleTopic(userId, topicId);
 		boolean saved = repository.bookmarkExists(userId, topicId);
 		if (saved) {
 			repository.removeBookmark(userId, topicId);
@@ -245,10 +254,12 @@ public class ForumService {
 			throw new AuthException(400, "Motivo da denuncia invalido.");
 		}
 		if ("topic".equals(targetType)) {
-			repository.topic(userId, targetId).orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
+			visibleTopic(userId, targetId);
 		} else {
-			repository.reply(userId, targetId).orElseThrow(() -> new AuthException(404, "Resposta nao encontrada."));
+			visibleReply(userId, targetId);
 		}
+		// Denuncia nao custa nada a quem envia: sem limite, uma conta enchia a fila da moderacao.
+		limits.check("forum-report:" + userId, 10, Duration.ofMinutes(10));
 		try {
 			return repository.insertReport(userId, targetType, targetId, reason, details)
 					.orElseThrow(() -> new AuthException(500, "Denuncia nao registrada."));
@@ -371,6 +382,61 @@ public class ForumService {
 		return authz.isStaff(userId) || repository.trusted(userId);
 	}
 
+	/**
+	 * Topico que o leitor pode ver: publicado, ou do proprio autor, ou para a equipe. O RLS ja
+	 * filtra isso no papel de runtime; a checagem aqui nao depende dele.
+	 */
+	private Map<String, Object> visibleTopic(UUID viewer, UUID id) {
+		Map<String, Object> topic = repository.topic(viewer, id)
+				.orElseThrow(() -> new AuthException(404, "Topico nao encontrado."));
+		if (!visibleTo(viewer, topic)) {
+			throw new AuthException(404, "Topico nao encontrado.");
+		}
+		return topic;
+	}
+
+	private Map<String, Object> visibleReply(UUID viewer, UUID id) {
+		Map<String, Object> reply = repository.reply(viewer, id)
+				.orElseThrow(() -> new AuthException(404, "Resposta nao encontrada."));
+		if (!visibleTo(viewer, reply)) {
+			throw new AuthException(404, "Resposta nao encontrada.");
+		}
+		return reply;
+	}
+
+	private boolean visibleTo(UUID viewer, Map<String, Object> row) {
+		if ("published".equals(row.get("status"))) {
+			return true;
+		}
+		if (viewer == null) {
+			return false;
+		}
+		boolean own = viewer.equals(row.get("author_id")) && !"deleted".equals(row.get("status"));
+		return own || authz.isStaff(viewer);
+	}
+
+	/** Autor nao edita o que foi removido ou ocultado pela moderacao. */
+	private static void requireEditable(Map<String, Object> state) {
+		Object status = state.get("status");
+		if ("deleted".equals(status) || state.get("deleted_at") != null) {
+			throw new AuthException(404, "Conteudo nao encontrado.");
+		}
+		if ("hidden".equals(status)) {
+			throw new AuthException(403, "Este conteudo foi ocultado pela moderacao.");
+		}
+	}
+
+	/**
+	 * Quem ainda passa pela fila e edita um texto ja aprovado volta para a fila: sem isso dava
+	 * para publicar algo inofensivo, esperar a aprovacao e trocar o texto dentro do prazo.
+	 */
+	private String statusAfterEdit(UUID userId, boolean staff, Object current) {
+		if (staff || !"published".equals(current) || repository.trusted(userId)) {
+			return null;
+		}
+		return "pending";
+	}
+
 	private void chargeDaily(UUID userId, String feature, int max) {
 		var used = jdbc.sql("""
 				insert into public.api_daily_usage (user_id, day, feature, used)
@@ -412,7 +478,8 @@ public class ForumService {
 			Object time = last.get(timeField);
 			Object id = last.get("id");
 			if (time != null && id != null) {
-				next = ForumCursor.from(Instant.parse(String.valueOf(time)), UUID.fromString(String.valueOf(id))).encode();
+				next = ForumCursor.from(Instant.parse(String.valueOf(time)), UUID.fromString(String.valueOf(id)),
+						Boolean.TRUE.equals(last.get("is_pinned"))).encode();
 			}
 		}
 		return new ForumPage(rows, next);
