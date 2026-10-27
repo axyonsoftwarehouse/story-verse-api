@@ -58,6 +58,8 @@ class AdminControllerTest {
 				.andExpect(status().isUnauthorized());
 		mockMvc.perform(get("/api/v1/admin/traffic"))
 				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/admin/vitals"))
+				.andExpect(status().isUnauthorized());
 	}
 
 	@Test

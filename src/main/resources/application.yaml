@@ -85,8 +85,8 @@ app:
     projects: ${SENTRY_PROJECTS:}
     # Ambiente do Sentry deste painel (o mesmo SENTRY_ENVIRONMENT da instância); vazio = todos.
     environment: ${SENTRY_API_ENVIRONMENT:}
-  # Leitura do Umami auto-hospedado para GET /api/v1/admin/traffic (rede interna da VPS), com um
-  # usuário só de visualização. Sem url/usuário/senha/site o endpoint responde com traffic: null.
+  # Leitura do Umami auto-hospedado para GET /api/v1/admin/traffic e /vitals (rede interna da VPS), com um
+  # usuário só de visualização. Sem url/usuário/senha/site o endpoint responde com traffic/vitals: null.
   umami-api:
     url: ${UMAMI_API_URL:}
     username: ${UMAMI_USERNAME:}

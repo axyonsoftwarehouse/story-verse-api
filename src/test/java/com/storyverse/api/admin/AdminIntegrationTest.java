@@ -75,6 +75,7 @@ class AdminIntegrationTest {
   @Autowired com.storyverse.api.billing.BillingSnapshotJob snapshotJob;
   @Autowired AdminHealthService health;
   @Autowired AdminTrafficService traffic;
+  @Autowired AdminVitalsService vitals;
   @Autowired SessionRepository sessions;
   @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
@@ -701,6 +702,16 @@ class AdminIntegrationTest {
     AdminTraffic result=traffic.traffic(admin.accessToken(),"2026-10-01","2026-10-07");
     assertEquals(LocalDate.parse("2026-10-01"),result.from());
     assertNull(result.traffic());
+    assertEquals("Umami não configurado.",result.error());
+  }
+
+  @Test void vitalsWithoutUmamiConfigStillAnswers() {
+    AuthResponse admin=userWithRole("superadmin"), support=userWithRole("support");
+    assertEquals(403,status(()->vitals.vitals(support.accessToken(),null,null)));
+    assertEquals(400,status(()->vitals.vitals(admin.accessToken(),"2026-01-01","2026-05-01")));
+    AdminVitals result=vitals.vitals(admin.accessToken(),"2026-10-01","2026-10-07");
+    assertEquals(LocalDate.parse("2026-10-07"),result.to());
+    assertNull(result.vitals());
     assertEquals("Umami não configurado.",result.error());
   }
 
