@@ -16,7 +16,8 @@ public record AdminHealth(String period, Sentry sentry, String error, AdminOverv
 			Double crashFreeSessions, List<SessionsPoint> sessionsSeries, List<Issue> topIssues) {
 	}
 
-	public record ErrorsPoint(String day, long accepted, long filtered) {
+	/** {@code filtered} é {@code null} com SENTRY_API_ENVIRONMENT: evento descartado não tem ambiente. */
+	public record ErrorsPoint(String day, long accepted, Long filtered) {
 	}
 
 	public record SessionsPoint(String day, long sessions) {

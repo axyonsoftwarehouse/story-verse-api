@@ -1,6 +1,9 @@
 package com.storyverse.api.admin;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -103,24 +106,37 @@ public class AdminHealthService {
 
 	AdminHealth.Sentry fetch(String period) {
 		Map<String, String> ids = projectIds();
-		CompletableFuture<JsonNode> stats = async(() -> sentry.organization(statsPath(period, ids.values())));
+		String environment = sentry.environment();
+		// stats_v2 (uso/cota) não separa por ambiente. Com SENTRY_API_ENVIRONMENT, os erros por dia
+		// vêm dos eventos guardados daquele ambiente; aí não existe "filtrado" (filtered = null).
+		CompletableFuture<JsonNode> stats = environment.isEmpty()
+				? async(() -> sentry.organization(statsPath(period, ids.values())))
+				: CompletableFuture.completedFuture(null);
+		Map<String, CompletableFuture<JsonNode>> events = new LinkedHashMap<>();
 		Map<String, CompletableFuture<JsonNode>> sessions = new LinkedHashMap<>();
 		Map<String, CompletableFuture<JsonNode>> issues = new LinkedHashMap<>();
 		ids.forEach((slug, id) -> {
+			if (!environment.isEmpty()) {
+				events.put(slug, async(() -> sentry.organization(eventsPath(period, id, environment))));
+			}
 			// Projeto de servidor não tem sessões: falha aqui não derruba o resto.
-			sessions.put(slug, async(() -> sentry.organization(sessionsPath(period, id)))
+			sessions.put(slug, async(() -> sentry.organization(sessionsPath(period, id, environment)))
 					.exceptionally(error -> null));
-			issues.put(slug, async(() -> sentry.organization(issuesPath(period, id))));
+			issues.put(slug, async(() -> sentry.organization(issuesPath(period, id, environment))));
 		});
 		List<CompletableFuture<?>> all = new ArrayList<>(List.of(stats));
+		all.addAll(events.values());
 		all.addAll(sessions.values());
 		all.addAll(issues.values());
 		await(CompletableFuture.allOf(all.toArray(CompletableFuture[]::new)));
 
 		JsonNode statsBody = stats.join();
+		List<String> recent = recentDays(period, Instant.now());
 		List<AdminHealth.Project> projects = new ArrayList<>();
 		ids.forEach((slug, id) -> {
-			List<AdminHealth.ErrorsPoint> errors = errorsSeries(statsBody, id);
+			List<AdminHealth.ErrorsPoint> errors = environment.isEmpty()
+					? errorsSeries(statsBody, id)
+					: eventsSeries(events.get(slug).join(), recent);
 			long total = errors.stream().mapToLong(AdminHealth.ErrorsPoint::accepted).sum();
 			JsonNode sessionBody = sessions.get(slug).join();
 			projects.add(new AdminHealth.Project(slug, errors, total, crashFree(sessionBody),
@@ -154,14 +170,52 @@ public class AdminHealthService {
 		return path.toString();
 	}
 
-	static String sessionsPath(String period, String projectId) {
-		return "/sessions/?field=sum(session)&field=crash_free_rate(session)&interval=1d&statsPeriod="
-				+ period + "&project=" + SentryApiClient.encode(projectId);
+	/** Erros guardados por dia (dataset errors), só do ambiente configurado. */
+	static String eventsPath(String period, String projectId, String environment) {
+		return "/events/?dataset=errors&field=timestamp.to_day&field=count()&sort=timestamp.to_day&per_page=100"
+				+ "&statsPeriod=" + period + "&project=" + SentryApiClient.encode(projectId)
+				+ environmentParam(environment);
 	}
 
-	static String issuesPath(String period, String projectId) {
+	static String sessionsPath(String period, String projectId, String environment) {
+		return "/sessions/?field=sum(session)&field=crash_free_rate(session)&interval=1d&statsPeriod="
+				+ period + "&project=" + SentryApiClient.encode(projectId) + environmentParam(environment);
+	}
+
+	static String issuesPath(String period, String projectId, String environment) {
 		return "/issues/?query=" + SentryApiClient.encode("is:unresolved") + "&sort=freq&limit=" + TOP_ISSUES
-				+ "&statsPeriod=" + period + "&project=" + SentryApiClient.encode(projectId);
+				+ "&statsPeriod=" + period + "&project=" + SentryApiClient.encode(projectId)
+				+ environmentParam(environment);
+	}
+
+	private static String environmentParam(String environment) {
+		return environment.isEmpty() ? "" : "&environment=" + SentryApiClient.encode(environment);
+	}
+
+	/** Dias (UTC, como o Sentry) cobertos pelo período, do mais antigo para hoje. */
+	static List<String> recentDays(String period, Instant now) {
+		Duration span = switch (period) {
+			case "24h" -> Duration.ofHours(24);
+			case "7d" -> Duration.ofDays(7);
+			default -> Duration.ofDays(14);
+		};
+		LocalDate day = now.minus(span).atZone(ZoneOffset.UTC).toLocalDate();
+		LocalDate today = now.atZone(ZoneOffset.UTC).toLocalDate();
+		List<String> days = new ArrayList<>();
+		for (; !day.isAfter(today); day = day.plusDays(1)) days.add(day.toString());
+		return days;
+	}
+
+	/** Contagem por dia vinda de /events/; dia sem evento vira 0. */
+	static List<AdminHealth.ErrorsPoint> eventsSeries(JsonNode body, List<String> days) {
+		Map<String, Long> counts = new LinkedHashMap<>();
+		for (JsonNode row : body.path("data")) {
+			String day = text(row.path("timestamp.to_day"));
+			if (day != null && day.length() >= 10) counts.merge(day.substring(0, 10), number(row.path("count()")), Long::sum);
+		}
+		List<AdminHealth.ErrorsPoint> out = new ArrayList<>();
+		for (String day : days) out.add(new AdminHealth.ErrorsPoint(day, counts.getOrDefault(day, 0L), null));
+		return out;
 	}
 
 	/** stats_v2 agrupado por outcome e projeto; aceita/filtrada por dia. */

@@ -83,6 +83,8 @@ app:
     token: ${SENTRY_API_TOKEN:}
     org: ${SENTRY_ORG:}
     projects: ${SENTRY_PROJECTS:}
+    # Ambiente do Sentry deste painel (o mesmo SENTRY_ENVIRONMENT da instância); vazio = todos.
+    environment: ${SENTRY_API_ENVIRONMENT:}
 
 sentry:
   dsn: ${SENTRY_DSN:}

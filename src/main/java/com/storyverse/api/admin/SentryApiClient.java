@@ -32,18 +32,21 @@ public class SentryApiClient {
 	private final String token;
 	private final String org;
 	private final List<String> projects;
+	private final String environment;
 
 	public SentryApiClient(
 			@Value("${app.sentry-api.url:https://sentry.io}") String baseUrl,
 			@Value("${app.sentry-api.token:}") String token,
 			@Value("${app.sentry-api.org:}") String org,
-			@Value("${app.sentry-api.projects:}") String projects) {
+			@Value("${app.sentry-api.projects:}") String projects,
+			@Value("${app.sentry-api.environment:}") String environment) {
 		String url = baseUrl == null || baseUrl.isBlank() ? "https://sentry.io" : baseUrl.strip();
 		this.baseUrl = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
 		this.token = token == null ? "" : token.strip();
 		this.org = org == null ? "" : org.strip();
 		this.projects = projects == null ? List.of()
 				: Arrays.stream(projects.split(",")).map(String::strip).filter(slug -> !slug.isEmpty()).toList();
+		this.environment = environment == null ? "" : environment.strip();
 	}
 
 	public boolean configured() {
@@ -52,6 +55,11 @@ public class SentryApiClient {
 
 	public List<String> projects() {
 		return projects;
+	}
+
+	/** Ambiente do Sentry a filtrar (ex.: production, qa); vazio = todos. */
+	public String environment() {
+		return environment;
 	}
 
 	/** {@code path} começa em {@code /organizations/{org}}; a query já vem codificada. */
