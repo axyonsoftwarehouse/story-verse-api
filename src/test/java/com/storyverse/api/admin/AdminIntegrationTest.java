@@ -570,9 +570,9 @@ class AdminIntegrationTest {
   @Test void metricsOverviewReadingAndRetentionWork() {
     AuthResponse admin=userWithRole("superadmin"); UUID target=id(user());
     jdbc.sql("""
-        insert into public.reading_days(user_id,day,seconds)
-        values (:id, current_date - 1, 600)
-        on conflict (user_id,day) do update set seconds=600
+        insert into public.reading_days(user_id,day,seconds,pages)
+        values (:id, current_date - 1, 600, 40)
+        on conflict (user_id,day) do update set seconds=600, pages=40
         """).param("id",target).update();
     String from=LocalDate.now().minusDays(7).toString(), to=LocalDate.now().toString();
     AdminMetrics overview=metrics.overview(admin.accessToken(),from,to);
@@ -580,11 +580,14 @@ class AdminIntegrationTest {
     assertTrue(overview.accounts().confirmed()>0);
     assertNotNull(overview.features());
     assertNotNull(overview.retention());
+    assertTrue(overview.reading().pages()>=40);
     List<AdminMetricsReadingPoint> days=metrics.readingSeries(admin.accessToken(),from,to,"day");
     assertFalse(days.isEmpty());
     assertTrue(days.stream().allMatch(p->p.activeReaders()>=0 && p.minutes()>=0));
+    assertTrue(days.stream().mapToLong(AdminMetricsReadingPoint::pages).sum()>=40);
     List<AdminMetricsReadingPoint> weeks=metrics.readingSeries(admin.accessToken(),from,to,"week");
     assertFalse(weeks.isEmpty());
+    assertTrue(weeks.stream().mapToLong(AdminMetricsReadingPoint::pages).sum()>=40);
     assertNotNull(metrics.retention(admin.accessToken(),from,to));
     AdminMetrics runtime=asRuntime(id(admin),()->metrics.overview(admin.accessToken(),LocalDate.now().minusDays(8).toString(),to));
     assertNotNull(runtime);
