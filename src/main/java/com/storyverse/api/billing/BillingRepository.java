@@ -162,7 +162,7 @@ public class BillingRepository {
 				""", params).orElse(Map.of());
 	}
 
-	/** Conversão de teste em pago no período (ver admin_billing_trials na V23). */
+	/** Conversão de teste em pago no período (ver admin_billing_trials na V25). */
 	public Map<String, Object> adminTrials(java.time.Instant from, java.time.Instant to) {
 		Map<String, Object> params = new java.util.LinkedHashMap<>();
 		params.put("from", java.sql.Timestamp.from(from));
