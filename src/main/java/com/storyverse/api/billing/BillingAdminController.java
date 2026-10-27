@@ -32,6 +32,15 @@ public class BillingAdminController {
 		return service.summary(AuthTokens.bearer(authorization), from, to);
 	}
 
+	@GetMapping("/series")
+	public List<BillingSeriesPoint> series(
+			@RequestParam(required = false) String from,
+			@RequestParam(required = false) String to,
+			@RequestParam(defaultValue = "day") String group,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.series(AuthTokens.bearer(authorization), from, to, group);
+	}
+
 	@GetMapping("/subscriptions")
 	public List<Map<String, Object>> subscriptions(
 			@RequestParam(required = false) String status,

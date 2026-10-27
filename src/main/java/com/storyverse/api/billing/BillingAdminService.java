@@ -1,5 +1,6 @@
 package com.storyverse.api.billing;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -11,7 +12,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.storyverse.api.admin.AdminRange;
 import com.storyverse.api.admin.EmailMask;
+import com.storyverse.api.admin.ShortCache;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
@@ -25,6 +28,7 @@ public class BillingAdminService {
 	private final AuthService auth;
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
+	private final ShortCache cache = new ShortCache(Duration.ofMinutes(5));
 
 	public BillingAdminService(BillingRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc) {
 		this.repository = repository;
@@ -40,12 +44,26 @@ public class BillingAdminService {
 		Instant to = toRaw == null || toRaw.isBlank() ? Instant.now() : instant(toRaw);
 		Instant from = fromRaw == null || fromRaw.isBlank() ? to.minusSeconds(30L * 86_400) : instant(fromRaw);
 		if (from.isAfter(to)) throw new AuthException(400, "Período inválido.");
-		Map<String, Object> summary = repository.adminSummary(from, to);
+		Map<String, Object> summary = new java.util.LinkedHashMap<>(repository.adminSummary(from, to));
+		summary.putAll(repository.adminTrials(from, to));
 		summary.put("from", from.toString());
 		summary.put("to", to.toString());
 		authz.audit(actor, "billing.summary", "billing", "summary",
 				Map.of("from", from.toString(), "to", to.toString()));
 		return summary;
+	}
+
+	/** Série por dia/semana; mesmas regras das métricas (90 dias, São Paulo, cache de 5 minutos). */
+	@Transactional
+	public List<BillingSeriesPoint> series(String token, String fromRaw, String toRaw, String groupRaw) {
+		UUID actor = superadmin(token);
+		AdminRange range = AdminRange.parse(fromRaw, toRaw);
+		String group = AdminRange.group(groupRaw);
+		authz.audit(actor, "billing.series", "billing", "series",
+				Map.of("from", range.from().toString(), "to", range.to().toString(), "group", group));
+		return cache.get("series|" + group + "|" + range.from() + "|" + range.to(),
+				() -> repository.adminSeries(range.from(), range.to(), group).stream()
+						.map(BillingAdminService::point).toList());
 	}
 
 	@Transactional(readOnly = true)
@@ -61,6 +79,17 @@ public class BillingAdminService {
 				.orElseThrow(() -> new AuthException(404, "Assinatura não encontrada."));
 		authz.audit(actor, "billing.view", "billing_subscription", id.toString(), Map.of());
 		return mask(row);
+	}
+
+	private static BillingSeriesPoint point(Map<String, Object> row) {
+		return new BillingSeriesPoint(LocalDate.parse(String.valueOf(row.get("bucket"))),
+				number(row.get("mrr_cents")), number(row.get("active")), number(row.get("new_count")),
+				number(row.get("canceled_count")), number(row.get("revenue_cents")),
+				Boolean.TRUE.equals(row.get("estimated")));
+	}
+
+	private static long number(Object value) {
+		return value instanceof Number number ? number.longValue() : 0L;
 	}
 
 	private UUID superadmin(String token) {
