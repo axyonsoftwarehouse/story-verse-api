@@ -76,6 +76,13 @@ app:
     price-label: ${BILLING_PRICE_LABEL:R$ 9,90}
     trial-days: ${BILLING_TRIAL_DAYS:7}
     past-due-grace-days: ${BILLING_PAST_DUE_GRACE_DAYS:3}
+  # Leitura da API REST do Sentry para GET /api/v1/admin/health. O token fica só no servidor;
+  # sem token/org/projetos o endpoint responde com sentry: null.
+  sentry-api:
+    url: ${SENTRY_API_URL:https://sentry.io}
+    token: ${SENTRY_API_TOKEN:}
+    org: ${SENTRY_ORG:}
+    projects: ${SENTRY_PROJECTS:}
 
 sentry:
   dsn: ${SENTRY_DSN:}
