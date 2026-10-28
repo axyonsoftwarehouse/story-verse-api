@@ -144,7 +144,7 @@ class SecurityIntegrationTest {
     var row=community.create(owner.accessToken(),Map.of("title","Book","text_path",path,"rights","own_work"));
     assertThrows(AuthException.class,()->storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","changed".getBytes()));
     assertThrows(AuthException.class,()->storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path));
-    jdbc.sql("insert into public.admins(user_id) values(:id)").param("id",id(admin)).update();
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
     assertTrue(storage.readFor(id(admin),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
     community.review(admin.accessToken(),UUID.fromString(row.get("id").toString()),Map.of("status","approved"));
     assertEquals("reviewed",new String(storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path).orElseThrow()));
@@ -335,7 +335,7 @@ class SecurityIntegrationTest {
   }
   @Test void approvalRejectsSubmissionPointingToAnotherAuthorsFolder() {
     AuthResponse author=user(), victim=user(), admin=user();
-    jdbc.sql("insert into public.admins(user_id) values(:id)").param("id",id(admin)).update();
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
     String path=id(victim)+"/stolen.txt";
     storage.write(id(victim),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","victim".getBytes());
     UUID submissionId=UUID.randomUUID();
@@ -364,6 +364,17 @@ class SecurityIntegrationTest {
     assertThrows(AuthException.class,()->auth.refresh(session.refreshToken()));
     assertNotNull(auth.login(new LoginRequest(email,"new-secret")).accessToken());
     assertThrows(AuthException.class,()->auth.resetPassword(reset,"another-secret"));
+  }
+  @Test void resetLinkCanBeCheckedBeforeAskingForTheNewPassword() {
+    AuthResponse session=user();UUID uid=id(session);
+    String reset=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(reset),java.time.Instant.now().plusSeconds(3600));
+    assertDoesNotThrow(()->auth.validateResetToken(reset));
+    assertDoesNotThrow(()->auth.validateResetToken(reset));
+    String expired=tokenService.newToken();
+    emailTokens.create(uid,EmailTokenRepository.RESET_PASSWORD,tokenService.hash(expired),java.time.Instant.now().minusSeconds(1));
+    assertEquals(400,assertThrows(AuthException.class,()->auth.validateResetToken(expired)).status());
+    assertEquals(400,assertThrows(AuthException.class,()->auth.validateResetToken(reset)).status());
   }
   @Test void resendingConfirmationKeepsEarlierLinksValidUntilOneIsUsed() {
     AuthResponse session=user();UUID uid=id(session);
@@ -443,7 +454,12 @@ class SecurityIntegrationTest {
     UUID topicId=UUID.fromString(topic.get("id").toString());
     assertEquals("published",topic.get("status"));
 
-    Map<String,Object> reply=forum.createReply(user.accessToken(),topicId,Map.of("body","Leia devagar."));
+    Map<String,Object> reply=forum.createReply(user.accessToken(),topicId,
+        Map.of("body","Leia devagar.","spoilerLevel","chapter"));
+    assertEquals("chapter",reply.get("spoiler_level"),"a resposta guarda o spoiler");
+    AuthException spoilerInvalido=assertThrows(AuthException.class,()->forum.createReply(
+        user.accessToken(),topicId,Map.of("body","x","spoilerLevel","final")));
+    assertEquals(400,spoilerInvalido.status());
     UUID replyId=UUID.fromString(reply.get("id").toString());
     assertEquals("published",reply.get("status"));
 
@@ -469,6 +485,11 @@ class SecurityIntegrationTest {
     Map<String,Object> accepted=forum.acceptReply(user.accessToken(),topicId,
         Map.of("replyId",replyId.toString()));
     assertEquals(replyId.toString(),String.valueOf(accepted.get("accepted_reply_id")));
+    assertEquals(uid,jdbc.sql("select accepted_by from public.forum_topics where id=:id")
+        .param("id",topicId).query(UUID.class).single(),"quem aceitou fica gravado no tópico");
+    assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log "
+        + "where action='forum.reply.accept' and target_id=:id").param("id",replyId.toString())
+        .query(Integer.class).single(),"aceite da equipe entra na auditoria");
   }
   @Test void deletingPendingSubmissionRemovesTheFileOnTheServer() {
     AuthResponse owner=user();String path=id(owner)+"/pending-delete.txt";

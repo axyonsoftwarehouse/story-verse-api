@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
@@ -61,6 +62,21 @@ class AuthControllerTest {
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("{\"currentPassword\":\"segredo1\",\"newPassword\":\"segredo2\"}"))
 				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
+	@Sql(statements = {
+			"create schema if not exists auth",
+			"create table if not exists auth.email_tokens (id uuid primary key, kind text not null, "
+					+ "token_hash text not null unique, expires_at timestamp with time zone not null, "
+					+ "used_at timestamp with time zone)"
+	})
+	void passwordResetLinkIsCheckedWithoutSpendingIt() throws Exception {
+		mockMvc.perform(post("/api/v1/auth/reset-password/validate")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"token\":\"link-que-nao-existe\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.error").value("Link inválido ou expirado."));
 	}
 
 	@Test

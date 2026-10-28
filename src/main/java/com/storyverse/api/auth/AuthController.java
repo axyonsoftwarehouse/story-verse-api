@@ -57,6 +57,12 @@ public class AuthController {
 		service.requestPasswordReset(request.email());
 	}
 
+	@PostMapping("/reset-password/validate")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void validateResetToken(@RequestBody TokenRequest request) {
+		service.validateResetToken(request.token());
+	}
+
 	@PostMapping("/reset-password")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void resetPassword(@RequestBody ResetPasswordRequest request, HttpServletResponse response) {

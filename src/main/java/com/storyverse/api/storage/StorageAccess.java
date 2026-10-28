@@ -19,15 +19,22 @@ public class StorageAccess {
   public void lockCommunity(String path) { lock("storage:community-books:" + path); }
   public void setUser(UUID user) { com.storyverse.api.common.DbSession.setUser(jdbc, user); }
 
-  public boolean admin(UUID user) {
-    return jdbc.sql("select exists(select 1 from public.admins where user_id = :uid)")
-        .param("uid", user).query(Boolean.class).single();
+  /** Superadmin ou moderador (public.can_moderate(), V16). */
+  public boolean canModerate(UUID user) {
+    com.storyverse.api.common.DbSession.setUser(jdbc, user);
+    return Boolean.TRUE.equals(jdbc.sql("select public.can_moderate()").query(Boolean.class).single());
+  }
+
+  public boolean superadmin(UUID user) {
+    com.storyverse.api.common.DbSession.setUser(jdbc, user);
+    return Boolean.TRUE.equals(jdbc.sql("select public.has_role('superadmin')").query(Boolean.class).single());
   }
 
   public boolean readable(UUID user, StorageBucket bucket, String path) {
     com.storyverse.api.common.DbSession.setUser(jdbc, user);
+    if (bucket == StorageBucket.CATALOG_BOOKS || bucket == StorageBucket.CATALOG_IMPORTS) return canModerate(user);
     if (bucket.publiclyReadable() || path.startsWith(user + "/")) return true;
-    return bucket == StorageBucket.COMMUNITY_BOOKS && (admin(user) || approvedOwnedByAuthor(path));
+    return bucket == StorageBucket.COMMUNITY_BOOKS && (canModerate(user) || approvedOwnedByAuthor(path));
   }
 
   /** Aprovado E o caminho pertence à pasta do autor do envio (bloqueia linhas legadas cruzadas). */
@@ -46,12 +53,13 @@ public class StorageAccess {
 
   public boolean deletable(UUID user, StorageBucket bucket, String path) {
     com.storyverse.api.common.DbSession.setUser(jdbc, user);
+    if (bucket == StorageBucket.CATALOG_BOOKS) return superadmin(user);
     if (bucket == StorageBucket.COMMUNITY_BOOKS) {
       if (exists(path, "status = 'approved'")) return false;
-      return path.startsWith(user + "/") || admin(user);
+      return path.startsWith(user + "/") || canModerate(user);
     }
     return path.startsWith(user + "/") || (bucket == StorageBucket.PROFILE_MEDIA
-        && path.matches("[^/]+/livros/.+") && admin(user));
+        && path.matches("[^/]+/livros/.+") && superadmin(user));
   }
 
   private boolean exists(String path, String predicate) {

@@ -13,9 +13,13 @@ import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.storyverse.api.auth.AuthException;
 
@@ -25,6 +29,8 @@ import com.storyverse.api.auth.AuthException;
  */
 @Service
 public class StorageService {
+
+	private static final Logger log = LoggerFactory.getLogger(StorageService.class);
 
 	private final Path baseDir;
 	private final StorageAccess access;
@@ -134,6 +140,12 @@ public class StorageService {
 			case "image/webp" -> n >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F'
 					&& head[3] == 'F' && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P';
 			case "application/gzip" -> n >= 2 && (head[0] & 0xFF) == 0x1F && (head[1] & 0xFF) == 0x8B;
+			case "application/pdf" -> n >= 5 && head[0] == '%' && head[1] == 'P' && head[2] == 'D'
+					&& head[3] == 'F' && head[4] == '-';
+			case "application/epub+zip" -> n >= 4 && head[0] == 'P' && head[1] == 'K'
+					&& head[2] == 0x03 && head[3] == 0x04;
+			case "application/zip" -> n >= 4 && head[0] == 'P' && head[1] == 'K'
+					&& head[2] == 0x03 && head[3] == 0x04;
 			case "text/plain" -> isText(file);
 			default -> false;
 		};
@@ -221,6 +233,40 @@ public class StorageService {
 		}
 	}
 
+	/**
+	 * Apaga um arquivo só depois do commit da transação atual (fora de transação, apaga na hora). Não
+	 * confere permissão por pessoa: quem chama já conferiu e o caminho vem do banco. Arquivo não volta
+	 * com rollback, então uma falha aqui vira aviso no log e deixa um arquivo órfão, nunca uma linha órfã.
+	 */
+	public void removeAfterCommit(StorageBucket bucket, String path) {
+		Path target;
+		try {
+			target = resolve(bucket, safePath(path));
+		} catch (AuthException exception) {
+			log.warn("Caminho inválido ao agendar remoção em {}: {}", bucket.id(), path);
+			return;
+		}
+		if (TransactionSynchronizationManager.isSynchronizationActive()) {
+			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+				@Override
+				public void afterCommit() {
+					removeQuietly(bucket, target);
+				}
+			});
+		} else {
+			removeQuietly(bucket, target);
+		}
+	}
+
+	private void removeQuietly(StorageBucket bucket, Path target) {
+		try {
+			Files.deleteIfExists(target);
+		} catch (IOException | RuntimeException exception) {
+			log.warn("Falha ao apagar arquivo em {}: {}", bucket.id(),
+					baseDir.resolve(bucket.id()).relativize(target), exception);
+		}
+	}
+
 	/** Remove todos os arquivos de todas as pastas da conta (exclusão de conta). */
 	@Transactional
 	public void deleteAllForUser(UUID userId) {
@@ -305,6 +351,7 @@ public class StorageService {
 		if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
 		if (lower.endsWith(".png")) return "image/png";
 		if (lower.endsWith(".gz")) return "application/gzip";
+		if (lower.endsWith(".zip")) return "application/zip";
 		if (lower.endsWith(".txt")) return "text/plain";
 		return "application/octet-stream";
 	}

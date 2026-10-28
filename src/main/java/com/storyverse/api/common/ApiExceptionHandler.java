@@ -7,7 +7,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import com.storyverse.api.admin.AccountSanctionedException;
+import com.storyverse.api.admin.Sanction;
+import com.storyverse.api.admin.SanctionError;
 import com.storyverse.api.auth.AuthException;
 
 import io.sentry.Sentry;
@@ -23,9 +27,24 @@ public class ApiExceptionHandler {
 				.body(new ApiError(exception.getMessage(), exception.code()));
 	}
 
+	@ExceptionHandler(AccountSanctionedException.class)
+	ResponseEntity<SanctionError> handleSanction(AccountSanctionedException exception) {
+		Sanction sanction = exception.sanction();
+		String message = "ban".equals(sanction.kind()) ? "Conta banida." : "Conta suspensa.";
+		return ResponseEntity.status(HttpStatus.FORBIDDEN)
+				.body(new SanctionError(message, "ACCOUNT_SANCTIONED", sanction.kind(),
+						sanction.reason(), sanction.expiresAt()));
+	}
+
 	@ExceptionHandler(AsyncRequestNotUsableException.class)
 	void handleClientDisconnect() {
-		// Cliente SSE desconectou: a resposta já foi encerrada e não há corpo para escrever.
+		// Cliente SSE desconectou: a resposta jǭ foi encerrada e nǜo hǭ corpo para escrever.
+	}
+
+	@ExceptionHandler(NoResourceFoundException.class)
+	ResponseEntity<ApiError> handleNotFound() {
+		return ResponseEntity.status(HttpStatus.NOT_FOUND)
+				.body(new ApiError("Recurso não encontrado.", "NOT_FOUND"));
 	}
 
 	@ExceptionHandler(Exception.class)

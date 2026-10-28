@@ -21,7 +21,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # Produção é sempre a `main`, inclusive quando o workflow é disparado à mão
+      # com o branch padrão em `develop`.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
 
       - name: Build e publica a imagem (GHCR)
         run: |

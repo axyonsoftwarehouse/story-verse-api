@@ -45,6 +45,19 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
   (fotos e capas), `user-books` (livros importados), `community-books` (texto do acervo). Cada um só
   na própria pasta.
 - `GET /api/v1/storage/public/{bucket}/{path}` — leitura **sem sessão** de bucket público (`profile-media`).
+- **Admin** (staff; a API confere o papel em cada rota: sem sessão → 401, sem papel → 403):
+  - `GET /api/v1/admin/overview` — visão geral (superadmin, moderator, support).
+  - `GET /api/v1/admin/users?q=` — busca por UUID, e-mail exato ou parte do nome; e-mail mascarado (superadmin, support).
+  - `GET /api/v1/admin/users/{id}` — detalhe da conta; auditoria recente só para superadmin (superadmin, support).
+  - `POST /api/v1/admin/users/{id}/sessions/revoke` — encerra as sessões da conta (superadmin, support).
+  - `PUT|DELETE /api/v1/admin/users/{id}/roles/{role}` — dá/tira `moderator` ou `support` (superadmin; nunca a própria conta nem `superadmin`).
+  - `GET /api/v1/admin/features?userId=` — features de uma conta (superadmin).
+  - `GET /api/v1/admin/features/catalog` — features conhecidas e contagem (superadmin).
+  - `GET /api/v1/admin/features/{feature}/users` — quem tem a feature, com cursor (superadmin).
+  - `PUT /api/v1/admin/features` — `{ "userId", "feature", "enabled" }`; audita na mesma transação (superadmin).
+  - `GET /api/v1/admin/audit` — auditoria filtrável e paginada, só leitura (superadmin).
+  - `GET /api/v1/admin/forum/reports|topics|replies` — filas de moderação do fórum (staff).
+  - `PATCH /api/v1/admin/forum/reports|topics|replies/{id}` — resolve ou modera (superadmin, moderator).
 - `GET /api/v1/presence/{room}?key=…` — presença por **SSE** (público): envia `event: count` com
   `{"count": n}` sempre que a contagem da sala muda. Só o número circula.
 - `GET /api/v1/ai/status` — se a IA está configurada no servidor (público).
@@ -54,7 +67,7 @@ A API inicia na porta `8080` por padrão. Para escolher outra porta, defina a va
 - `PUT /api/v1/me/reading-state` — grava de forma otimista: `{ "data": {…}, "baseUpdatedAt": <do GET|null> }`
   → `{ "updated": bool, "updatedAt": … }` (`updated=false` se outro aparelho gravou antes).
 - Estante (biblioteca pessoal), só para contas com a feature `library` (sem ela: 403 `FEATURE_DISABLED`).
-  `{bookKey}` é `gb:<n>`, `cm:<uuid>` ou `local:<id>`.
+  `{bookKey}` é `gb:<n>`, `cm:<uuid>`, `cat:<uuid>` ou `local:<id>`.
   - `GET /api/v1/me/library` — lista; filtros `status` (repetível ou CSV), `author`, `series`, `language`,
     `genre`, `year`, `minRating`, `maxRating`, `sort` (`recent`, `title`, `author`, `rating`, `finished`),
     `cursor`, `limit` (até 100) → `{ "items": [...], "nextCursor" }`. Com `updatedSince=<updatedAt>`
@@ -120,6 +133,7 @@ Endpoints de confirmacao, recuperacao e perfil:
 - `POST /api/v1/auth/confirm-email` - `{ "token" }` -> sessao (o link confirma e ja entra).
 - `POST /api/v1/auth/resend-confirmation` - `{ "email" }` -> 202, sempre resposta generica.
 - `POST /api/v1/auth/forgot-password` - `{ "email" }` -> 202, sempre resposta generica.
+- `POST /api/v1/auth/reset-password/validate` - `{ "token" }` -> 204 se o link ainda vale; 400 se expirou/foi usado (nao consome o token).
 - `POST /api/v1/auth/reset-password` - `{ "token", "password" }` -> 204; revoga as sessoes.
 - `POST /api/v1/auth/change-password` - `{ "currentPassword", "newPassword" }` com Bearer -> 204.
 - `PATCH /api/v1/auth/profile` - `{ "name", "avatar", "photo", "cover" }` com Bearer -> usuario atualizado.

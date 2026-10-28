@@ -15,6 +15,11 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.storyverse.api.admin.AccountSanctionedException;
+import com.storyverse.api.admin.Sanction;
+import com.storyverse.api.admin.SanctionNotice;
+import com.storyverse.api.admin.SanctionService;
+import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.common.RateLimitGate;
 import com.storyverse.api.common.SecurityEvents;
 import com.storyverse.api.feature.FeatureAccessService;
@@ -39,6 +44,8 @@ public class AuthService {
 	private final AuthzService authz;
 	private final SecurityEvents security;
 	private final FeatureAccessService featureAccess;
+	private final BillingService billing;
+	private final SanctionService sanctions;
 	private final boolean requireEmailConfirmation;
 	private final Duration confirmationTtl;
 	private final Duration resetTtl;
@@ -55,6 +62,8 @@ public class AuthService {
 			AuthzService authz,
 			SecurityEvents security,
 			FeatureAccessService featureAccess,
+			BillingService billing,
+			SanctionService sanctions,
 			@Value("${app.auth.require-email-confirmation:true}") boolean requireEmailConfirmation,
 			@Value("${app.auth.confirmation-ttl:PT24H}") Duration confirmationTtl,
 			@Value("${app.auth.reset-ttl:PT1H}") Duration resetTtl) {
@@ -71,6 +80,8 @@ public class AuthService {
 		this.authz = authz;
 		this.security = security;
 		this.featureAccess = featureAccess;
+		this.billing = billing;
+		this.sanctions = sanctions;
 		this.requireEmailConfirmation = requireEmailConfirmation;
 		this.confirmationTtl = confirmationTtl;
 		this.resetTtl = resetTtl;
@@ -130,6 +141,8 @@ public class AuthService {
 		if (requireEmailConfirmation && user.emailConfirmedAt() == null) {
 			throw new AuthException(403, "Confirme seu e-mail antes de entrar. Reenvie o link se precisar.");
 		}
+		Sanction blocking = sanctions.blocking(user.id());
+		if (blocking != null) throw new AccountSanctionedException(blocking);
 		users.touchLastSignIn(user.id());
 		return issue(user);
 	}
@@ -167,6 +180,15 @@ public class AuthService {
 					Instant.now().plus(resetTtl));
 			mail.sendPasswordReset(user.email(), token);
 		});
+	}
+
+	/** Abrir o link de recuperação não pode pedir a senha nova antes de saber se ele ainda vale. */
+	@Transactional(readOnly = true)
+	public void validateResetToken(String token) {
+		if (token == null || token.isBlank()
+				|| !emailTokens.isValid(EmailTokenRepository.RESET_PASSWORD, tokens.hash(token))) {
+			throw new AuthException(400, "Link inválido ou expirado.");
+		}
 	}
 
 	@Transactional
@@ -247,6 +269,8 @@ public class AuthService {
 		}
 		User user = users.findById(session.userId())
 				.orElseThrow(() -> new AuthException(401, "Sessão inválida."));
+		Sanction blocking = sanctions.blocking(user.id());
+		if (blocking != null) throw new AccountSanctionedException(blocking);
 		return rotate(session, user);
 	}
 
@@ -256,7 +280,8 @@ public class AuthService {
 		Instant now = Instant.now();
 		sessions.rotate(session.id(), tokens.hash(accessToken), now.plus(ACCESS_TTL),
 				tokens.hash(newRefreshToken), now.plus(REFRESH_TTL));
-		return new AuthResponse(accessToken, newRefreshToken, ACCESS_TTL.toSeconds(), UserResponse.from(user));
+		return new AuthResponse(accessToken, newRefreshToken, ACCESS_TTL.toSeconds(), UserResponse.from(user),
+				SanctionNotice.from(sanctions.warning(user.id())));
 	}
 
 	@Transactional
@@ -281,7 +306,7 @@ public class AuthService {
 	public CapabilitiesResponse capabilities(String accessToken) {
 		SessionRow session = requireSession(accessToken, false);
 		return new CapabilitiesResponse(List.copyOf(authz.roles(session.userId())),
-				featureAccess.features(session.userId()));
+				featureAccess.features(session.userId()), billing.capabilities(session.userId()));
 	}
 
 	/** Id do usuário da sessão (Bearer). Usado pelos módulos de dados. */
@@ -310,6 +335,8 @@ public class AuthService {
 		if (session.revokedAt() != null || expiresAt == null || expiresAt.isBefore(Instant.now())) {
 			throw new AuthException(401, "Sessão expirada. Entre de novo.");
 		}
+		Sanction blocking = sanctions.blocking(session.userId());
+		if (blocking != null) throw new AccountSanctionedException(blocking);
 		return session;
 	}
 
@@ -319,7 +346,8 @@ public class AuthService {
 		Instant now = Instant.now();
 		sessions.create(user.id(), tokens.hash(accessToken), now.plus(ACCESS_TTL),
 				tokens.hash(refreshToken), now.plus(REFRESH_TTL));
-		return new AuthResponse(accessToken, refreshToken, ACCESS_TTL.toSeconds(), UserResponse.from(user));
+		return new AuthResponse(accessToken, refreshToken, ACCESS_TTL.toSeconds(), UserResponse.from(user),
+				SanctionNotice.from(sanctions.warning(user.id())));
 	}
 
 	private static void putMetadata(Map<String, Object> metadata, String key, String value, int maxLength) {

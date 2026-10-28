@@ -1,21 +1,23 @@
 name: Deploy API QA (VPS)
 
 # API do ambiente de QA: https://api.qa.storyverse.2.29.42.104.sslip.io (stack storyverse-qa na VPS,
-# banco próprio, dados de teste). Publica em push no branch `qa` ou à mão:
+# banco próprio, dados de teste). Push no branch `develop` (integração/próxima release) publica
+# sozinho. Para testar uma branch antes do merge, escolha o ref à mão:
 #   gh workflow run deploy-api-qa.yml -f ref=feat/minha-branch
 # Manual: story-verse-web, docs/QA.md.
 #
 # O código do branch (docker build) roda no job `build`, sem a chave da VPS. Só o job `deploy`
-# recebe a chave, e ele não faz checkout: troca a imagem na VPS e confere.
+# recebe a chave de QA (environment `qa`), e ele não faz checkout: troca a imagem na VPS e confere.
+# A chave é restrita por command= e só alcança a stack de QA.
 on:
   workflow_dispatch:
     inputs:
       ref:
         description: Branch, tag ou commit para publicar no QA
         required: true
-        default: main
+        default: develop
   push:
-    branches: [qa]
+    branches: [develop]
 
 permissions:
   contents: read
@@ -62,27 +64,25 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    environment: qa
     env:
       IMAGE: ${{ needs.build.outputs.image }}
     steps:
       - name: Configurar chave SSH
         env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          QA_SSH_KEY: ${{ secrets.QA_SSH_KEY }}
+          QA_KNOWN_HOSTS: ${{ secrets.QA_KNOWN_HOSTS }}
         run: |
-          test -n "$VPS_KNOWN_HOSTS" || { echo "Configure VPS_KNOWN_HOSTS com a chave verificada da VPS"; exit 1; }
+          test -n "$QA_KNOWN_HOSTS" || { echo "Configure QA_KNOWN_HOSTS com a chave verificada da VPS"; exit 1; }
           mkdir -p ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$QA_SSH_KEY" > ~/.ssh/id_qa
+          chmod 600 ~/.ssh/id_qa
+          printf '%s\n' "$QA_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
       - name: Atualizar a API de QA na VPS
         run: |
-          # O SHA fica no .env de QA: um restart manual não volta para outra imagem.
-          ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "cd /home/deploy/storyverse-qa && sed -i 's|^API_IMAGE=.*|API_IMAGE=$IMAGE|' .env && docker compose --project-name storyverse-qa config --quiet && docker compose --project-name storyverse-qa pull qa-api && docker compose --project-name storyverse-qa up -d qa-api && docker compose --project-name storyverse-qa ps qa-api"
-
-      - name: Conferir o health da API de QA
-        run: |
-          ssh -i ~/.ssh/id_deploy "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'curl -fsS --retry 20 --retry-delay 3 --retry-all-errors https://api.qa.storyverse.2.29.42.104.sslip.io/api/v1/health/ready'
+          # O script na VPS grava no .env o SHA da imagem, confere que o contêiner subiu com
+          # exatamente esta imagem e espera o health; qualquer divergência deixa o job vermelho.
+          ssh -i ~/.ssh/id_qa \
+            "${{ secrets.QA_USER }}@${{ secrets.QA_HOST }}" \
+            "bash /home/deploy/qa-deploy/deploy-api.sh $IMAGE ${{ github.sha }}"
