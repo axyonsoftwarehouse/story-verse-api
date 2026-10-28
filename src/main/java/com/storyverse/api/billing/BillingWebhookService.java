@@ -6,11 +6,16 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.storyverse.api.auth.AuthException;
+import com.storyverse.api.auth.MailService;
 
+import com.stripe.model.Charge;
 import com.stripe.model.Event;
 import com.stripe.model.Invoice;
 import com.stripe.model.StripeObject;
@@ -21,12 +26,19 @@ import com.stripe.model.checkout.Session;
 @Service
 public class BillingWebhookService {
 
+	private static final Logger log = LoggerFactory.getLogger(BillingWebhookService.class);
+
 	private final StripeGateway gateway;
 	private final BillingRepository repository;
+	private final MailService mail;
+	private final int pixDays;
 
-	public BillingWebhookService(StripeGateway gateway, BillingRepository repository) {
+	public BillingWebhookService(StripeGateway gateway, BillingRepository repository, MailService mail,
+			@Value("${app.billing.pix.days:30}") int pixDays) {
 		this.gateway = gateway;
 		this.repository = repository;
+		this.mail = mail;
+		this.pixDays = pixDays;
 	}
 
 	@Transactional
@@ -57,6 +69,10 @@ public class BillingWebhookService {
 		StripeObject object = object(event);
 		switch (event.getType()) {
 			case "checkout.session.completed" -> checkout(object);
+			// Pix pode confirmar depois de a sessão fechar; o período sai do mesmo jeito.
+			case "checkout.session.async_payment_succeeded" -> {
+				if (object instanceof Session session) prepaid(session);
+			}
 			case "customer.subscription.created", "customer.subscription.updated",
 					"customer.subscription.deleted", "customer.subscription.trial_will_end" ->
 				subscription(object, null);
@@ -65,8 +81,11 @@ public class BillingWebhookService {
 				invoice(object);
 			}
 			case "invoice.payment_failed" -> invoice(object);
-			// Reembolso/disputa entram no financeiro e não mudam o acesso sozinhos.
-			case "charge.refunded", "charge.dispute.created" -> {
+			// Reembolso de Pix tira aquele período do acesso; o do cartão não mexe no acesso sozinho.
+			case "charge.refunded" -> {
+				if (object instanceof Charge charge) refund(charge);
+			}
+			case "charge.dispute.created", "checkout.session.async_payment_failed" -> {
 				// registrado em billing_events
 			}
 			default -> {
@@ -77,18 +96,86 @@ public class BillingWebhookService {
 
 	private void checkout(StripeObject object) {
 		if (!(object instanceof Session session)) throw new AuthException(500, "Checkout inválido.");
+		if ("payment".equals(session.getMode())) {
+			prepaid(session);
+			return;
+		}
 		String customerId = session.getCustomer();
+		if (customerId == null) throw new AuthException(500, "Checkout sem conta ou cliente.");
+		repository.upsertCustomer(userOf(session), customerId);
+		if (session.getSubscription() != null) subscription(session.getSubscription(), null);
+	}
+
+	private static UUID userOf(Session session) {
 		String rawUser = session.getClientReferenceId();
 		if (rawUser == null && session.getMetadata() != null) rawUser = session.getMetadata().get("user_id");
-		if (rawUser == null || customerId == null) throw new AuthException(500, "Checkout sem conta ou cliente.");
-		UUID userId;
+		if (rawUser == null) throw new AuthException(500, "Checkout sem conta ou cliente.");
 		try {
-			userId = UUID.fromString(rawUser);
+			return UUID.fromString(rawUser);
 		} catch (RuntimeException exception) {
 			throw new AuthException(500, "Checkout com conta inválida.");
 		}
-		repository.upsertCustomer(userId, customerId);
-		if (session.getSubscription() != null) subscription(session.getSubscription(), null);
+	}
+
+	/**
+	 * Pix pago: abre o período (ver {@link PrepaidRules}) e manda a confirmação. Sessão ainda sem
+	 * pagamento espera o {@code async_payment_succeeded}; a mesma sessão repetida não soma dias.
+	 */
+	void prepaid(Session session) {
+		if (!"paid".equals(session.getPaymentStatus())) return;
+		UUID userId = userOf(session);
+		if (session.getCustomer() != null) repository.upsertCustomer(userId, session.getCustomer());
+		int days = pixDays;
+		if (session.getMetadata() != null && session.getMetadata().get("days") != null) {
+			try {
+				days = Integer.parseInt(session.getMetadata().get("days"));
+			} catch (NumberFormatException exception) {
+				// fica o prazo padrão
+			}
+		}
+		Instant lastEnd = repository.latestPrepaid(userId)
+				.map(row -> BillingService.instant(row.get("ends_at"))).orElse(null);
+		Instant start = PrepaidRules.startAt(Instant.now(), lastEnd,
+				repository.latestSubscription(userId).orElse(null));
+		Instant end = start.plus(java.time.Duration.ofDays(days));
+		int amount = session.getAmountTotal() == null ? 0 : session.getAmountTotal().intValue();
+		String currency = session.getCurrency() == null ? "brl" : session.getCurrency();
+
+		Map<String, Object> row = new LinkedHashMap<>();
+		row.put("user_id", userId);
+		row.put("session_id", session.getId());
+		row.put("payment_intent", session.getPaymentIntent());
+		row.put("amount", amount);
+		row.put("currency", currency);
+		row.put("days", days);
+		row.put("starts_at", Timestamp.from(start));
+		row.put("ends_at", Timestamp.from(end));
+		if (!repository.insertPrepaid(row)) return;
+
+		// Entra na receita do financeiro; o MRR continua contando só assinaturas.
+		Map<String, Object> invoice = new LinkedHashMap<>();
+		invoice.put("id", session.getPaymentIntent() == null ? session.getId() : session.getPaymentIntent());
+		invoice.put("subscription", null);
+		invoice.put("user_id", userId);
+		invoice.put("amount", amount);
+		invoice.put("currency", currency);
+		invoice.put("paid_at", Timestamp.from(Instant.now()));
+		repository.upsertInvoice(invoice);
+
+		String email = session.getCustomerDetails() != null && session.getCustomerDetails().getEmail() != null
+				? session.getCustomerDetails().getEmail()
+				: repository.email(userId);
+		try {
+			if (email != null) mail.sendPrepaidConfirmation(email, end);
+		} catch (RuntimeException exception) {
+			// O acesso já foi liberado; falha de e-mail não pode fazer o Stripe reenviar o evento.
+			log.warn("Confirmação do Pix não enviada: {}", exception.getMessage());
+		}
+	}
+
+	void refund(Charge charge) {
+		if (charge.getPaymentIntent() == null) return;
+		repository.refundPrepaid(charge.getPaymentIntent());
 	}
 
 	/** Guarda o valor pago: é a receita da série do financeiro (o evento em si não tem valor). */

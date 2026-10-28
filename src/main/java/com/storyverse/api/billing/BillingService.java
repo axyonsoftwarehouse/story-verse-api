@@ -38,6 +38,7 @@ public class BillingService {
 	private final String priceLabel;
 	private final int trialDays;
 	private final int graceDays;
+	private final int pixDays;
 
 	public BillingService(BillingRepository repository, AuthzService authz, JdbcClient jdbc,
 			StripeGateway stripe,
@@ -45,7 +46,8 @@ public class BillingService {
 			@Value("${app.billing.price-id:}") String priceId,
 			@Value("${app.billing.price-label:R$ 9,90}") String priceLabel,
 			@Value("${app.billing.trial-days:7}") int trialDays,
-			@Value("${app.billing.past-due-grace-days:3}") int graceDays) {
+			@Value("${app.billing.past-due-grace-days:3}") int graceDays,
+			@Value("${app.billing.pix.days:30}") int pixDays) {
 		this.repository = repository;
 		this.authz = authz;
 		this.jdbc = jdbc;
@@ -55,6 +57,7 @@ public class BillingService {
 		this.priceLabel = priceLabel;
 		this.trialDays = trialDays;
 		this.graceDays = graceDays;
+		this.pixDays = pixDays;
 	}
 
 	public boolean enabled() {
@@ -81,6 +84,10 @@ public class BillingService {
 		Map<String, Object> grant = repository.activeGrant(userId).orElse(null);
 		if (grant != null) {
 			return new Access(true, "grant", iso(grant.get("expires_at")));
+		}
+		Map<String, Object> prepaid = repository.activePrepaid(userId).orElse(null);
+		if (prepaid != null) {
+			return new Access(true, "pix", iso(prepaid.get("until")));
 		}
 		Map<String, Object> subscription = repository.latestSubscription(userId).orElse(null);
 		if (subscription == null) return new Access(false, "none", null);
@@ -118,6 +125,12 @@ public class BillingService {
 		view.put("cancelAtPeriodEnd", row != null && Boolean.TRUE.equals(row.get("cancel_at_period_end")));
 		view.put("trialEnd", row == null ? null : iso(row.get("trial_end")));
 		view.put("portalAvailable", repository.customer(userId).isPresent());
+		view.put("pixAvailable", enabled && stripe.pixConfigured());
+		view.put("pixDays", pixDays);
+		Map<String, Object> prepaid = repository.latestPrepaid(userId).orElse(null);
+		view.put("prepaid", prepaid == null ? null : Map.of(
+				"accessUntil", iso(prepaid.get("ends_at")),
+				"lastPaidAt", iso(prepaid.get("created_at"))));
 		return view;
 	}
 
@@ -144,16 +157,29 @@ public class BillingService {
 		if ("active".equals(status) || "trialing".equals(status)) {
 			throw new AuthException(409, "Esta conta já tem uma assinatura em andamento.");
 		}
-		Map<String, Object> customer = repository.customer(userId).orElse(null);
-		String customerId;
-		if (customer == null) {
-			customerId = stripe.createCustomer(repository.email(userId), userId.toString());
-			repository.upsertCustomer(userId, customerId);
-		} else {
-			customerId = String.valueOf(customer.get("stripe_customer_id"));
-		}
-		StripeGateway.Checkout checkout = stripe.checkout(customerId, userId.toString());
+		StripeGateway.Checkout checkout = stripe.checkout(customerId(userId), userId.toString());
 		return Map.of("url", checkout.url());
+	}
+
+	/** Checkout avulso só com Pix: cada pagamento libera {@code pixDays} dias (ver {@link PrepaidRules}). */
+	@Transactional
+	public Map<String, Object> pixCheckout(UUID userId) {
+		requireConfigured();
+		if (!stripe.pixConfigured()) throw new AuthException(503, "Pagamento com Pix ainda não está disponível.");
+		asUser(userId);
+		if (PrepaidRules.blocksPix(repository.latestSubscription(userId).orElse(null))) {
+			throw new AuthException(409, "Sua assinatura no cartão já está ativa.");
+		}
+		StripeGateway.Checkout checkout = stripe.pixCheckout(customerId(userId), userId.toString());
+		return Map.of("url", checkout.url());
+	}
+
+	private String customerId(UUID userId) {
+		Map<String, Object> customer = repository.customer(userId).orElse(null);
+		if (customer != null) return String.valueOf(customer.get("stripe_customer_id"));
+		String customerId = stripe.createCustomer(repository.email(userId), userId.toString());
+		repository.upsertCustomer(userId, customerId);
+		return customerId;
 	}
 
 	/** Portal do cliente: cartão, faturas, cancelamento e recibo. */
@@ -222,7 +248,7 @@ public class BillingService {
 		return instant == null ? null : instant.toString();
 	}
 
-	private static Instant instant(Object value) {
+	static Instant instant(Object value) {
 		if (value == null) return null;
 		if (value instanceof Instant instant) return instant;
 		if (value instanceof java.sql.Timestamp timestamp) return timestamp.toInstant();
