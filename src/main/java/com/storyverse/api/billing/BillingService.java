@@ -211,6 +211,13 @@ public class BillingService {
 				return new Access(periodEnd != null && now.isBefore(periodEnd), "active", iso(periodEnd));
 			}
 			case "past_due" -> {
+				// Primeiro período depois do trial: nada foi pago ainda (o trial acabou sem cartão ou
+				// a primeira cobrança falhou). A carência é para quem já pagava, então o acesso
+				// termina no trial_end — sem isso, a Stripe abre o período e a carência dava ~33 dias.
+				Instant periodStart = instant(subscription.get("current_period_start"));
+				if (trialEnd != null && periodStart != null && !periodStart.isAfter(trialEnd)) {
+					return new Access(now.isBefore(trialEnd), "past_due", iso(trialEnd));
+				}
 				Instant until = periodEnd == null ? null : periodEnd.plus(Duration.ofDays(graceDays));
 				return new Access(until != null && now.isBefore(until), "past_due", iso(until));
 			}
