@@ -20,7 +20,10 @@ import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.common.DbSession;
 
-/** Financeiro somente leitura. Só superadmin; nenhuma ação de cobrança pelo painel. */
+/**
+ * Financeiro do painel. Só superadmin; nenhuma ação de cobrança pelo painel. A única escrita é o
+ * acesso grátis (billing_grants) para equipe, família e testes, que nunca gera cobrança.
+ */
 @Service
 public class BillingAdminService {
 
@@ -79,6 +82,43 @@ public class BillingAdminService {
 				.orElseThrow(() -> new AuthException(404, "Assinatura não encontrada."));
 		authz.audit(actor, "billing.view", "billing_subscription", id.toString(), Map.of());
 		return mask(row);
+	}
+
+	@Transactional(readOnly = true)
+	public List<Map<String, Object>> grants(String token, UUID userId) {
+		superadmin(token);
+		return repository.grants(userId);
+	}
+
+	/** Acesso grátis manual. Só um ativo por conta: retire o atual antes de dar outro. */
+	@Transactional
+	public Map<String, Object> grant(String token, UUID userId, String reason, String expiresAtRaw) {
+		UUID actor = superadmin(token);
+		if (userId == null) throw new AuthException(400, "Informe a conta.");
+		String motivo = reason == null ? "" : reason.strip();
+		if (motivo.isEmpty()) throw new AuthException(400, "Informe o motivo.");
+		if (motivo.length() > 200) throw new AuthException(400, "Motivo longo demais (até 200 caracteres).");
+		Instant expiresAt = expiresAtRaw == null || expiresAtRaw.isBlank() ? null : instant(expiresAtRaw);
+		if (expiresAt != null && !expiresAt.isAfter(Instant.now())) {
+			throw new AuthException(400, "A validade precisa ser uma data futura.");
+		}
+		if (repository.email(userId) == null) throw new AuthException(404, "Conta não encontrada.");
+		if (repository.activeGrant(userId).isPresent()) {
+			throw new AuthException(409, "Esta conta já tem acesso grátis ativo. Retire o atual antes.");
+		}
+		Map<String, Object> grant = repository.createGrant(userId, motivo, expiresAt, actor);
+		authz.audit(actor, "billing.grant", "user", userId.toString(),
+				Map.of("reason", motivo, "expiresAt", expiresAt == null ? "" : expiresAt.toString()));
+		return grant;
+	}
+
+	@Transactional
+	public void revokeGrant(String token, UUID grantId) {
+		UUID actor = superadmin(token);
+		if (repository.revokeGrant(grantId, actor) == 0) {
+			throw new AuthException(404, "Acesso não encontrado ou já retirado.");
+		}
+		authz.audit(actor, "billing.grant.revoke", "billing_grant", grantId.toString(), Map.of());
 	}
 
 	private static BillingSeriesPoint point(Map<String, Object> row) {
