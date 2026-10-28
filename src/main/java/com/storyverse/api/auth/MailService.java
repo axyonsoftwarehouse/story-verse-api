@@ -1,6 +1,9 @@
 package com.storyverse.api.auth;
 
 import java.io.UnsupportedEncodingException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -89,6 +92,39 @@ public class MailService {
 				<p><a href="%s">Entrar no Storyverse</a></p>
 				<p>Se esqueceu a senha, use <strong>Esqueci minha senha</strong> na tela de entrada.</p>
 				""".formatted(link));
+	}
+
+	/** Pix pré-pago confirmado. */
+	public void sendPrepaidConfirmation(String email, Instant until) {
+		String date = day(until);
+		String link = publicUrl + "/conta/assinatura";
+		send(email, "Pagamento recebido — Storyverse", """
+				Recebemos o seu pagamento com Pix. Seu acesso ao Storyverse vale até %s.
+
+				O Pix não renova sozinho: perto do fim, mandamos um lembrete para você pagar mais um período.
+				Sua assinatura: %s
+				""".formatted(date, link), """
+				<p>Recebemos o seu pagamento com Pix. Seu acesso ao <strong>Storyverse</strong> vale até <strong>%s</strong>.</p>
+				<p>O Pix não renova sozinho: perto do fim, mandamos um lembrete para você pagar mais um período.</p>
+				<p><a href="%s">Ver minha assinatura</a></p>
+				""".formatted(date, link));
+	}
+
+	/** Fim próximo do período pago com Pix. */
+	public void sendPrepaidEnding(String email, Instant until) {
+		String date = day(until);
+		String link = publicUrl + "/assinar";
+		send(email, "Seu acesso ao Storyverse termina em " + date, """
+				Seu acesso pago com Pix termina em %s.
+				Para continuar lendo, pague mais um período com Pix ou assine no cartão: %s
+				""".formatted(date, link), """
+				<p>Seu acesso pago com Pix termina em <strong>%s</strong>.</p>
+				<p><a href="%s">Continuar no Storyverse</a>: pague mais um período com Pix ou assine no cartão.</p>
+				""".formatted(date, link));
+	}
+
+	private static String day(Instant instant) {
+		return DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(ZoneId.of("America/Sao_Paulo")).format(instant);
 	}
 
 	private void send(String to, String subject, String text, String html) {
