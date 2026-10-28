@@ -143,6 +143,78 @@ public class BillingRepository {
 				""", Map.of("id", id, "actor", actor));
 	}
 
+	// ---- Pix pré-pago ----------------------------------------------------------------------
+
+	/** Período Pix valendo agora; {@code until} é o fim da sequência paga (pagar antes soma). */
+	public Optional<Map<String, Object>> activePrepaid(UUID userId) {
+		return DbRows.one(jdbc, """
+				select p.id, p.starts_at, p.ends_at,
+				       (select max(q.ends_at) from public.billing_prepaid q
+				         where q.user_id = p.user_id and q.refunded_at is null) as until,
+				       (select max(q.created_at) from public.billing_prepaid q
+				         where q.user_id = p.user_id and q.refunded_at is null) as last_paid_at
+				  from public.billing_prepaid p
+				 where p.user_id = :id and p.refunded_at is null
+				   and p.starts_at <= now() and p.ends_at > now()
+				 order by p.ends_at desc
+				 limit 1
+				""", Map.of("id", userId));
+	}
+
+	/** Último pagamento Pix não reembolsado (pode ainda não ter começado). */
+	public Optional<Map<String, Object>> latestPrepaid(UUID userId) {
+		return DbRows.one(jdbc, """
+				select ends_at, created_at from public.billing_prepaid
+				 where user_id = :id and refunded_at is null
+				 order by ends_at desc
+				 limit 1
+				""", Map.of("id", userId));
+	}
+
+	/** Grava o período; a mesma sessão de checkout entregue duas vezes não cria outro. */
+	public boolean insertPrepaid(Map<String, Object> params) {
+		beginWrite();
+		return DbRows.update(jdbc, """
+				insert into public.billing_prepaid
+					(user_id, stripe_checkout_session_id, stripe_payment_intent_id, amount_cents, currency,
+					 days, starts_at, ends_at)
+				values (:user_id, :session_id, cast(:payment_intent as text), :amount, :currency,
+				        :days, :starts_at, :ends_at)
+				on conflict (stripe_checkout_session_id) do nothing
+				""", params) > 0;
+	}
+
+	/** Reembolso tira o período do acesso. Devolve quantas linhas mudaram (0 = não era Pix). */
+	public int refundPrepaid(String paymentIntentId) {
+		beginWrite();
+		return DbRows.update(jdbc, """
+				update public.billing_prepaid set refunded_at = now()
+				 where stripe_payment_intent_id = :id and refunded_at is null
+				""", Map.of("id", paymentIntentId));
+	}
+
+	/** Fim de sequência Pix até {@code until} sem aviso enviado (o job de hora em hora). */
+	public List<Map<String, Object>> prepaidEndingSoon(java.time.Instant until) {
+		beginWrite();
+		return DbRows.list(jdbc, """
+				select p.id, p.user_id, p.ends_at, u.email
+				  from public.billing_prepaid p
+				  join auth.users u on u.id = p.user_id
+				 where p.refunded_at is null and p.reminded_at is null
+				   and p.ends_at > now() and p.ends_at <= :until
+				   and not exists (select 1 from public.billing_prepaid q
+				                    where q.user_id = p.user_id and q.refunded_at is null
+				                      and q.ends_at > p.ends_at)
+				 order by p.ends_at
+				""", Map.of("until", java.sql.Timestamp.from(until)));
+	}
+
+	public void markPrepaidReminded(UUID id) {
+		beginWrite();
+		DbRows.update(jdbc, "update public.billing_prepaid set reminded_at = now() where id = :id",
+				Map.of("id", id));
+	}
+
 	public String email(UUID userId) {
 		return jdbc.sql("select email from auth.users where id = :id")
 				.param("id", userId).query(String.class).optional().orElse(null);

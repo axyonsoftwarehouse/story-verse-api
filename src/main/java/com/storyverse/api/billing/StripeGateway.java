@@ -40,17 +40,26 @@ public class StripeGateway {
 	private final String priceId;
 	private final String publicUrl;
 	private final int trialDays;
+	private final String pixConfigurationId;
+	private final long pixAmountCents;
+	private final int pixDays;
 
 	public StripeGateway(@Value("${app.billing.secret-key:}") String secretKey,
 			@Value("${app.billing.webhook-secret:}") String webhookSecret,
 			@Value("${app.billing.price-id:}") String priceId,
 			@Value("${app.public-url:http://localhost:5173}") String publicUrl,
-			@Value("${app.billing.trial-days:7}") int trialDays) {
+			@Value("${app.billing.trial-days:7}") int trialDays,
+			@Value("${app.billing.pix.configuration-id:}") String pixConfigurationId,
+			@Value("${app.billing.pix.amount-cents:990}") long pixAmountCents,
+			@Value("${app.billing.pix.days:30}") int pixDays) {
 		this.secretKey = secretKey == null ? "" : secretKey.trim();
 		this.webhookSecret = webhookSecret == null ? "" : webhookSecret.trim();
 		this.priceId = priceId == null ? "" : priceId.trim();
 		this.publicUrl = publicUrl == null ? "http://localhost:5173" : publicUrl.replaceAll("/+$", "");
 		this.trialDays = trialDays;
+		this.pixConfigurationId = pixConfigurationId == null ? "" : pixConfigurationId.trim();
+		this.pixAmountCents = pixAmountCents;
+		this.pixDays = pixDays;
 	}
 
 	@PostConstruct
@@ -60,6 +69,54 @@ public class StripeGateway {
 
 	public boolean configured() {
 		return !secretKey.isBlank() && !priceId.isBlank();
+	}
+
+	/** Sem a configuração de pagamento "só Pix" o botão do Pix fica escondido. */
+	public boolean pixConfigured() {
+		return configured() && !pixConfigurationId.isBlank();
+	}
+
+	public Checkout pixCheckout(String customerId, String userId) {
+		if (!pixConfigured()) throw new IllegalStateException("Pix indisponível: configuração ausente.");
+		try {
+			Session session = Session.create(pixCheckoutParams(customerId, userId, pixAmountCents, pixDays,
+					pixConfigurationId, publicUrl));
+			return new Checkout(session.getUrl(), session.getId());
+		} catch (StripeException exception) {
+			throw new IllegalStateException("Não foi possível abrir o pagamento com Pix.", exception);
+		}
+	}
+
+	static com.stripe.param.checkout.SessionCreateParams pixCheckoutParams(String customerId, String userId,
+			long amountCents, int days, String configurationId, String publicUrl) {
+		return com.stripe.param.checkout.SessionCreateParams.builder()
+				.setMode(Mode.PAYMENT)
+				.setCustomer(customerId)
+				.setClientReferenceId(userId)
+				.putMetadata("kind", "prepaid")
+				.putMetadata("days", String.valueOf(days))
+				.putMetadata("user_id", userId)
+				.addLineItem(com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
+						.setQuantity(1L)
+						.setPriceData(com.stripe.param.checkout.SessionCreateParams.LineItem.PriceData.builder()
+								.setCurrency("brl")
+								.setUnitAmount(amountCents)
+								.setProductData(com.stripe.param.checkout.SessionCreateParams.LineItem.PriceData.ProductData.builder()
+										.setName("Storyverse — " + days + " dias")
+										.build())
+								.build())
+						.build())
+				// Configuração do painel só com Pix: o cartão continua sendo a assinatura automática.
+				.setPaymentMethodConfiguration(configurationId)
+				.setPaymentMethodOptions(com.stripe.param.checkout.SessionCreateParams.PaymentMethodOptions.builder()
+						.setPix(com.stripe.param.checkout.SessionCreateParams.PaymentMethodOptions.Pix.builder()
+								.setExpiresAfterSeconds(3600L)
+								.build())
+						.build())
+				.setSuccessUrl(publicUrl + "/conta/assinatura?ok=1")
+				.setCancelUrl(publicUrl + "/assinar?cancelado=1")
+				.setLocale(com.stripe.param.checkout.SessionCreateParams.Locale.PT_BR)
+				.build();
 	}
 
 	public String createCustomer(String email, String userId) {

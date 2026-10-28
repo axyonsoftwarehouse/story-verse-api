@@ -48,6 +48,13 @@ public class BillingController {
 		return billing.checkout(user);
 	}
 
+	@PostMapping("/pix-checkout")
+	public Map<String, Object> pixCheckout(
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		UUID user = auth.authenticate(AuthTokens.bearer(authorization));
+		return billing.pixCheckout(user);
+	}
+
 	@PostMapping("/portal")
 	public Map<String, Object> portal(
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
