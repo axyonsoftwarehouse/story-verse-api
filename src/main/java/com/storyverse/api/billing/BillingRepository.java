@@ -106,9 +106,15 @@ public class BillingRepository {
 
 	public List<Map<String, Object>> grants(UUID userId) {
 		return DbRows.list(jdbc, """
-				select * from public.billing_grants
-				 where user_id = :id
-				 order by created_at desc
+				select g.id, g.reason, g.expires_at, g.created_at, g.revoked_at,
+				       coalesce(c.raw_user_meta_data ->> 'name', c.email) as created_by_name,
+				       coalesce(r.raw_user_meta_data ->> 'name', r.email) as revoked_by_name,
+				       (g.revoked_at is null and (g.expires_at is null or g.expires_at > now())) as active
+				  from public.billing_grants g
+				  left join auth.users c on c.id = g.created_by
+				  left join auth.users r on r.id = g.revoked_by
+				 where g.user_id = :id
+				 order by g.created_at desc
 				""", Map.of("id", userId));
 	}
 
@@ -132,8 +138,8 @@ public class BillingRepository {
 		beginWrite();
 		return DbRows.update(jdbc, """
 				update public.billing_grants
-				   set revoked_at = coalesce(revoked_at, now()), revoked_by = :actor
-				 where id = :id
+				   set revoked_at = now(), revoked_by = :actor
+				 where id = :id and revoked_at is null
 				""", Map.of("id", id, "actor", actor));
 	}
 

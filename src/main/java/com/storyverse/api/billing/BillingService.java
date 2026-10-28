@@ -172,24 +172,6 @@ public class BillingService {
 		if (!stripe.configured()) throw new AuthException(503, "Assinatura ainda não está disponível.");
 	}
 
-	/** Dá acesso manual (staff/teste/fundador). Só superadmin. */
-	@Transactional
-	public Map<String, Object> grant(UUID actor, UUID userId, String reason, Instant expiresAt) {
-		authz.requireRole(actor, AuthzService.SUPERADMIN);
-		if (reason == null || reason.isBlank()) throw new AuthException(400, "Informe o motivo.");
-		Map<String, Object> grant = repository.createGrant(userId, reason.strip(), expiresAt, actor);
-		authz.audit(actor, "billing.grant", "user", userId.toString(),
-				Map.of("reason", reason, "expiresAt", expiresAt == null ? "" : expiresAt.toString()));
-		return grant;
-	}
-
-	@Transactional
-	public void revokeGrant(UUID actor, UUID grantId) {
-		authz.requireRole(actor, AuthzService.SUPERADMIN);
-		repository.revokeGrant(grantId, actor);
-		authz.audit(actor, "billing.grant.revoke", "billing_grant", grantId.toString(), Map.of());
-	}
-
 	private void asUser(UUID userId) {
 		DbSession.setUser(jdbc, userId);
 	}
