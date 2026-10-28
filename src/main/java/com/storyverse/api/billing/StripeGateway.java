@@ -78,25 +78,38 @@ public class StripeGateway {
 	public Checkout checkout(String customerId, String userId) {
 		requireConfigured();
 		try {
-			var params = com.stripe.param.checkout.SessionCreateParams.builder()
-					.setMode(Mode.SUBSCRIPTION)
-					.setCustomer(customerId)
-					.setClientReferenceId(userId)
-					.addLineItem(com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
-							.setPrice(priceId).setQuantity(1L).build())
-					.setSuccessUrl(publicUrl + "/conta/assinatura?ok=1")
-					.setCancelUrl(publicUrl + "/assinar?cancelado=1")
-					.setLocale(com.stripe.param.checkout.SessionCreateParams.Locale.PT_BR)
-					.setPaymentMethodCollection(PaymentMethodCollection.IF_REQUIRED)
-					.setAllowPromotionCodes(true)
-					.setSubscriptionData(com.stripe.param.checkout.SessionCreateParams.SubscriptionData.builder()
-							.setTrialPeriodDays((long) trialDays).build())
-					.build();
-			Session session = Session.create(params);
+			Session session = Session.create(checkoutParams(customerId, userId, priceId, publicUrl, trialDays));
 			return new Checkout(session.getUrl(), session.getId());
 		} catch (StripeException exception) {
 			throw new IllegalStateException("Não foi possível abrir o checkout.", exception);
 		}
+	}
+
+	static com.stripe.param.checkout.SessionCreateParams checkoutParams(
+			String customerId, String userId, String priceId, String publicUrl, int trialDays) {
+		var trial = com.stripe.param.checkout.SessionCreateParams.SubscriptionData.TrialSettings.builder()
+				// Trial sem cartão termina cancelado. O padrão da Stripe (create_invoice) abre uma
+				// fatura impagável e deixa a assinatura em past_due — visto no QA em 28/10.
+				.setEndBehavior(com.stripe.param.checkout.SessionCreateParams.SubscriptionData.TrialSettings.EndBehavior.builder()
+						.setMissingPaymentMethod(com.stripe.param.checkout.SessionCreateParams.SubscriptionData.TrialSettings.EndBehavior.MissingPaymentMethod.CANCEL)
+						.build())
+				.build();
+		return com.stripe.param.checkout.SessionCreateParams.builder()
+				.setMode(Mode.SUBSCRIPTION)
+				.setCustomer(customerId)
+				.setClientReferenceId(userId)
+				.addLineItem(com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
+						.setPrice(priceId).setQuantity(1L).build())
+				.setSuccessUrl(publicUrl + "/conta/assinatura?ok=1")
+				.setCancelUrl(publicUrl + "/assinar?cancelado=1")
+				.setLocale(com.stripe.param.checkout.SessionCreateParams.Locale.PT_BR)
+				.setPaymentMethodCollection(PaymentMethodCollection.IF_REQUIRED)
+				.setAllowPromotionCodes(true)
+				.setSubscriptionData(com.stripe.param.checkout.SessionCreateParams.SubscriptionData.builder()
+						.setTrialPeriodDays((long) trialDays)
+						.setTrialSettings(trial)
+						.build())
+				.build();
 	}
 
 	public String portal(String customerId) {

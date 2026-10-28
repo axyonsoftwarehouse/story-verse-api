@@ -70,6 +70,7 @@ class AdminIntegrationTest {
   @Autowired FeatureAccessService features;
   @Autowired SanctionService sanctions;
   @Autowired AdminMetricsService metrics;
+  @Autowired com.storyverse.api.catalog.CatalogReadersService readers;
   @Autowired CatalogImportService catalogImports;
   @Autowired com.storyverse.api.billing.BillingAdminService billingAdmin;
   @Autowired com.storyverse.api.billing.BillingSnapshotJob snapshotJob;
@@ -726,6 +727,28 @@ class AdminIntegrationTest {
     // Como o papel de runtime (RLS ligada), o superadmin vê a estante de todos.
     List<AdminTopBook> runtime=asRuntime(id(admin),()->metrics.topBooks(admin.accessToken(),from,"2019-03-30",null));
     assertEquals(List.of(popular,community),runtime.stream().map(AdminTopBook::bookKey).toList());
+  }
+
+  // --- Contador público de leitores (V30) ---
+  @Test void readerCountsCountPeopleWhoReadAcrossAccounts() {
+    String book="gb:"+(700000+new Random().nextInt(99999)), quiet="gb:"+(600000+new Random().nextInt(99999));
+    String local="local:-"+(1+new Random().nextInt(99999));
+    UUID a=id(user()), b=id(user()), c=id(user()), d=id(user()), e=id(user());
+    shelf(a,book,"finished","2026-01-02","2026-01-10",null);
+    shelf(b,book,"reading","2026-02-01",null,null);
+    shelf(c,book,"abandoned","2026-02-01",null,null);
+    jdbc.sql("update public.library_entries set progress_percent=30 where user_id=:u and book_key=:k")
+        .param("u",c).param("k",book).update();
+    shelf(d,book,"want_to_read",null,null,null);
+    shelf(e,book,"finished",null,"2026-01-10","2026-03-01 12:00-03");
+    shelf(a,local,"finished",null,"2026-01-10",null);
+    // Como o papel de runtime (RLS ligada) e logado como outra conta: a contagem vê todas.
+    Map<String,Long> counts=asRuntime(id(user()),()->readers.counts(List.of(book,quiet)));
+    assertEquals(Map.of(book,3L,quiet,0L),counts);
+    assertEquals(List.of(book,quiet),new ArrayList<>(counts.keySet()));
+    assertEquals(400,status(()->readers.counts(List.of(local))));
+    assertEquals(400,status(()->readers.counts(List.of())));
+    assertEquals(400,status(()->readers.counts(java.util.stream.IntStream.range(0,61).mapToObj(i->"gb:"+i).toList())));
   }
 
   // --- Financeiro no tempo (série e conversão) ---

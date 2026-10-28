@@ -48,6 +48,31 @@ class BillingServiceTest {
 	}
 
 	@Test
+	void pastDueLogoDepoisDoTrialNaoTemCarencia() {
+		// Trial que acabou sem cartão: a Stripe abre o primeiro período e marca past_due. Visto
+		// no QA em 28/10 — a carência sobre o novo período dava mais 33 dias de graça.
+		Instant fimDoTrial = Instant.now().minusSeconds(3600);
+		BillingService.Access acesso = BillingService.evaluate(Map.of(
+				"status", "past_due",
+				"trial_end", fimDoTrial.toString(),
+				"current_period_start", fimDoTrial.toString(),
+				"current_period_end", fimDoTrial.plusSeconds(30 * 86_400L).toString()), 3);
+		assertFalse(acesso.active());
+		assertEquals(fimDoTrial.toString(), acesso.accessUntil());
+	}
+
+	@Test
+	void pastDueDepoisDeUmPeriodoPagoMantemCarencia() {
+		Instant fimDoTrial = Instant.now().minusSeconds(40 * 86_400L);
+		Instant inicio = Instant.now().minusSeconds(30 * 86_400L);
+		assertTrue(BillingService.evaluate(Map.of(
+				"status", "past_due",
+				"trial_end", fimDoTrial.toString(),
+				"current_period_start", inicio.toString(),
+				"current_period_end", Instant.now().minusSeconds(3600).toString()), 3).active());
+	}
+
+	@Test
 	void canceledValeAteOFimDoPeriodo() {
 		assertTrue(BillingService.evaluate(Map.of(
 				"status", "canceled",
