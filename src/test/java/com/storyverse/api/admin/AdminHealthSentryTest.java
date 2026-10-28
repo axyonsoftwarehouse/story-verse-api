@@ -25,14 +25,21 @@ class AdminHealthSentryTest {
 	private static final String PROJECTS = """
 			[{"id":"11","slug":"storyverse-web"},{"id":"22","slug":"storyverse-api"},{"id":"33","slug":"outro"}]
 			""";
-	private static final String STATS = """
+	/** stats_v2 de um projeto, agrupado só por outcome: assim o Sentry manda a série por dia. */
+	private static final String STATS_WEB = """
 			{"intervals":["2026-10-25T00:00:00Z","2026-10-26T00:00:00Z"],
 			 "groups":[
-			  {"by":{"outcome":"accepted","project":11},"totals":{"sum(quantity)":7},"series":{"sum(quantity)":[3,4]}},
-			  {"by":{"outcome":"filtered","project":11},"totals":{"sum(quantity)":1},"series":{"sum(quantity)":[1,0]}},
-			  {"by":{"outcome":"rate_limited","project":11},"totals":{"sum(quantity)":18},"series":{"sum(quantity)":[9,9]}},
-			  {"by":{"outcome":"accepted","project":22},"totals":{"sum(quantity)":2},"series":{"sum(quantity)":[0,2]}},
-			  {"by":{"outcome":"accepted","project":33},"totals":{"sum(quantity)":200},"series":{"sum(quantity)":[100,100]}}]}
+			  {"by":{"outcome":"accepted"},"totals":{"sum(quantity)":7},"series":{"sum(quantity)":[3,4]}},
+			  {"by":{"outcome":"filtered"},"totals":{"sum(quantity)":1},"series":{"sum(quantity)":[1,0]}},
+			  {"by":{"outcome":"rate_limited"},"totals":{"sum(quantity)":18},"series":{"sum(quantity)":[9,9]}}]}
+			""";
+	private static final String STATS_API = """
+			{"intervals":["2026-10-25T00:00:00Z","2026-10-26T00:00:00Z"],
+			 "groups":[{"by":{"outcome":"accepted"},"totals":{"sum(quantity)":2},"series":{"sum(quantity)":[0,2]}}]}
+			""";
+	/** Com groupBy=project o Sentry real devolve só os totais, sem intervals nem series. */
+	private static final String STATS_ONLY_TOTALS = """
+			{"groups":[{"by":{"outcome":"accepted","project":11},"totals":{"sum(quantity)":7}}]}
 			""";
 	private static final String SESSIONS = """
 			{"intervals":["2026-10-25T00:00:00Z","2026-10-26T00:00:00Z"],
@@ -74,7 +81,8 @@ class AdminHealthSentryTest {
 		if (path.endsWith("/projects/")) {
 			body = PROJECTS;
 		} else if (path.endsWith("/stats_v2/")) {
-			body = STATS;
+			body = query.contains("groupBy=project") ? STATS_ONLY_TOTALS
+					: query.contains("project=11") ? STATS_WEB : STATS_API;
 			if (statsFail) status = 500;
 		} else if (path.endsWith("/events/")) {
 			body = "{\"data\":[{\"timestamp.to_day\":\"" + YESTERDAY + "T00:00:00+00:00\",\"count()\":5}],\"meta\":{}}";
@@ -113,7 +121,7 @@ class AdminHealthSentryTest {
 				sentry.projects().stream().map(AdminHealth.Project::slug).toList());
 		AdminHealth.Project web = sentry.projects().get(0);
 		assertEquals(List.of(new AdminHealth.ErrorsPoint("2026-10-25", 3, 1L), new AdminHealth.ErrorsPoint("2026-10-26", 4, 0L)),
-				web.errorsSeries(), "aceitos e filtrados; rate_limited e outros projetos ficam de fora");
+				web.errorsSeries(), "aceitos e filtrados; rate_limited fica de fora");
 		assertEquals(7, web.errorsTotal());
 		assertEquals(0.993, web.crashFreeSessions());
 		assertEquals(List.of(new AdminHealth.SessionsPoint("2026-10-25", 820), new AdminHealth.SessionsPoint("2026-10-26", 820)),
@@ -134,13 +142,23 @@ class AdminHealthSentryTest {
 
 		assertTrue(authorizations.stream().allMatch("Bearer token-de-teste"::equals));
 		String stats = requests.stream().filter(r -> r.contains("/stats_v2/")).findFirst().orElseThrow();
-		assertTrue(stats.contains("category=error") && stats.contains("groupBy=outcome") && stats.contains("groupBy=project")
+		assertTrue(stats.contains("category=error") && stats.contains("groupBy=outcome") && !stats.contains("groupBy=project")
 				&& stats.contains("statsPeriod=24h") && stats.contains("project=11"), stats);
 		String issues = requests.stream().filter(r -> r.contains("/issues/")).findFirst().orElseThrow();
 		assertTrue(issues.contains("query=is%3Aunresolved") && issues.contains("sort=freq")
 				&& issues.contains("limit=5") && issues.contains("project=11"), issues);
 		String sessions = requests.stream().filter(r -> r.contains("/sessions/")).findFirst().orElseThrow();
 		assertTrue(sessions.contains("crash_free_rate(session)") || sessions.contains("crash_free_rate%28session%29"), sessions);
+	}
+
+	@Test
+	void umaChamadaDeStatsPorProjeto() {
+		service("storyverse-web, storyverse-api").fetch("7d");
+
+		List<String> stats = requests.stream().filter(r -> r.contains("/stats_v2/")).toList();
+		assertEquals(2, stats.size(), stats.toString());
+		assertTrue(stats.stream().anyMatch(r -> r.endsWith("project=11")) && stats.stream().anyMatch(r -> r.endsWith("project=22")),
+				stats.toString());
 	}
 
 	@Test

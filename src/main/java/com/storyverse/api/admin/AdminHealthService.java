@@ -109,14 +109,14 @@ public class AdminHealthService {
 		String environment = sentry.environment();
 		// stats_v2 (uso/cota) não separa por ambiente. Com SENTRY_API_ENVIRONMENT, os erros por dia
 		// vêm dos eventos guardados daquele ambiente; aí não existe "filtrado" (filtered = null).
-		CompletableFuture<JsonNode> stats = environment.isEmpty()
-				? async(() -> sentry.organization(statsPath(period, ids.values())))
-				: CompletableFuture.completedFuture(null);
+		Map<String, CompletableFuture<JsonNode>> stats = new LinkedHashMap<>();
 		Map<String, CompletableFuture<JsonNode>> events = new LinkedHashMap<>();
 		Map<String, CompletableFuture<JsonNode>> sessions = new LinkedHashMap<>();
 		Map<String, CompletableFuture<JsonNode>> issues = new LinkedHashMap<>();
 		ids.forEach((slug, id) -> {
-			if (!environment.isEmpty()) {
+			if (environment.isEmpty()) {
+				stats.put(slug, async(() -> sentry.organization(statsPath(period, id))));
+			} else {
 				events.put(slug, async(() -> sentry.organization(eventsPath(period, id, environment))));
 			}
 			// Projeto de servidor não tem sessões: falha aqui não derruba o resto.
@@ -124,18 +124,17 @@ public class AdminHealthService {
 					.exceptionally(error -> null));
 			issues.put(slug, async(() -> sentry.organization(issuesPath(period, id, environment))));
 		});
-		List<CompletableFuture<?>> all = new ArrayList<>(List.of(stats));
+		List<CompletableFuture<?>> all = new ArrayList<>(stats.values());
 		all.addAll(events.values());
 		all.addAll(sessions.values());
 		all.addAll(issues.values());
 		await(CompletableFuture.allOf(all.toArray(CompletableFuture[]::new)));
 
-		JsonNode statsBody = stats.join();
 		List<String> recent = recentDays(period, Instant.now());
 		List<AdminHealth.Project> projects = new ArrayList<>();
 		ids.forEach((slug, id) -> {
 			List<AdminHealth.ErrorsPoint> errors = environment.isEmpty()
-					? errorsSeries(statsBody, id)
+					? errorsSeries(stats.get(slug).join())
 					: eventsSeries(events.get(slug).join(), recent);
 			long total = errors.stream().mapToLong(AdminHealth.ErrorsPoint::accepted).sum();
 			JsonNode sessionBody = sessions.get(slug).join();
@@ -163,11 +162,13 @@ public class AdminHealthService {
 		return ids;
 	}
 
-	static String statsPath(String period, java.util.Collection<String> projectIds) {
-		StringBuilder path = new StringBuilder("/stats_v2/?field=sum(quantity)&category=error")
-				.append("&groupBy=outcome&groupBy=project&interval=1d&statsPeriod=").append(period);
-		projectIds.forEach(id -> path.append("&project=").append(SentryApiClient.encode(id)));
-		return path.toString();
+	/**
+	 * Uma chamada por projeto: com {@code groupBy=project} o Sentry devolve só os totais, sem
+	 * {@code intervals} nem {@code series}, e a soma por dia dava zero.
+	 */
+	static String statsPath(String period, String projectId) {
+		return "/stats_v2/?field=sum(quantity)&category=error&groupBy=outcome&interval=1d&statsPeriod=" + period
+				+ "&project=" + SentryApiClient.encode(projectId);
 	}
 
 	/** Erros guardados por dia (dataset errors), só do ambiente configurado. */
@@ -218,15 +219,13 @@ public class AdminHealthService {
 		return out;
 	}
 
-	/** stats_v2 agrupado por outcome e projeto; aceita/filtrada por dia. */
-	static List<AdminHealth.ErrorsPoint> errorsSeries(JsonNode body, String projectId) {
+	/** stats_v2 de um projeto agrupado por outcome; aceita/filtrada por dia. */
+	static List<AdminHealth.ErrorsPoint> errorsSeries(JsonNode body) {
 		List<String> days = days(body);
 		long[] accepted = new long[days.size()];
 		long[] filtered = new long[days.size()];
 		for (JsonNode group : body.path("groups")) {
-			JsonNode by = group.path("by");
-			if (!projectId.equals(text(by.path("project")))) continue;
-			String outcome = text(by.path("outcome"));
+			String outcome = text(group.path("by").path("outcome"));
 			long[] target = "accepted".equals(outcome) ? accepted : "filtered".equals(outcome) ? filtered : null;
 			if (target == null) continue;
 			JsonNode series = group.path("series").path("sum(quantity)");
