@@ -21,10 +21,13 @@ public class CatalogController {
 
 	private final CatalogService service;
 	private final CatalogCollectionService collections;
+	private final CatalogReadersService readers;
 
-	public CatalogController(CatalogService service, CatalogCollectionService collections) {
+	public CatalogController(CatalogService service, CatalogCollectionService collections,
+			CatalogReadersService readers) {
 		this.service = service;
 		this.collections = collections;
+		this.readers = readers;
 	}
 
 	@GetMapping("/books")
@@ -46,6 +49,12 @@ public class CatalogController {
 		Map<String, Object> book = service.get(bookKey);
 		book.put("collections", collections.collectionsForBookKey(bookKey));
 		return book;
+	}
+
+	/** Quantas pessoas leram cada livro: {@code ?keys=gb:1342,cat:<uuid>} → {"gb:1342": 12, …}. */
+	@GetMapping("/readers")
+	public Map<String, Long> readers(@RequestParam(required = false) List<String> keys) {
+		return readers.counts(keys);
 	}
 
 	@GetMapping("/collections")
