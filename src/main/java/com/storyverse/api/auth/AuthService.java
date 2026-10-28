@@ -46,6 +46,7 @@ public class AuthService {
 	private final FeatureAccessService featureAccess;
 	private final BillingService billing;
 	private final SanctionService sanctions;
+	private final ActivityTracker activity;
 	private final boolean requireEmailConfirmation;
 	private final Duration confirmationTtl;
 	private final Duration resetTtl;
@@ -64,6 +65,7 @@ public class AuthService {
 			FeatureAccessService featureAccess,
 			BillingService billing,
 			SanctionService sanctions,
+			ActivityTracker activity,
 			@Value("${app.auth.require-email-confirmation:true}") boolean requireEmailConfirmation,
 			@Value("${app.auth.confirmation-ttl:PT24H}") Duration confirmationTtl,
 			@Value("${app.auth.reset-ttl:PT1H}") Duration resetTtl) {
@@ -82,6 +84,7 @@ public class AuthService {
 		this.featureAccess = featureAccess;
 		this.billing = billing;
 		this.sanctions = sanctions;
+		this.activity = activity;
 		this.requireEmailConfirmation = requireEmailConfirmation;
 		this.confirmationTtl = confirmationTtl;
 		this.resetTtl = resetTtl;
@@ -337,6 +340,9 @@ public class AuthService {
 		}
 		Sanction blocking = sanctions.blocking(session.userId());
 		if (blocking != null) throw new AccountSanctionedException(blocking);
+		if (!refresh) {
+			activity.touch(session.userId());
+		}
 		return session;
 	}
 

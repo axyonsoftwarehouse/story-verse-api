@@ -64,8 +64,8 @@ public class AdminOverviewService {
 		return out;
 	}
 
-	/** Último backup de qualquer status; atrasado se não há sucesso nas últimas 26 horas. */
-	private AdminOverview.Backup backup() {
+	/** Último backup de qualquer status; atrasado se não há sucesso nas últimas 26 horas. Usado também pelo health. */
+	AdminOverview.Backup backup() {
 		boolean stale = Boolean.TRUE.equals(jdbc.sql("""
 				select not exists (
 				  select 1 from public.backup_runs

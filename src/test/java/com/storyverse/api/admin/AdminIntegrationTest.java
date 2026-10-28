@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
+import com.storyverse.api.billing.BillingSeriesPoint;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.catalog.CatalogImportService;
 import com.storyverse.api.community.CommunityService;
@@ -71,6 +72,10 @@ class AdminIntegrationTest {
   @Autowired AdminMetricsService metrics;
   @Autowired CatalogImportService catalogImports;
   @Autowired com.storyverse.api.billing.BillingAdminService billingAdmin;
+  @Autowired com.storyverse.api.billing.BillingSnapshotJob snapshotJob;
+  @Autowired AdminHealthService health;
+  @Autowired AdminTrafficService traffic;
+  @Autowired AdminVitalsService vitals;
   @Autowired SessionRepository sessions;
   @Autowired TokenService tokens;
   @Autowired JdbcClient jdbc;
@@ -566,9 +571,9 @@ class AdminIntegrationTest {
   @Test void metricsOverviewReadingAndRetentionWork() {
     AuthResponse admin=userWithRole("superadmin"); UUID target=id(user());
     jdbc.sql("""
-        insert into public.reading_days(user_id,day,seconds)
-        values (:id, current_date - 1, 600)
-        on conflict (user_id,day) do update set seconds=600
+        insert into public.reading_days(user_id,day,seconds,pages)
+        values (:id, current_date - 1, 600, 40)
+        on conflict (user_id,day) do update set seconds=600, pages=40
         """).param("id",target).update();
     String from=LocalDate.now().minusDays(7).toString(), to=LocalDate.now().toString();
     AdminMetrics overview=metrics.overview(admin.accessToken(),from,to);
@@ -576,11 +581,14 @@ class AdminIntegrationTest {
     assertTrue(overview.accounts().confirmed()>0);
     assertNotNull(overview.features());
     assertNotNull(overview.retention());
+    assertTrue(overview.reading().pages()>=40);
     List<AdminMetricsReadingPoint> days=metrics.readingSeries(admin.accessToken(),from,to,"day");
     assertFalse(days.isEmpty());
     assertTrue(days.stream().allMatch(p->p.activeReaders()>=0 && p.minutes()>=0));
+    assertTrue(days.stream().mapToLong(AdminMetricsReadingPoint::pages).sum()>=40);
     List<AdminMetricsReadingPoint> weeks=metrics.readingSeries(admin.accessToken(),from,to,"week");
     assertFalse(weeks.isEmpty());
+    assertTrue(weeks.stream().mapToLong(AdminMetricsReadingPoint::pages).sum()>=40);
     assertNotNull(metrics.retention(admin.accessToken(),from,to));
     AdminMetrics runtime=asRuntime(id(admin),()->metrics.overview(admin.accessToken(),LocalDate.now().minusDays(8).toString(),to));
     assertNotNull(runtime);
@@ -591,6 +599,250 @@ class AdminIntegrationTest {
     assertEquals(400,status(()->metrics.overview(admin.accessToken(),"2026-01-01","2026-05-01")));
     assertEquals(400,status(()->metrics.overview(admin.accessToken(),"lixo",null)));
     assertEquals(400,status(()->metrics.readingSeries(admin.accessToken(),null,null,"year")));
+  }
+  @Test void metricsCountSignupsInTheLast24hTodayAndPerBucket() {
+    AuthResponse admin=userWithRole("superadmin"); user();
+    LocalDate today=LocalDate.now(AdminRange.SAO_PAULO);
+    AdminMetrics overview=metrics.overview(admin.accessToken(),today.minusDays(1).toString(),today.toString());
+    assertTrue(overview.accounts().new24h()>=2, "as duas contas acabaram de ser criadas: "+overview.accounts());
+    assertTrue(overview.accounts().newToday()>=2, "hoje em São Paulo: "+overview.accounts());
+    assertTrue(overview.accounts().new7()>=overview.accounts().new24h());
+    List<AdminMetricsReadingPoint> days=metrics.readingSeries(admin.accessToken(),today.minusDays(2).toString(),today.toString(),"day");
+    assertTrue(days.get(days.size()-1).signups()>=2, "o último dia é hoje: "+days);
+    List<AdminMetricsReadingPoint> weeks=metrics.readingSeries(admin.accessToken(),today.minusDays(2).toString(),today.toString(),"week");
+    assertTrue(weeks.get(weeks.size()-1).signups()>=2, "a semana corrente conta as contas novas: "+weeks);
+  }
+
+  // --- Atividade da comunidade (2.6) ---
+  /** Insere no fórum com a hora de São Paulo (AAAA-MM-DD HH:MM); devolve o id. */
+  UUID forumTopic(UUID author, String created, String status) {
+    return jdbc.sql("""
+        insert into public.forum_topics(space_id,author_id,title,body,status,deleted_at,created_at)
+        values ((select id from public.forum_spaces where slug='duvidas'),:author,'Tópico','corpo',:status,
+          case when :status='deleted' then now() end,
+          cast(:created as text)::timestamp at time zone 'America/Sao_Paulo')
+        returning id
+        """).param("author",author).param("status",status).param("created",created).query(UUID.class).single();
+  }
+  @Test void communityMetricsRequireSuperadminAndValidRange() {
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator"), admin=userWithRole("superadmin");
+    assertEquals(403,status(()->metrics.communitySeries(support.accessToken(),null,null,"day")));
+    assertEquals(403,status(()->metrics.communitySeries(moderator.accessToken(),null,null,"day")));
+    assertEquals(400,status(()->metrics.communitySeries(admin.accessToken(),"2026-01-01","2026-05-01","day")));
+    assertEquals(400,status(()->metrics.communitySeries(admin.accessToken(),null,null,"year")));
+  }
+  @Test void communityMetricsCountPerBucketIncludingModeratedItems() {
+    AuthResponse admin=userWithRole("superadmin"); UUID author=id(user()), reporter=id(user());
+    // 2024-02-05 é segunda-feira. 23:30 em São Paulo já é o dia seguinte em UTC.
+    UUID first=forumTopic(author,"2024-02-05 23:30","published");
+    forumTopic(author,"2024-02-06 00:10","hidden");
+    forumTopic(author,"2024-02-06 09:00","deleted");
+    jdbc.sql("""
+        insert into public.forum_replies(topic_id,author_id,body,status,created_at)
+        values (:topic,:author,'resposta','hidden','2024-02-06 10:00'::timestamp at time zone 'America/Sao_Paulo')
+        """).param("topic",first).param("author",author).update();
+    jdbc.sql("""
+        insert into public.forum_reports(reporter_id,target_type,target_id,reason_code,status,created_at)
+        values (:reporter,'topic',:topic,'spam','actioned','2024-02-07 12:00'::timestamp at time zone 'America/Sao_Paulo')
+        """).param("reporter",reporter).param("topic",first).update();
+    // Fora do período: 2024-02-12 00:00 em São Paulo.
+    forumTopic(author,"2024-02-12 00:00","published");
+
+    List<AdminMetricsCommunityPoint> days=asRuntime(id(admin),
+        ()->metrics.communitySeries(admin.accessToken(),"2024-02-05","2024-02-11","day"));
+    assertEquals(7,days.size(),"um ponto por dia, vazios com zero: "+days);
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-05"),1,0,0),days.get(0));
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-06"),2,1,0),days.get(1));
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-07"),0,0,1),days.get(2));
+    assertEquals(new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-11"),0,0,0),days.get(6));
+
+    List<AdminMetricsCommunityPoint> weeks=metrics.communitySeries(admin.accessToken(),"2024-02-05","2024-02-12","week");
+    assertEquals(List.of(
+        new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-05"),3,1,1),
+        new AdminMetricsCommunityPoint(LocalDate.parse("2024-02-12"),1,0,0)),weeks);
+  }
+  @Test void communityMetricsOverHttp() throws Exception {
+    AuthResponse admin=userWithRole("superadmin");
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/metrics/community")
+            .param("from","2023-01-02").param("to","2023-01-03").param("group","day")
+            .header("Authorization","Bearer "+admin.accessToken()))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(MockMvcResultMatchers.jsonPath("$[0].bucket").value("2023-01-02"))
+        .andExpect(MockMvcResultMatchers.jsonPath("$[1].topics").value(0))
+        .andExpect(MockMvcResultMatchers.jsonPath("$[1].replies").value(0))
+        .andExpect(MockMvcResultMatchers.jsonPath("$[1].reports").value(0));
+    AuthResponse support=userWithRole("support");
+    mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/metrics/community")
+            .header("Authorization","Bearer "+support.accessToken()))
+        .andExpect(MockMvcResultMatchers.status().isForbidden());
+  }
+
+  // --- Livros mais lidos (2.5) ---
+  /** Uma linha da estante; started/finished em AAAA-MM-DD ou null. */
+  void shelf(UUID owner, String bookKey, String status, String started, String finished, String deleted) {
+    Map<String,Object> params=new HashMap<>();
+    params.put("user",owner); params.put("key",bookKey); params.put("status",status);
+    params.put("source",bookKey.startsWith("gb:")?"gutenberg":bookKey.startsWith("cm:")?"community":"local");
+    params.put("started",started); params.put("finished",finished); params.put("deleted",deleted);
+    jdbc.sql("""
+        insert into public.library_entries(user_id,book_key,source,status,title,author,review,started_on,finished_on,deleted_at)
+        values (:user,:key,:source,:status,'Título '||:key,'Autora','resenha privada',
+                cast(:started as date),cast(:finished as date),cast(:deleted as timestamptz))
+        """).params(params).update();
+  }
+  @Test void topBooksRequireSuperadminAndValidateParams() {
+    AuthResponse support=userWithRole("support"), moderator=userWithRole("moderator"), admin=userWithRole("superadmin");
+    assertEquals(403,status(()->metrics.topBooks(support.accessToken(),null,null,null)));
+    assertEquals(403,status(()->metrics.topBooks(moderator.accessToken(),null,null,10)));
+    assertEquals(400,status(()->metrics.topBooks(admin.accessToken(),"2026-01-01","2026-05-01",10)));
+    assertEquals(400,status(()->metrics.topBooks(admin.accessToken(),null,null,21)));
+    assertEquals(400,status(()->metrics.topBooks(admin.accessToken(),null,null,0)));
+  }
+  @Test void topBooksRankCatalogBooksAndSkipLocalOnes() {
+    AuthResponse admin=userWithRole("superadmin");
+    // Período em 2019 para não cruzar com o que outros testes gravam hoje.
+    String popular="gb:"+(900000+new Random().nextInt(99999)), community="cm:"+UUID.randomUUID();
+    String local="local:-"+(1+new Random().nextInt(99999)), wanted="gb:"+(800000+new Random().nextInt(99999));
+    UUID a=id(user()), b=id(user()), c=id(user()), d=id(user());
+    shelf(a,popular,"finished","2019-03-02","2019-03-10",null);
+    shelf(b,popular,"finished",null,"2019-03-12",null);
+    shelf(c,popular,"reading","2019-03-05",null,null);
+    shelf(d,popular,"finished","2019-03-01","2019-03-03","2019-03-20 12:00-03");
+    shelf(a,community,"reading","2019-03-04",null,null);
+    shelf(b,community,"finished","2019-01-01","2019-02-01",null);
+    shelf(c,community,"finished","2019-03-06","2019-04-20",null);
+    for (UUID owner:List.of(a,b,c,d)) {
+      shelf(owner,local,"finished","2019-03-02","2019-03-04",null);
+      shelf(owner,wanted,"want_to_read","2019-03-02",null,null);
+    }
+    String from="2019-03-01", to="2019-03-31";
+    List<AdminTopBook> top=metrics.topBooks(admin.accessToken(),from,to,null);
+    assertEquals(List.of(popular,community),top.stream().map(AdminTopBook::bookKey).toList(), top.toString());
+    assertEquals(3,top.get(0).readers()); assertEquals(2,top.get(0).finished());
+    assertEquals(2,top.get(1).readers()); assertEquals(0,top.get(1).finished());
+    assertEquals("Título "+popular,top.get(0).title());
+    assertEquals("Autora",top.get(0).author());
+    assertEquals(List.of(popular),metrics.topBooks(admin.accessToken(),from,to,1).stream().map(AdminTopBook::bookKey).toList());
+    // Como o papel de runtime (RLS ligada), o superadmin vê a estante de todos.
+    List<AdminTopBook> runtime=asRuntime(id(admin),()->metrics.topBooks(admin.accessToken(),from,"2019-03-30",null));
+    assertEquals(List.of(popular,community),runtime.stream().map(AdminTopBook::bookKey).toList());
+  }
+
+  // --- Financeiro no tempo (série e conversão) ---
+  /** Insere uma assinatura com datas de São Paulo (AAAA-MM-DD HH:MM). */
+  void subscription(String stripeId, UUID owner, String status, String created, String trialEnd, String canceled) {
+    Map<String,Object> params=new HashMap<>();
+    params.put("user",owner); params.put("id",stripeId); params.put("status",status);
+    params.put("created",created); params.put("trial",trialEnd); params.put("canceled",canceled);
+    var spec=jdbc.sql("""
+        insert into public.billing_subscriptions
+          (user_id,stripe_subscription_id,stripe_price_id,status,amount_cents,currency,created_at,trial_end,canceled_at,ended_at)
+        values (:user,:id,'price_test',:status,990,'brl',
+          cast(:created as text)::timestamp at time zone 'America/Sao_Paulo',
+          cast(:trial as text)::timestamp at time zone 'America/Sao_Paulo',
+          cast(:canceled as text)::timestamp at time zone 'America/Sao_Paulo',
+          cast(:canceled as text)::timestamp at time zone 'America/Sao_Paulo')
+        """);
+    for (var entry : params.entrySet()) spec=spec.param(entry.getKey(),entry.getValue());
+    spec.update();
+  }
+  @Test void billingSeriesUsesSnapshotsEstimatesAndPaidInvoices() {
+    AuthResponse admin=userWithRole("superadmin"); UUID owner=id(user());
+    String tag="sub_it_"+UUID.randomUUID();
+    try {
+      // A: paga desde 02/03. B: teste até 10/03, cancelada em 12/03. C: teste até 11/03 e convertida.
+      subscription(tag+"_a",owner,"active","2020-03-02 10:00",null,null);
+      subscription(tag+"_b",owner,"canceled","2020-03-03 10:00","2020-03-10 10:00","2020-03-12 12:00");
+      subscription(tag+"_c",owner,"active","2020-03-04 10:00","2020-03-11 10:00",null);
+      jdbc.sql("""
+          insert into public.billing_invoices (stripe_invoice_id,stripe_subscription_id,user_id,amount_paid_cents,currency,paid_at)
+          values (:id,:sub,:user,500,'brl',timestamp '2020-03-05 15:00' at time zone 'America/Sao_Paulo')
+          """).param("id",tag+"_in").param("sub",tag+"_a").param("user",owner).update();
+      jdbc.sql("insert into public.billing_daily_snapshots (day,mrr_cents,active,trialing,past_due) values (date '2020-03-04',12345,7,0,0)").update();
+
+      List<BillingSeriesPoint> days=billingAdmin.series(admin.accessToken(),"2020-03-01","2020-03-14","day");
+      assertEquals(14,days.size());
+      Map<LocalDate,BillingSeriesPoint> byDay=new HashMap<>();
+      days.forEach(p->byDay.put(p.bucket(),p));
+      BillingSeriesPoint mar1=byDay.get(LocalDate.parse("2020-03-01"));
+      assertEquals(0,mar1.mrrCents()); assertEquals(0,mar1.active()); assertTrue(mar1.estimated());
+      BillingSeriesPoint mar2=byDay.get(LocalDate.parse("2020-03-02"));
+      assertEquals(990,mar2.mrrCents()); assertEquals(1,mar2.active()); assertEquals(1,mar2.newCount());
+      BillingSeriesPoint mar4=byDay.get(LocalDate.parse("2020-03-04"));
+      assertEquals(12345,mar4.mrrCents(),"dia com snapshot usa o snapshot"); assertEquals(7,mar4.active()); assertFalse(mar4.estimated());
+      assertEquals(500,byDay.get(LocalDate.parse("2020-03-05")).revenueCents());
+      assertEquals(2970,byDay.get(LocalDate.parse("2020-03-11")).mrrCents(),"testes de B e C já acabaram");
+      BillingSeriesPoint mar12=byDay.get(LocalDate.parse("2020-03-12"));
+      assertEquals(1980,mar12.mrrCents(),"B encerrou no dia"); assertEquals(2,mar12.active()); assertEquals(1,mar12.canceledCount());
+
+      List<BillingSeriesPoint> weeks=billingAdmin.series(admin.accessToken(),"2020-03-01","2020-03-14","week");
+      assertEquals(List.of(LocalDate.parse("2020-02-24"),LocalDate.parse("2020-03-02"),LocalDate.parse("2020-03-09")),
+          weeks.stream().map(BillingSeriesPoint::bucket).toList());
+      assertEquals(3,weeks.get(1).newCount()); assertEquals(500,weeks.get(1).revenueCents());
+      assertEquals(990,weeks.get(1).mrrCents(),"fecha no domingo 08/03, com B e C ainda em teste");
+      assertEquals(1980,weeks.get(2).mrrCents()); assertEquals(1,weeks.get(2).canceledCount());
+
+      Map<String,Object> summary=billingAdmin.summary(admin.accessToken(),"2020-03-01","2020-03-15");
+      assertEquals(2L,((Number)summary.get("trials_started")).longValue(),"B e C começaram com teste: "+summary);
+      assertEquals(2L,((Number)summary.get("trials_ended")).longValue());
+      assertEquals(1L,((Number)summary.get("trials_converted")).longValue(),"só C virou paga");
+
+      List<BillingSeriesPoint> runtime=asRuntime(id(admin),()->billingAdmin.series(admin.accessToken(),"2020-03-01","2020-03-07","day"));
+      assertEquals(7,runtime.size());
+    } finally {
+      jdbc.sql("delete from public.billing_invoices where stripe_invoice_id like :tag").param("tag",tag+"%").update();
+      jdbc.sql("delete from public.billing_subscriptions where stripe_subscription_id like :tag").param("tag",tag+"%").update();
+      jdbc.sql("delete from public.billing_daily_snapshots where day=date '2020-03-04'").update();
+    }
+  }
+  @Test void billingSeriesValidatesAccessAndRange() {
+    AuthResponse admin=userWithRole("superadmin"), support=userWithRole("support");
+    assertEquals(403,status(()->billingAdmin.series(support.accessToken(),null,null,"day")));
+    assertEquals(400,status(()->billingAdmin.series(admin.accessToken(),"2026-01-01","2026-05-01","day")));
+    assertEquals(400,status(()->billingAdmin.series(admin.accessToken(),null,null,"month")));
+    List<BillingSeriesPoint> last30=billingAdmin.series(admin.accessToken(),null,null,null);
+    assertEquals(30,last30.size());
+    assertFalse(last30.get(29).estimated(),"hoje vem do estado atual, não de estimativa");
+  }
+  @Test void billingSnapshotJobWritesTodayIdempotently() {
+    LocalDate today=LocalDate.now(AdminRange.SAO_PAULO);
+    snapshotJob.snapshot();
+    snapshotJob.snapshot();
+    assertEquals(1,jdbc.sql("select count(*) from public.billing_daily_snapshots where day=:d")
+        .param("d",java.sql.Date.valueOf(today)).query(Integer.class).single());
+  }
+
+  // --- Tráfego (Umami) ---
+  @Test void trafficWithoutUmamiConfigStillAnswers() {
+    AuthResponse admin=userWithRole("superadmin"), support=userWithRole("support");
+    assertEquals(403,status(()->traffic.traffic(support.accessToken(),null,null)));
+    assertEquals(400,status(()->traffic.traffic(admin.accessToken(),"2026-01-01","2026-05-01")));
+    AdminTraffic result=traffic.traffic(admin.accessToken(),"2026-10-01","2026-10-07");
+    assertEquals(LocalDate.parse("2026-10-01"),result.from());
+    assertNull(result.traffic());
+    assertEquals("Umami não configurado.",result.error());
+  }
+
+  @Test void vitalsWithoutUmamiConfigStillAnswers() {
+    AuthResponse admin=userWithRole("superadmin"), support=userWithRole("support");
+    assertEquals(403,status(()->vitals.vitals(support.accessToken(),null,null)));
+    assertEquals(400,status(()->vitals.vitals(admin.accessToken(),"2026-01-01","2026-05-01")));
+    AdminVitals result=vitals.vitals(admin.accessToken(),"2026-10-01","2026-10-07");
+    assertEquals(LocalDate.parse("2026-10-07"),result.to());
+    assertNull(result.vitals());
+    assertEquals("Umami não configurado.",result.error());
+  }
+
+  // --- Saúde (Sentry) ---
+  @Test void healthWithoutSentryConfigStillAnswers() {
+    AuthResponse admin=userWithRole("superadmin"), support=userWithRole("support");
+    assertEquals(403,status(()->health.health(support.accessToken(),null)));
+    assertEquals(400,status(()->health.health(admin.accessToken(),"30d")));
+    AdminHealth result=health.health(admin.accessToken(),null);
+    assertEquals("14d",result.period());
+    assertNull(result.sentry());
+    assertEquals("Sentry não configurado.",result.error());
+    assertNotNull(result.backup());
   }
 
   // --- Features: catálogo e quem tem cada uma ---

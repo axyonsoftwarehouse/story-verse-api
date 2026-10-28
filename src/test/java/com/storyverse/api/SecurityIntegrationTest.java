@@ -172,6 +172,28 @@ class SecurityIntegrationTest {
     Number credit=(Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true));
     assertTrue(credit.intValue()>=15 && credit.intValue()<=16);
   }
+  @Test void reportedPagesAreCappedByServerTimeAndKeepTheHighestValue() {
+    AuthResponse user=user();UUID uid=id(user);
+    String today=jdbc.sql("select ((now() at time zone 'America/Sao_Paulo')::date)::text").query(String.class).single();
+    java.util.function.Supplier<Integer> pages=()->jdbc.sql("select coalesce(max(pages),0) from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single();
+    // Sem tempo contado pelo servidor, o dia não ganha páginas (nem linha nova).
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",5))));
+    assertEquals(0,jdbc.sql("select count(*) from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single());
+    jdbc.sql("insert into public.reading_days(user_id,day,seconds) values(:id,cast(:day as date),600)").param("id",uid).param("day",today).update();
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",50))));
+    assertEquals(50,pages.get());
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",30))));
+    assertEquals(50,pages.get(),"vale o maior valor do dia");
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("seconds",600,"pages",900))));
+    assertEquals(100,pages.get(),"no máximo 1 página a cada 6 segundos contados pelo servidor");
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,43200)));
+    assertEquals(100,pages.get(),"o formato antigo continua aceito e não mexe nas páginas");
+    assertEquals(600,jdbc.sql("select seconds from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single());
+    for(Object bad:List.of(-1,1.5,1001,"10"))
+      assertThrows(RuntimeException.class,()->rpc.call(uid,"report_reading",Map.of("p_days",Map.of(today,Map.of("pages",bad)))),"páginas inválidas: "+bad);
+    assertThrows(RuntimeException.class,()->rpc.call(uid,"report_reading",Map.of("p_days",Map.of("ontem",Map.of("pages",1)))));
+    assertEquals(100,pages.get());
+  }
   @Test void runtimeRoleCannotWriteWalletsOrReadAnotherAccountsState() {
     AuthResponse a=user(), b=user();
     jdbc.sql("insert into public.reading_state(user_id,data) values(:id,'{}'::jsonb)").param("id",id(b)).update();
@@ -506,5 +528,37 @@ class SecurityIntegrationTest {
     assertEquals(0,jdbc.sql("select count(*) from public.book_submissions where id=:id").param("id",submissionId).query(Integer.class).single());
     assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isEmpty());
     assertTrue(storage.readFor(id(owner),StorageBucket.PROFILE_MEDIA,coverPath).isEmpty());
+  }
+  /** V24: a capa e a foto do ranking só aceitam a URL inteira de um arquivo da própria pessoa. */
+  @Test void submissionCoverAndRankingPhotoOnlyAcceptOwnMedia() {
+    AuthResponse author=user(), other=user();UUID uid=id(author);
+    String own="https://api.example.test/api/v1/storage/public/profile-media/"+uid+"/livros/capa-1";
+    String foreign="https://api.example.test/api/v1/storage/public/profile-media/"+id(other)+"/livros/capa-1";
+    String smuggled="https://evil.example/?x=/api/v1/storage/public/profile-media/"+uid+"/livros/capa-1";
+    UUID submissionId=UUID.randomUUID();
+    jdbc.sql("""
+        insert into public.book_submissions(id,user_id,title,rights,text_path,status)
+        values(:id,:uid,'Cover','own_work',:path,'pending')
+        """).param("id",submissionId).param("uid",uid).param("path",uid+"/cover.txt").update();
+    java.util.function.Consumer<String> setCover=url->new TransactionTemplate(transactions).executeWithoutResult(status->{
+      DbSession.setUser(jdbc,uid);
+      jdbc.sql("select public.set_submission_cover(:id,:url)").param("id",submissionId).param("url",url).query((rs,n)->1).single();
+    });
+    setCover.accept(own);
+    assertEquals(own,jdbc.sql("select cover_url from public.book_submissions where id=:id").param("id",submissionId).query(String.class).single());
+    assertThrows(org.springframework.dao.DataAccessException.class,()->setCover.accept(foreign));
+    assertThrows(org.springframework.dao.DataAccessException.class,()->setCover.accept(smuggled));
+    jdbc.sql("update public.book_submissions set status='approved' where id=:id").param("id",submissionId).update();
+    assertThrows(org.springframework.dao.DataAccessException.class,()->setCover.accept(own+"-2"));
+    assertEquals(own,jdbc.sql("select cover_url from public.book_submissions where id=:id").param("id",submissionId).query(String.class).single());
+
+    String photo="https://api.example.test/api/v1/storage/public/profile-media/"+uid+"/avatar?v=2";
+    for(String candidate:List.of(smuggled,photo)) {
+      jdbc.sql("update auth.users set raw_user_meta_data=jsonb_build_object('name','Cover','photo',cast(:photo as text)) where id=:id")
+          .param("photo",candidate).param("id",uid).update();
+      rpc.call(uid,"report_reading",Map.of("p_days",Map.of()));
+      String stored=jdbc.sql("select coalesce(photo,'') from public.ranking_profiles where user_id=:id").param("id",uid).query(String.class).single();
+      assertEquals(candidate.equals(photo)?photo:"",stored);
+    }
   }
 }

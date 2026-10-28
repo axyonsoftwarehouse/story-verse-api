@@ -6,12 +6,16 @@ import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,10 +40,21 @@ public class FeatureAccessService {
 
 	private final JdbcClient jdbc;
 	private final AuthzService authz;
+	/** Ligadas para todas as contas ({@code app.features.everyone}): não dependem de concessão. */
+	private final Set<String> everyone;
 
-	public FeatureAccessService(JdbcClient jdbc, AuthzService authz) {
+	public FeatureAccessService(JdbcClient jdbc, AuthzService authz,
+			@Value("${app.features.everyone:}") String everyone) {
 		this.jdbc = jdbc;
 		this.authz = authz;
+		this.everyone = Arrays.stream(everyone.split(","))
+				.map(String::trim)
+				.filter(KNOWN::contains)
+				.collect(Collectors.toUnmodifiableSet());
+	}
+
+	public boolean forEveryone(String feature) {
+		return everyone.contains(feature);
 	}
 
 	@Transactional(readOnly = true)
@@ -51,16 +66,20 @@ public class FeatureAccessService {
 	@Transactional(readOnly = true)
 	public List<String> features(UUID viewerId, UUID userId) {
 		DbSession.setUser(jdbc, viewerId);
-		return jdbc.sql("""
+		Set<String> found = new TreeSet<>(everyone);
+		found.addAll(jdbc.sql("""
 				select feature from public.feature_access
 				 where user_id = :uid and enabled
-				 order by feature
-				""").param("uid", userId).query(String.class).list();
+				""").param("uid", userId).query(String.class).list());
+		return List.copyOf(found);
 	}
 
 	@Transactional(readOnly = true)
 	public boolean enabled(UUID userId, String feature) {
 		validateKnown(feature);
+		if (everyone.contains(feature)) {
+			return true;
+		}
 		DbSession.setUser(jdbc, userId);
 		return Boolean.TRUE.equals(jdbc.sql("""
 				select exists(select 1 from public.feature_access
@@ -78,6 +97,9 @@ public class FeatureAccessService {
 	@Transactional
 	public void set(UUID actorId, UUID targetUserId, String feature, boolean enabled) {
 		validateKnown(feature);
+		if (everyone.contains(feature)) {
+			throw new AuthException(409, "Este recurso está ligado para todas as contas.");
+		}
 		DbSession.setUser(jdbc, actorId);
 		jdbc.sql("""
 				insert into public.feature_access
@@ -116,7 +138,8 @@ public class FeatureAccessService {
 		jdbc.sql("select feature, count(*) as total from public.feature_access where enabled group by feature")
 				.query((rs, rowNum) -> counts.put(rs.getString("feature"), rs.getLong("total"))).list();
 		return KNOWN.stream().sorted()
-				.map(feature -> new FeatureCatalogEntry(feature, counts.getOrDefault(feature, 0L)))
+				.map(feature -> new FeatureCatalogEntry(feature, counts.getOrDefault(feature, 0L),
+						everyone.contains(feature)))
 				.toList();
 	}
 

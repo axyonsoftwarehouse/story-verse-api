@@ -21,7 +21,11 @@ public class ForumRepository {
 			       t.author_id, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name,
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as author_avatar,
 			       t.title, left(t.body, 320) as excerpt, t.book_key, t.chapter_ref,
-			       t.spoiler_level, t.status, t.is_pinned, t.is_locked, t.accepted_reply_id,
+			       t.spoiler_level, t.status, t.is_pinned, t.is_locked,
+			       case when exists(select 1 from public.forum_replies ar
+			                         where ar.id = t.accepted_reply_id
+			                           and ar.status = 'published' and ar.deleted_at is null)
+			            then t.accepted_reply_id end as accepted_reply_id,
 			       t.reply_count, t.reaction_count, t.last_activity_at, t.created_at, t.updated_at,
 			       exists(select 1 from public.forum_bookmarks b
 			               where b.topic_id = t.id and b.user_id = :viewer) as bookmarked,
@@ -86,24 +90,28 @@ public class ForumRepository {
 			params.put("bookKey", bookKey);
 		}
 		if (query != null && !query.isBlank()) {
-			sql.append(" and (t.title ilike :query or t.body ilike :query)");
-			params.put("query", "%" + query.trim() + "%");
+			sql.append(" and (t.title ilike :query escape '\\' or t.body ilike :query escape '\\')");
+			params.put("query", "%" + likeLiteral(query) + "%");
 		}
 		if ("unanswered".equals(filter)) {
 			sql.append(" and t.reply_count = 0");
 		}
+		// Fixados ficam no topo; o cursor leva o is_pinned para a paginacao seguir a mesma ordem.
 		if (cursor != null && !"popular".equals(filter)) {
 			sql.append("""
-					 and (t.last_activity_at < :cursorTime
-					      or (t.last_activity_at = :cursorTime and t.id < :cursorId))
+					 and (t.is_pinned < :cursorPinned
+					      or (t.is_pinned = :cursorPinned
+					          and (t.last_activity_at < :cursorTime
+					               or (t.last_activity_at = :cursorTime and t.id < :cursorId))))
 					""");
-			params.put("cursorTime", cursor.time());
+			params.put("cursorPinned", cursor.pinned());
+			params.put("cursorTime", cursor.timestamp());
 			params.put("cursorId", cursor.id());
 		}
 		if ("popular".equals(filter)) {
 			sql.append(" order by (t.reaction_count + t.reply_count * 2) desc, t.last_activity_at desc, t.id desc");
 		} else {
-			sql.append(" order by t.last_activity_at desc, t.id desc");
+			sql.append(" order by t.is_pinned desc, t.last_activity_at desc, t.id desc");
 		}
 		sql.append(" limit :limit");
 		params.put("limit", limit);
@@ -130,7 +138,7 @@ public class ForumRepository {
 					 and (r.created_at > :cursorTime
 					      or (r.created_at = :cursorTime and r.id > :cursorId))
 					""");
-			params.put("cursorTime", cursor.time());
+			params.put("cursorTime", cursor.timestamp());
 			params.put("cursorId", cursor.id());
 		}
 		sql.append(" order by r.created_at asc, r.id asc limit :limit");
@@ -195,8 +203,9 @@ public class ForumRepository {
 				.single();
 	}
 
+	/** {@code status} nulo mantem a situacao atual; "pending" devolve o topico para a fila. */
 	public void updateTopicContent(UUID id, String title, String body, String bookKey, String chapterRef,
-			String spoilerLevel) {
+			String spoilerLevel, String status) {
 		jdbc.sql("""
 				update public.forum_topics
 				   set title = coalesce(cast(:title as text), title),
@@ -204,6 +213,7 @@ public class ForumRepository {
 				       book_key = coalesce(cast(:bookKey as text), book_key),
 				       chapter_ref = coalesce(cast(:chapterRef as text), chapter_ref),
 				       spoiler_level = coalesce(cast(:spoilerLevel as text), spoiler_level),
+				       status = coalesce(cast(:status as text), status),
 				       updated_at = now()
 				 where id = :id
 				""")
@@ -213,12 +223,21 @@ public class ForumRepository {
 				.param("bookKey", bookKey)
 				.param("chapterRef", chapterRef)
 				.param("spoilerLevel", spoilerLevel)
+				.param("status", status)
 				.update();
 	}
 
-	public void updateReplyContent(UUID id, String body) {
-		jdbc.sql("update public.forum_replies set body = :body, updated_at = now() where id = :id")
-				.param("id", id).param("body", body).update();
+	public void updateReplyContent(UUID id, String body, String spoilerLevel, String status) {
+		jdbc.sql("""
+				update public.forum_replies
+				   set body = coalesce(cast(:body as text), body),
+				       spoiler_level = coalesce(cast(:spoilerLevel as text), spoiler_level),
+				       status = coalesce(cast(:status as text), status),
+				       updated_at = now()
+				 where id = :id
+				""")
+				.param("id", id).param("body", body).param("spoilerLevel", spoilerLevel).param("status", status)
+				.update();
 	}
 
 	public void softDeleteTopic(UUID id) {
@@ -423,6 +442,15 @@ public class ForumRepository {
 		sql.append(" order by r.created_at asc limit :limit");
 		params.put("limit", limit);
 		return DbRows.list(jdbc, sql.toString(), params);
+	}
+
+	/** Texto da busca como literal do ILIKE: % e _ digitados nao viram curinga. */
+	static String likeLiteral(String query) {
+		String text = query.trim();
+		if (text.length() > 100) {
+			text = text.substring(0, 100);
+		}
+		return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
 	}
 
 	public boolean trusted(UUID userId) {

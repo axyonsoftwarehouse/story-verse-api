@@ -51,6 +51,18 @@ class AdminControllerTest {
 	}
 
 	@Test
+	void dashboardEndpointsRequireAuthentication() throws Exception {
+		mockMvc.perform(get("/api/v1/admin/health"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/admin/billing/series?group=week"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/admin/traffic"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/admin/vitals"))
+				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
 	void featureEndpointsRequireAuthentication() throws Exception {
 		UUID id = UUID.randomUUID();
 		mockMvc.perform(get("/api/v1/admin/features?userId=" + id))

@@ -60,7 +60,11 @@ public class BillingWebhookService {
 			case "customer.subscription.created", "customer.subscription.updated",
 					"customer.subscription.deleted", "customer.subscription.trial_will_end" ->
 				subscription(object, null);
-			case "invoice.paid", "invoice.payment_failed" -> invoice(object);
+			case "invoice.paid" -> {
+				paidInvoice(object);
+				invoice(object);
+			}
+			case "invoice.payment_failed" -> invoice(object);
 			// Reembolso/disputa entram no financeiro e não mudam o acesso sozinhos.
 			case "charge.refunded", "charge.dispute.created" -> {
 				// registrado em billing_events
@@ -87,11 +91,30 @@ public class BillingWebhookService {
 		if (session.getSubscription() != null) subscription(session.getSubscription(), null);
 	}
 
-	private void invoice(StripeObject object) {
+	/** Guarda o valor pago: é a receita da série do financeiro (o evento em si não tem valor). */
+	private void paidInvoice(StripeObject object) {
 		if (!(object instanceof Invoice invoice)) throw new AuthException(500, "Fatura inválida.");
-		String subscriptionId = invoice.getParent() == null || invoice.getParent().getSubscriptionDetails() == null
+		Long paidAt = invoice.getStatusTransitions() == null ? null : invoice.getStatusTransitions().getPaidAt();
+		Map<String, Object> params = new LinkedHashMap<>();
+		params.put("id", invoice.getId());
+		params.put("subscription", subscriptionId(invoice));
+		params.put("user_id", invoice.getCustomer() == null ? null
+				: repository.userByCustomer(invoice.getCustomer()).map(row -> row.get("user_id")).orElse(null));
+		params.put("amount", invoice.getAmountPaid() == null ? 0 : invoice.getAmountPaid().intValue());
+		params.put("currency", invoice.getCurrency());
+		params.put("paid_at", paidAt == null ? Timestamp.from(Instant.now()) : timestamp(paidAt));
+		repository.upsertInvoice(params);
+	}
+
+	private static String subscriptionId(Invoice invoice) {
+		return invoice.getParent() == null || invoice.getParent().getSubscriptionDetails() == null
 				? null
 				: invoice.getParent().getSubscriptionDetails().getSubscription();
+	}
+
+	private void invoice(StripeObject object) {
+		if (!(object instanceof Invoice invoice)) throw new AuthException(500, "Fatura inválida.");
+		String subscriptionId = subscriptionId(invoice);
 		if (subscriptionId == null) return;
 		subscription(subscriptionId, invoice.getStatus());
 	}

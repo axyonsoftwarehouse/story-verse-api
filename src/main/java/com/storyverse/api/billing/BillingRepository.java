@@ -162,6 +162,38 @@ public class BillingRepository {
 				""", params).orElse(Map.of());
 	}
 
+	/** Conversão de teste em pago no período (ver admin_billing_trials na V25). */
+	public Map<String, Object> adminTrials(java.time.Instant from, java.time.Instant to) {
+		Map<String, Object> params = new java.util.LinkedHashMap<>();
+		params.put("from", java.sql.Timestamp.from(from));
+		params.put("to", java.sql.Timestamp.from(to));
+		return DbRows.one(jdbc, """
+				select trials_started, trials_ended, trials_converted
+				  from public.admin_billing_trials(:from, :to)
+				""", params).orElse(Map.of());
+	}
+
+	/** Série por dia/semana; {@code group} já validado pelo serviço. */
+	public List<Map<String, Object>> adminSeries(java.time.LocalDate from, java.time.LocalDate to, String group) {
+		Map<String, Object> params = new java.util.LinkedHashMap<>();
+		params.put("from", java.sql.Date.valueOf(from));
+		params.put("to", java.sql.Date.valueOf(to));
+		params.put("group", group);
+		return DbRows.list(jdbc, """
+				select bucket, mrr_cents, active, new_count, canceled_count, revenue_cents, estimated
+				  from public.admin_billing_series(:from, :to, :group)
+				""", params);
+	}
+
+	/** Foto diária do MRR; idempotente (o job reescreve a linha do dia). */
+	@Transactional
+	public void snapshot(java.time.LocalDate day) {
+		beginWrite();
+		jdbc.sql("select public.admin_billing_snapshot(:day)")
+				.param("day", java.sql.Date.valueOf(day))
+				.query((rs, row) -> 1).single();
+	}
+
 	public List<Map<String, Object>> adminSubscriptions(String status, String q) {
 		Map<String, Object> params = new java.util.LinkedHashMap<>();
 		params.put("status", status == null ? "" : status);
@@ -187,6 +219,23 @@ public class BillingRepository {
 	}
 
 	// ---- Webhook ---------------------------------------------------------------------------
+
+	/** Fatura paga (invoice.paid). Reentrega do mesmo evento não duplica a receita. */
+	public void upsertInvoice(Map<String, Object> params) {
+		beginWrite();
+		DbRows.update(jdbc, """
+				insert into public.billing_invoices
+					(stripe_invoice_id, stripe_subscription_id, user_id, amount_paid_cents, currency, paid_at)
+				values (:id, cast(:subscription as text), cast(:user_id as uuid), :amount,
+				        cast(:currency as text), :paid_at)
+				on conflict (stripe_invoice_id) do update
+				   set amount_paid_cents = excluded.amount_paid_cents,
+				       paid_at = excluded.paid_at,
+				       stripe_subscription_id = coalesce(excluded.stripe_subscription_id,
+				           billing_invoices.stripe_subscription_id),
+				       user_id = coalesce(excluded.user_id, billing_invoices.user_id)
+				""", params);
+	}
 
 	public boolean eventSeen(String stripeEventId) {
 		return Boolean.TRUE.equals(jdbc.sql("select exists(select 1 from public.billing_events where stripe_event_id = :id)")

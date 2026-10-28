@@ -38,11 +38,29 @@ public class AdminMetricsController {
 		return service.readingSeries(AuthTokens.bearer(authorization), from, to, group);
 	}
 
+	@GetMapping("/community")
+	public List<AdminMetricsCommunityPoint> community(
+			@RequestParam(required = false) String from,
+			@RequestParam(required = false) String to,
+			@RequestParam(defaultValue = "day") String group,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.communitySeries(AuthTokens.bearer(authorization), from, to, group);
+	}
+
 	@GetMapping("/retention")
 	public List<AdminMetrics.Retention> retention(
 			@RequestParam(required = false) String from,
 			@RequestParam(required = false) String to,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		return service.retention(AuthTokens.bearer(authorization), from, to);
+	}
+
+	@GetMapping("/top-books")
+	public List<AdminTopBook> topBooks(
+			@RequestParam(required = false) String from,
+			@RequestParam(required = false) String to,
+			@RequestParam(required = false) Integer limit,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.topBooks(AuthTokens.bearer(authorization), from, to, limit);
 	}
 }

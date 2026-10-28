@@ -67,6 +67,10 @@ app:
     # Teto global diário (todas as contas). 0 = sem modo economia.
     daily-global-limit: ${AI_DAILY_GLOBAL_LIMIT:0}
     per-minute-limit: ${AI_PER_MINUTE_LIMIT:6}
+  features:
+    # Recursos ligados para todas as contas, sem concessão por conta (lista separada por vírgula).
+    # Vazio volta ao controle por conta no painel (aba "Recursos em teste").
+    everyone: ${FEATURES_FOR_EVERYONE:library}
   billing:
     # Desligado no beta: o paywall só entra quando a flag estiver true.
     enabled: ${BILLING_ENABLED:false}
@@ -76,6 +80,22 @@ app:
     price-label: ${BILLING_PRICE_LABEL:R$ 9,90}
     trial-days: ${BILLING_TRIAL_DAYS:7}
     past-due-grace-days: ${BILLING_PAST_DUE_GRACE_DAYS:3}
+  # Leitura da API REST do Sentry para GET /api/v1/admin/health. O token fica só no servidor;
+  # sem token/org/projetos o endpoint responde com sentry: null.
+  sentry-api:
+    url: ${SENTRY_API_URL:https://sentry.io}
+    token: ${SENTRY_API_TOKEN:}
+    org: ${SENTRY_ORG:}
+    projects: ${SENTRY_PROJECTS:}
+    # Ambiente do Sentry deste painel (o mesmo SENTRY_ENVIRONMENT da instância); vazio = todos.
+    environment: ${SENTRY_API_ENVIRONMENT:}
+  # Leitura do Umami auto-hospedado para GET /api/v1/admin/traffic e /vitals (rede interna da VPS), com um
+  # usuário só de visualização. Sem url/usuário/senha/site o endpoint responde com traffic/vitals: null.
+  umami-api:
+    url: ${UMAMI_API_URL:}
+    username: ${UMAMI_USERNAME:}
+    password: ${UMAMI_PASSWORD:}
+    website-id: ${UMAMI_WEBSITE_ID:}
 
 sentry:
   dsn: ${SENTRY_DSN:}

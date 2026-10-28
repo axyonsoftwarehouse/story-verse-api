@@ -1,16 +1,12 @@
 package com.storyverse.api.admin;
 
 import java.sql.Date;
+import java.time.Duration;
 import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.format.DateTimeParseException;
-import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -24,20 +20,12 @@ import com.storyverse.api.auth.AuthzService;
 @Service
 public class AdminMetricsService {
 
-	private static final ZoneId SAO_PAULO = ZoneId.of("America/Sao_Paulo");
-	private static final int MAX_DAYS = 90;
-	private static final long CACHE_TTL_MS = 5 * 60 * 1000L;
-
-	private record Range(LocalDate from, LocalDate to) {
-	}
-
-	private record Cached(Object value, long at) {
-	}
-
 	private final AuthService auth;
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
-	private final ConcurrentHashMap<String, Cached> cache = new ConcurrentHashMap<>();
+	private static final int MAX_TOP_BOOKS = 20;
+
+	private final ShortCache cache = new ShortCache(Duration.ofMinutes(5));
 
 	public AdminMetricsService(AuthService auth, AuthzService authz, JdbcClient jdbc) {
 		this.auth = auth;
@@ -47,18 +35,19 @@ public class AdminMetricsService {
 
 	@Transactional(readOnly = true)
 	public AdminMetrics overview(String token, String from, String to) {
-		UUID actor = requireMetricsAccess(token);
-		Range range = range(from, to);
+		requireMetricsAccess(token);
+		AdminRange range = AdminRange.parse(from, to);
 		String key = "overview|" + range.from() + "|" + range.to();
-		AdminMetrics cached = cached(key, AdminMetrics.class);
+		AdminMetrics cached = cache.get(key);
 		if (cached != null) {
 			return cached;
 		}
 		AdminMetrics.Accounts accounts = jdbc.sql("""
-				select total, new7, new30, confirmed, staff
+				select total, new24h, new_today, new7, new30, confirmed, staff
 				  from public.admin_metrics_accounts()
 				""").query((rs, rowNum) -> new AdminMetrics.Accounts(
-						rs.getLong("total"), rs.getLong("new7"), rs.getLong("new30"),
+						rs.getLong("total"), rs.getLong("new24h"), rs.getLong("new_today"),
+						rs.getLong("new7"), rs.getLong("new30"),
 						rs.getLong("confirmed"), rs.getLong("staff"))).single();
 		AdminMetrics.Reading reading = readingSummary(range);
 		Map<String, Long> features = new LinkedHashMap<>();
@@ -66,27 +55,23 @@ public class AdminMetricsService {
 				.query((rs, rowNum) -> Map.entry(rs.getString("feature"), rs.getLong("enabled")))
 				.list().forEach(entry -> features.put(entry.getKey(), entry.getValue()));
 		AdminMetrics result = new AdminMetrics(accounts, reading, features, retentionRows(range));
-		put(key, result);
+		cache.put(key, result);
 		return result;
 	}
 
 	@Transactional(readOnly = true)
 	public List<AdminMetricsReadingPoint> readingSeries(String token, String from, String to, String group) {
 		requireMetricsAccess(token);
-		Range range = range(from, to);
-		String bucket = group == null || group.isBlank() ? "day" : group.strip();
-		if (!bucket.equals("day") && !bucket.equals("week")) {
-			throw new AuthException(400, "Agrupamento inválido. Use day ou week.");
-		}
+		AdminRange range = AdminRange.parse(from, to);
+		String bucket = AdminRange.group(group);
 		String key = "reading|" + bucket + "|" + range.from() + "|" + range.to();
-		@SuppressWarnings("unchecked")
-		List<AdminMetricsReadingPoint> cached = cached(key, List.class);
+		List<AdminMetricsReadingPoint> cached = cache.get(key);
 		if (cached != null) {
 			return cached;
 		}
 		String sql = bucket.equals("week")
-				? "select bucket, active_readers, seconds, books_started, books_finished from public.admin_metrics_weekly(:from, :to)"
-				: "select day as bucket, active_readers, seconds, books_started, books_finished from public.admin_metrics_daily(:from, :to)";
+				? "select bucket, active_readers, seconds, books_started, books_finished, signups, pages from public.admin_metrics_weekly(:from, :to)"
+				: "select day as bucket, active_readers, seconds, books_started, books_finished, signups, pages from public.admin_metrics_daily(:from, :to)";
 		List<AdminMetricsReadingPoint> rows = jdbc.sql(sql)
 				.param("from", Date.valueOf(range.from()))
 				.param("to", Date.valueOf(range.to()))
@@ -95,30 +80,80 @@ public class AdminMetricsService {
 						rs.getLong("active_readers"),
 						Math.round(rs.getLong("seconds") / 60.0),
 						rs.getLong("books_started"),
-						rs.getLong("books_finished")))
+						rs.getLong("books_finished"),
+						rs.getLong("signups"),
+						rs.getLong("pages")))
 				.list();
-		put(key, rows);
+		cache.put(key, rows);
 		return rows;
+	}
+
+	/** Tópicos, respostas e denúncias criados por bucket; os buckets vazios vêm com zero. */
+	@Transactional(readOnly = true)
+	public List<AdminMetricsCommunityPoint> communitySeries(String token, String from, String to, String group) {
+		requireMetricsAccess(token);
+		AdminRange range = AdminRange.parse(from, to);
+		String bucket = AdminRange.group(group);
+		String key = "community|" + bucket + "|" + range.from() + "|" + range.to();
+		return cache.get(key, () -> jdbc.sql("""
+				select bucket, topics, replies, reports
+				  from public.admin_metrics_community(:from, :to, :group)
+				""")
+				.param("from", Date.valueOf(range.from()))
+				.param("to", Date.valueOf(range.to()))
+				.param("group", bucket)
+				.query((rs, rowNum) -> new AdminMetricsCommunityPoint(
+						rs.getObject("bucket", LocalDate.class),
+						rs.getLong("topics"), rs.getLong("replies"), rs.getLong("reports")))
+				.list());
 	}
 
 	@Transactional(readOnly = true)
 	public List<AdminMetrics.Retention> retention(String token, String from, String to) {
 		requireMetricsAccess(token);
-		Range range = range(from, to);
+		AdminRange range = AdminRange.parse(from, to);
 		String key = "retention|" + range.from() + "|" + range.to();
-		@SuppressWarnings("unchecked")
-		List<AdminMetrics.Retention> cached = cached(key, List.class);
+		List<AdminMetrics.Retention> cached = cache.get(key);
 		if (cached != null) {
 			return cached;
 		}
 		List<AdminMetrics.Retention> rows = retentionRows(range);
-		put(key, rows);
+		cache.put(key, rows);
 		return rows;
 	}
 
-	private AdminMetrics.Reading readingSummary(Range range) {
+	/** Livros do acervo mais lidos no período, pela estante. {@code limit} de 1 a 20 (padrão 10). */
+	@Transactional(readOnly = true)
+	public List<AdminTopBook> topBooks(String token, String from, String to, Integer limit) {
+		requireMetricsAccess(token);
+		AdminRange range = AdminRange.parse(from, to);
+		int size = limit == null ? 10 : limit;
+		if (size < 1 || size > MAX_TOP_BOOKS) {
+			throw new AuthException(400, "O limite vai de 1 a " + MAX_TOP_BOOKS + ".");
+		}
+		String key = "top-books|" + size + "|" + range.from() + "|" + range.to();
+		List<AdminTopBook> cached = cache.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		List<AdminTopBook> rows = jdbc.sql("""
+				select book_key, title, author, readers, finished
+				  from public.admin_metrics_top_books(:from, :to, :limit)
+				""")
+				.param("from", Date.valueOf(range.from()))
+				.param("to", Date.valueOf(range.to()))
+				.param("limit", size)
+				.query((rs, rowNum) -> new AdminTopBook(
+						rs.getString("book_key"), rs.getString("title"), rs.getString("author"),
+						rs.getLong("readers"), rs.getLong("finished")))
+				.list();
+		cache.put(key, rows);
+		return rows;
+	}
+
+	private AdminMetrics.Reading readingSummary(AdminRange range) {
 		return jdbc.sql("""
-				select active_readers, seconds, books_started, books_finished, entries_created
+				select active_readers, seconds, books_started, books_finished, entries_created, pages
 				  from public.admin_metrics_reading(:from, :to)
 				""")
 				.param("from", Date.valueOf(range.from()))
@@ -128,11 +163,12 @@ public class AdminMetricsService {
 						Math.round(rs.getLong("seconds") / 60.0),
 						rs.getLong("books_started"),
 						rs.getLong("books_finished"),
-						rs.getLong("entries_created")))
+						rs.getLong("entries_created"),
+						rs.getLong("pages")))
 				.single();
 	}
 
-	private List<AdminMetrics.Retention> retentionRows(Range range) {
+	private List<AdminMetrics.Retention> retentionRows(AdminRange range) {
 		return jdbc.sql("""
 				select cohort_week, cohort_size, d1, d7, d30
 				  from public.admin_metrics_retention(:from, :to)
@@ -149,48 +185,5 @@ public class AdminMetricsService {
 		UUID actor = auth.authenticate(token);
 		authz.requireRole(actor, AuthzService.SUPERADMIN);
 		return actor;
-	}
-
-	private Range range(String fromRaw, String toRaw) {
-		LocalDate to = parseDate(toRaw, LocalDate.now(SAO_PAULO));
-		LocalDate from = parseDate(fromRaw, to.minusDays(29));
-		if (from.isAfter(to)) {
-			throw new AuthException(400, "A data inicial precisa ser anterior à final.");
-		}
-		if (ChronoUnit.DAYS.between(from, to) >= MAX_DAYS) {
-			throw new AuthException(400, "O período máximo é de 90 dias.");
-		}
-		return new Range(from, to);
-	}
-
-	private static LocalDate parseDate(String raw, LocalDate fallback) {
-		if (raw == null || raw.isBlank()) {
-			return fallback;
-		}
-		try {
-			return LocalDate.parse(raw.trim());
-		} catch (DateTimeParseException error) {
-			throw new AuthException(400, "Data inválida. Use AAAA-MM-DD.");
-		}
-	}
-
-	private <T> T cached(String key, Class<T> type) {
-		Cached entry = cache.get(key);
-		if (entry == null) {
-			return null;
-		}
-		if (System.currentTimeMillis() - entry.at() > CACHE_TTL_MS) {
-			cache.remove(key);
-			return null;
-		}
-		return type.cast(entry.value());
-	}
-
-	private void put(String key, Object value) {
-		long now = System.currentTimeMillis();
-		if (cache.size() > 100) {
-			cache.entrySet().removeIf(entry -> now - entry.getValue().at() > CACHE_TTL_MS);
-		}
-		cache.put(key, new Cached(value, now));
 	}
 }
