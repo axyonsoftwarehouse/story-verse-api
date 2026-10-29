@@ -56,6 +56,18 @@ class BillingPixAccessTest {
 	}
 
 	@Test
+	void capabilitiesDizOMotivoDoAcesso() {
+		Instant ate = Instant.parse("2026-12-27T12:00:00Z");
+		when(repository.activePrepaid(conta)).thenReturn(Optional.of(Map.of("until", Timestamp.from(ate))));
+
+		Map<String, Object> caps = billing.capabilities(conta);
+
+		assertEquals("none", caps.get("status"));
+		assertEquals("pix", caps.get("reason"));
+		assertEquals(ate.toString(), caps.get("accessUntil"));
+	}
+
+	@Test
 	void cartaoCobrandoRecusaPix() {
 		when(repository.latestSubscription(conta)).thenReturn(Optional.of(Map.of("status", "active")));
 

@@ -141,6 +141,8 @@ public class BillingService {
 		Map<String, Object> out = new LinkedHashMap<>();
 		out.put("status", status.get("status"));
 		out.put("active", status.get("active"));
+		// Por que tem acesso (pix, grant, staff, trial, active…): o status sozinho é o da assinatura no cartão.
+		out.put("reason", status.get("reason"));
 		out.put("accessUntil", status.get("accessUntil"));
 		out.put("plan", status.get("plan"));
 		out.put("cancelAtPeriodEnd", status.get("cancelAtPeriodEnd"));
