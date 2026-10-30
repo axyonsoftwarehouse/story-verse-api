@@ -293,6 +293,11 @@ public class GroupRepository {
 				""").param("user", userId).query(UUID.class).list();
 	}
 
+	public String groupName(UUID groupId) {
+		return jdbc.sql("select name from public.chat_groups where id = :group").param("group", groupId)
+				.query(String.class).optional().orElse("Grupo");
+	}
+
 	public List<UUID> activeMemberIds(UUID groupId) {
 		return jdbc.sql("select user_id from public.chat_members where group_id = :group and banned_at is null")
 				.param("group", groupId).query(UUID.class).list();

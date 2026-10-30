@@ -4,10 +4,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -19,11 +21,15 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.storyverse.api.push.PushService;
+import com.storyverse.api.push.PushTestKeys;
+
 import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthResponse;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.SignupRequest;
+import com.storyverse.api.common.DbSession;
 
 /** Grupos com chat (V33): entrada, convite, mensagens, reações, denúncias e permissões. */
 @SpringBootTest
@@ -356,5 +362,96 @@ class GroupIntegrationTest {
 		List<Map<String, Object>> members = (List<Map<String, Object>>) groups.group(owner, id(group)).get("members");
 		assertEquals(42, ((Number) members.get(0).get("progress_percent")).intValue());
 		assertThrows(AuthException.class, () -> groups.create(owner, Map.of("name", "Livro ruim", "visibility", "public", "bookKey", "x:1")));
+	}
+
+	/* ------------------------- Notificação no celular (V37) ------------------------- */
+
+	@Autowired PushService push;
+
+	String pushAccount() {
+		return member();
+	}
+
+	static Map<String, Object> subscription(String endpoint) {
+		byte[] secret = new byte[16];
+		new SecureRandom().nextBytes(secret);
+		String p256dh = PushTestKeys.browserPublicKey();
+		return Map.of("endpoint", endpoint, "keys", Map.of("p256dh", p256dh, "auth", PushTestKeys.b64(secret)));
+	}
+
+	<T> T asRuntimeUser(UUID user, Supplier<T> action) {
+		return new TransactionTemplate(transactions).execute(status -> {
+			jdbc.sql("set local role storyverse_api").update();
+			DbSession.setUser(jdbc, user);
+			return action.get();
+		});
+	}
+
+	@Test
+	void vapidKeyIsGeneratedOnceAndKept() {
+		String first = push.publicKey();
+		assertEquals(65, PushTestKeys.unb64(first).length);
+		assertEquals(first, push.publicKey());
+		assertEquals(1, jdbc.sql("select count(*) from public.push_vapid_keys").query(Integer.class).single());
+	}
+
+	@Test
+	void devicesSubscribeOnlyToBrowserPushServicesAndMoveBetweenAccounts() {
+		String ana = pushAccount(), bia = pushAccount();
+		String endpoint = "https://fcm.googleapis.com/fcm/send/" + UUID.randomUUID();
+		// Como na VPS: papel de runtime, com a RLS valendo.
+		asRuntimeUser(idOf(ana), () -> {
+			push.subscribe(ana, subscription(endpoint));
+			return push.publicKey();
+		});
+		assertEquals(idOf(ana), owner(endpoint));
+
+		assertThrows(AuthException.class, () -> push.subscribe(ana, subscription("https://169.254.169.254/latest")));
+		Map<String, Object> badKeys = new HashMap<>(subscription("https://fcm.googleapis.com/fcm/send/x"));
+		badKeys.put("keys", Map.of("p256dh", "abc", "auth", "abc"));
+		assertThrows(AuthException.class, () -> push.subscribe(ana, badKeys));
+
+		// O mesmo navegador entra com outra conta: a inscrição muda de dono.
+		asRuntimeUser(idOf(bia), () -> {
+			push.subscribe(bia, subscription(endpoint));
+			return null;
+		});
+		assertEquals(idOf(bia), owner(endpoint));
+
+		// Quem não é dono não apaga; o dono apaga.
+		push.unsubscribe(ana, endpoint);
+		assertEquals(idOf(bia), owner(endpoint));
+		push.unsubscribe(bia, endpoint);
+		assertNull(owner(endpoint));
+	}
+
+	@Test
+	void groupMessageTargetsOtherMembersThatDidNotMuteTheGroup() {
+		String author = pushAccount(), reader = pushAccount(), muted = pushAccount(), outsider = pushAccount();
+		jdbc.sql("update auth.users set created_at = now() - interval '2 days' where id = :id").param("id", idOf(author)).update();
+		UUID groupId = UUID.fromString(String.valueOf(groups.create(author, Map.of("name", "Clube do Push", "visibility", "public")).get("id")));
+		groups.join(reader, groupId);
+		groups.join(muted, groupId);
+		groups.setMuted(muted, groupId, Map.of("muted", true));
+		for (String token : List.of(author, reader, muted, outsider)) {
+			push.subscribe(token, subscription("https://fcm.googleapis.com/fcm/send/" + UUID.randomUUID()));
+		}
+
+		List<UUID> targets = asRuntimeUser(idOf(author), () -> jdbc.sql("select user_id from public.chat_push_targets(:group)")
+				.param("group", groupId).query(UUID.class).list());
+		assertEquals(List.of(idOf(reader)), targets, "nem quem escreveu, nem quem silenciou, nem quem é de fora");
+
+		List<UUID> fromOutside = asRuntimeUser(idOf(outsider), () -> jdbc.sql("select user_id from public.chat_push_targets(:group)")
+				.param("group", groupId).query(UUID.class).list());
+		assertEquals(List.of(), fromOutside, "quem não é membro não descobre os aparelhos do grupo");
+
+		// A conta não lê os aparelhos dos outros nem a chave privada.
+		Integer visible = asRuntimeUser(idOf(reader), () -> jdbc.sql("select count(*) from public.push_subscriptions").query(Integer.class).single());
+		assertEquals(1, visible);
+	}
+
+	UUID owner(String endpoint) {
+		return jdbc.sql("select user_id from public.push_subscriptions where endpoint = :e").param("e", endpoint)
+				.query(UUID.class).optional().orElse(null);
 	}
 }
