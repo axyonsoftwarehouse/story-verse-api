@@ -221,6 +221,26 @@ class GroupIntegrationTest {
 	}
 
 	@Test
+	void groupPhotoOnlyFromTheEditorsOwnStorageFolder() {
+		String owner = member(), other = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		String base = "https://api.example.test/api/v1/storage/public/profile-media/";
+		String mine = base + idOf(owner) + "/grupos/" + UUID.randomUUID() + "?v=123";
+		Map<String, Object> updated = groups.update(owner, groupId, Map.of("photoUrl", mine, "description", "Nova descrição"));
+		assertEquals(mine, updated.get("photo_url"));
+		assertEquals("Nova descrição", updated.get("description"));
+		// Editar outro campo não apaga a foto.
+		assertEquals(mine, groups.update(owner, groupId, Map.of("name", "Outro nome")).get("photo_url"));
+		String theirs = base + idOf(other) + "/grupos/" + UUID.randomUUID();
+		assertThrows(AuthException.class, () -> groups.update(owner, groupId, Map.of("photoUrl", theirs)));
+		assertThrows(AuthException.class, () -> groups.update(owner, groupId, Map.of("photoUrl", "https://evil.example/x.png")));
+		assertThrows(AuthException.class, () -> groups.update(other, groupId, Map.of("description", "invasão")));
+		Map<String, Object> cleared = new HashMap<>();
+		cleared.put("photoUrl", null);
+		assertNull(groups.update(owner, groupId, cleared).get("photo_url"));
+	}
+
+	@Test
 	void clubShowsMemberProgressOnTheBook() {
 		String owner = member();
 		Map<String, Object> body = new HashMap<>();

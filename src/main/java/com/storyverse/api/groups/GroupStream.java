@@ -1,10 +1,11 @@
 package com.storyverse.api.groups;
 
 import java.util.Collection;
+import java.util.Deque;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -25,16 +26,21 @@ public class GroupStream {
 	static final int MAX_CONNECTIONS = 400;
 	static final int MAX_PER_USER = 4;
 
-	private final Map<UUID, Set<SseEmitter>> users = new ConcurrentHashMap<>();
+	private final Map<UUID, Deque<SseEmitter>> users = new ConcurrentHashMap<>();
 
 	public synchronized SseEmitter connect(UUID userId) {
-		int total = users.values().stream().mapToInt(Set::size).sum();
+		int total = users.values().stream().mapToInt(Deque::size).sum();
 		if (total >= MAX_CONNECTIONS) throw new AuthException(429, "Limite de conexões atingido.");
-		if (users.getOrDefault(userId, Set.of()).size() >= MAX_PER_USER)
-			throw new AuthException(429, "Muitas conexões para esta conta.");
+		Deque<SseEmitter> mine = users.computeIfAbsent(userId, ignored -> new ConcurrentLinkedDeque<>());
+		// Trocar de tela abre uma conexão nova antes de o servidor notar que a antiga caiu (só no
+		// próximo ping): em vez de recusar a nova, fecha a mais antiga desta conta.
+		while (mine.size() >= MAX_PER_USER) {
+			SseEmitter oldest = mine.pollFirst();
+			if (oldest != null) oldest.complete();
+		}
 		// Vida finita: o cliente reconecta e conexão morta não fica para sempre.
 		SseEmitter emitter = new SseEmitter(300_000L);
-		users.computeIfAbsent(userId, ignored -> ConcurrentHashMap.newKeySet()).add(emitter);
+		mine.addLast(emitter);
 		emitter.onCompletion(() -> leave(userId, emitter));
 		emitter.onTimeout(() -> leave(userId, emitter));
 		emitter.onError(ignored -> leave(userId, emitter));
@@ -43,14 +49,17 @@ public class GroupStream {
 	}
 
 	public boolean online(UUID userId) {
-		return !users.getOrDefault(userId, Set.of()).isEmpty();
+		Deque<SseEmitter> emitters = users.get(userId);
+		return emitters != null && !emitters.isEmpty();
 	}
 
 	/** Envia para cada conta da lista que está conectada, depois do commit da transação atual. */
 	public void publish(Collection<UUID> recipients, String event, Object data) {
 		Runnable deliver = () -> {
 			for (UUID recipient : recipients) {
-				for (SseEmitter emitter : users.getOrDefault(recipient, Set.of())) {
+				Deque<SseEmitter> emitters = users.get(recipient);
+				if (emitters == null) continue;
+				for (SseEmitter emitter : emitters) {
 					send(emitter, event, data);
 				}
 			}
@@ -68,7 +77,7 @@ public class GroupStream {
 	}
 
 	private synchronized void leave(UUID userId, SseEmitter emitter) {
-		Set<SseEmitter> emitters = users.get(userId);
+		Deque<SseEmitter> emitters = users.get(userId);
 		if (emitters == null) return;
 		emitters.remove(emitter);
 		if (emitters.isEmpty()) users.remove(userId);
@@ -85,7 +94,7 @@ public class GroupStream {
 	/** Mantém as conexões vivas por trás do proxy (e revela conexões mortas). */
 	@Scheduled(fixedRate = 25_000)
 	public void heartbeat() {
-		for (Set<SseEmitter> emitters : users.values()) {
+		for (Deque<SseEmitter> emitters : users.values()) {
 			for (SseEmitter emitter : emitters) {
 				try {
 					emitter.send(SseEmitter.event().comment("ping"));

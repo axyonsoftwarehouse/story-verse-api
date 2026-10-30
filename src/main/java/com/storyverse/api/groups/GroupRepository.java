@@ -20,7 +20,7 @@ public class GroupRepository {
 	static final int AUTO_HIDE_REPORTS = 3;
 
 	private static final String GROUP_ROW = """
-			select g.id, g.name, g.description, g.visibility, g.owner_id, g.book_key, g.book_title, g.book_cover,
+			select g.id, g.name, g.description, g.photo_url, g.visibility, g.owner_id, g.book_key, g.book_title, g.book_cover,
 			       g.goal_chapter, g.goal_until, g.last_message_at, g.created_at,
 			       (select count(*) from public.chat_members c
 			         where c.group_id = g.id and c.banned_at is null) as member_count,
@@ -153,13 +153,14 @@ public class GroupRepository {
 	public UUID insertGroup(UUID owner, GroupFields fields, String inviteCode) {
 		UUID id = jdbc.sql("""
 				insert into public.chat_groups
-				  (name, description, visibility, owner_id, book_key, book_title, book_cover, goal_chapter, goal_until, invite_code)
-				values (:name, :description, :visibility, :owner, :book_key, :book_title, :book_cover, :goal_chapter,
+				  (name, description, photo_url, visibility, owner_id, book_key, book_title, book_cover, goal_chapter, goal_until, invite_code)
+				values (:name, :description, :photo_url, :visibility, :owner, :book_key, :book_title, :book_cover, :goal_chapter,
 				        cast(:goal_until as date), :invite)
 				returning id
 				""")
 				.param("name", fields.name())
 				.param("description", fields.description())
+				.param("photo_url", fields.photoUrl())
 				.param("visibility", fields.visibility())
 				.param("owner", owner)
 				.param("book_key", fields.bookKey())
@@ -177,7 +178,7 @@ public class GroupRepository {
 	public void updateGroup(UUID id, GroupFields fields) {
 		jdbc.sql("""
 				update public.chat_groups
-				   set name = :name, description = :description, visibility = :visibility,
+				   set name = :name, description = :description, photo_url = :photo_url, visibility = :visibility,
 				       book_key = :book_key, book_title = :book_title, book_cover = :book_cover,
 				       goal_chapter = :goal_chapter, goal_until = cast(:goal_until as date), updated_at = now()
 				 where id = :id
@@ -185,6 +186,7 @@ public class GroupRepository {
 				.param("id", id)
 				.param("name", fields.name())
 				.param("description", fields.description())
+				.param("photo_url", fields.photoUrl())
 				.param("visibility", fields.visibility())
 				.param("book_key", fields.bookKey())
 				.param("book_title", fields.bookTitle())

@@ -4,6 +4,7 @@ package com.storyverse.api.groups;
 record GroupFields(
 		String name,
 		String description,
+		String photoUrl,
 		String visibility,
 		String bookKey,
 		String bookTitle,

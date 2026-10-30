@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -52,9 +53,13 @@ public class GroupService {
 	private final FeatureAccessService features;
 	private final JdbcClient jdbc;
 	private final RateLimitGate limits;
+	/** Endereço público da API: a foto do grupo precisa ser um arquivo do Storage dela. */
+	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits) {
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits,
+			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
+		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
 		this.stream = stream;
 		this.auth = auth;
@@ -92,7 +97,7 @@ public class GroupService {
 	@Transactional
 	public Map<String, Object> create(String token, Map<String, Object> body) {
 		UUID userId = requireUser(token);
-		GroupFields fields = fields(body, null);
+		GroupFields fields = fields(body, null, userId);
 		if ("public".equals(fields.visibility()) && !repository.accountOlderThanHours(userId, PUBLIC_GROUP_MIN_ACCOUNT_HOURS)) {
 			throw new AuthException(403, "Contas criadas há menos de 24 horas só podem criar grupos privados.");
 		}
@@ -109,7 +114,7 @@ public class GroupService {
 		UUID userId = requireUser(token);
 		Map<String, Object> current = visibleGroup(userId, id);
 		requireOwnerOrStaff(userId, current);
-		GroupFields fields = fields(body, current);
+		GroupFields fields = fields(body, current, userId);
 		repository.updateGroup(id, fields);
 		auditIfStaffAction(userId, current, "group.update", id);
 		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "updated"));
@@ -457,13 +462,15 @@ public class GroupService {
 	}
 
 	/** Valida os campos; em edição ({@code current} != null) o que não veio fica como está. */
-	private static GroupFields fields(Map<String, Object> body, Map<String, Object> current) {
+	private GroupFields fields(Map<String, Object> body, Map<String, Object> current, UUID editor) {
 		String name = pick(body, current, "name", "name");
 		if (name == null || name.length() < 3 || name.length() > 60) {
 			throw new AuthException(400, "O nome do grupo precisa ter entre 3 e 60 caracteres.");
 		}
 		String description = pick(body, current, "description", "description");
 		if (description != null && description.length() > 300) throw new AuthException(400, "A descrição pode ter até 300 caracteres.");
+		String photoUrl = body.containsKey("photoUrl") ? photoUrl(text(body.get("photoUrl")), editor)
+				: current == null ? null : text(current.get("photo_url"));
 		String visibility = pick(body, current, "visibility", "visibility");
 		if (!"public".equals(visibility) && !"private".equals(visibility)) throw new AuthException(400, "Escolha público ou privado.");
 		String bookKey = bookKey(pick(body, current, "bookKey", "book_key"));
@@ -485,7 +492,21 @@ public class GroupService {
 				}
 			}
 		}
-		return new GroupFields(name, description, visibility, bookKey, bookTitle, bookCover, goalChapter, goalUntil);
+		return new GroupFields(name, description, photoUrl, visibility, bookKey, bookTitle, bookCover, goalChapter, goalUntil);
+	}
+
+	/**
+	 * Foto nova: só um arquivo que quem edita enviou para a própria pasta de grupos no Storage
+	 * da API ({@code profile-media/<conta>/grupos/<uuid>}), com o {@code ?v=} opcional de cache.
+	 */
+	private String photoUrl(String value, UUID editor) {
+		if (value == null) return null;
+		String prefix = publicApiUrl + "/api/v1/storage/public/profile-media/" + editor + "/grupos/";
+		if (value.length() > 500 || !value.startsWith(prefix)
+				|| !value.substring(prefix.length()).matches("[0-9a-fA-F-]{36}(\\?v=[0-9]{1,15})?")) {
+			throw new AuthException(400, "Foto do grupo inválida.");
+		}
+		return value;
 	}
 
 	private static String pick(Map<String, Object> body, Map<String, Object> current, String field, String column) {
