@@ -34,7 +34,7 @@ import com.storyverse.api.common.DbSession;
 public class FeatureAccessService {
 
 	/** Features que podem ser concedidas hoje. Ao criar outra, inclua aqui. */
-	private static final Set<String> KNOWN = Set.of("library");
+	private static final Set<String> KNOWN = Set.of("library", "groups");
 
 	static final int USERS_PAGE_SIZE = 50;
 

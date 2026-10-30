@@ -69,6 +69,13 @@ public class AccountService {
 				       language, created_at, updated_at, deleted_at
 				  from public.library_entries where user_id = :uid order by updated_at
 				""", Map.of("uid", userId)));
+		// Grupos: as mensagens que a própria conta escreveu, também de grupos que ela deixou.
+		out.put("groupMessages", DbRows.list(jdbc, """
+				select x.id, x.group_id, g.name as group_name, x.body, x.spoiler_chapter, x.created_at, x.deleted_at
+				  from public.chat_messages x
+				  left join public.chat_groups g on g.id = x.group_id
+				 where x.author_id = :uid order by x.id
+				""", Map.of("uid", userId)));
 		return out;
 	}
 
