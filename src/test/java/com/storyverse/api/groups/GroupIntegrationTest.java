@@ -454,4 +454,92 @@ class GroupIntegrationTest {
 		return jdbc.sql("select user_id from public.push_subscriptions where endpoint = :e").param("e", endpoint)
 				.query(UUID.class).optional().orElse(null);
 	}
+
+	/* ------------------------------ Foto e áudio (V38) ------------------------------ */
+
+	@Autowired ChatMediaStore mediaStore;
+
+	static byte[] webp() {
+		byte[] bytes = new byte[600];
+		System.arraycopy("RIFF".getBytes(), 0, bytes, 0, 4);
+		System.arraycopy("WEBPVP8 ".getBytes(), 0, bytes, 8, 8);
+		return bytes;
+	}
+
+	static byte[] webmAudio() {
+		byte[] bytes = new byte[800];
+		bytes[0] = 0x1a;
+		bytes[1] = 0x45;
+		bytes[2] = (byte) 0xdf;
+		bytes[3] = (byte) 0xa3;
+		return bytes;
+	}
+
+	Map<String, Object> sendMedia(String token, UUID group, String kind, String type, byte[] bytes, Map<String, String> extra) {
+		Map<String, String> params = new HashMap<>(extra);
+		params.put("clientId", UUID.randomUUID().toString());
+		return groups.sendMedia(token, group, kind, type, new java.io.ByteArrayInputStream(bytes), params);
+	}
+
+	@Test
+	void photoAndAudioOnlyForMembersAndTheFileGoesAwayWithTheMessage() {
+		String owner = member(), friend = member(), outsider = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(friend, groupId);
+
+		Map<String, Object> photo = sendMedia(owner, groupId, "image", "image/webp", webp(), Map.of("width", "800", "height", "600", "caption", "Olha a *capa*"));
+		assertEquals("image", photo.get("media_kind"));
+		assertEquals(Boolean.TRUE, photo.get("media_available"));
+		assertEquals("Olha a *capa*", photo.get("body"));
+		assertEquals(800, ((Number) photo.get("media_width")).intValue());
+		long photoId = messageId(photo);
+
+		Map<String, Object> audio = sendMedia(friend, groupId, "audio", "audio/webm;codecs=opus", webmAudio(), Map.of("durationMs", "4200"));
+		assertEquals("audio", audio.get("media_kind"));
+		assertNull(audio.get("body"), "áudio sem legenda");
+		assertEquals(4200, ((Number) audio.get("media_duration_ms")).intValue());
+
+		// Membro baixa; quem é de fora não.
+		var file = groups.mediaFile(friend, photoId).orElseThrow();
+		assertEquals("image/webp", file.getValue());
+		assertTrue(java.nio.file.Files.isRegularFile(file.getKey()));
+		assertThrows(AuthException.class, () -> groups.mediaFile(outsider, photoId));
+
+		// Apagar a mensagem apaga o arquivo.
+		groups.deleteMessage(owner, photoId);
+		assertFalse(java.nio.file.Files.exists(file.getKey()));
+		assertTrue(groups.mediaFile(friend, photoId).isEmpty());
+
+		// A lista de grupos mostra que a última foi um áudio.
+		Map<String, Object> mine = groups.myGroups(owner).stream().filter(g -> groupId.equals(g.get("id"))).findFirst().orElseThrow();
+		assertEquals("audio", mine.get("last_media_kind"));
+	}
+
+	@Test
+	void mediaIsValidatedAndExpiresAfterTheDeadline() {
+		String owner = member();
+		UUID groupId = id(newGroup(owner, "private"));
+		// Arquivo que diz ser imagem mas não é; tipo não aceito; áudio longo demais.
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "image", "image/webp", "<html>oi</html>xxxxxxxx".getBytes(), Map.of()));
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "image", "image/svg+xml", webp(), Map.of()));
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "audio", "audio/webm", webmAudio(), Map.of("durationMs", "600000")));
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "image", "image/webp", new byte[(int) ChatMediaStore.MAX_BYTES + 1], Map.of()));
+
+		Map<String, Object> photo = sendMedia(owner, groupId, "image", "image/webp", webp(), Map.of());
+		long photoId = messageId(photo);
+		var file = groups.mediaFile(owner, photoId).orElseThrow().getKey();
+
+		// Venceu: a limpeza solta a referência e apaga o arquivo; a mensagem continua.
+		jdbc.sql("update public.chat_messages set media_expires_at = now() - interval '1 minute' where id = :id").param("id", photoId).update();
+		groups.expireMedia();
+		assertFalse(java.nio.file.Files.exists(file));
+		Map<String, Object> after = groups.messages(owner, groupId, null, null, null).stream()
+				.filter(m -> photoId == messageId(m)).findFirst().orElseThrow();
+		assertEquals("image", after.get("media_kind"));
+		assertEquals(Boolean.FALSE, after.get("media_available"), "mostra mídia expirada");
+		assertTrue(groups.mediaFile(owner, photoId).isEmpty());
+
+		// Mensagem só de texto continua exigindo texto.
+		assertThrows(AuthException.class, () -> groups.send(owner, groupId, Map.of("body", "", "clientId", UUID.randomUUID().toString())));
+	}
 }
