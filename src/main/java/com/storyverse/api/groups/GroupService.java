@@ -239,6 +239,16 @@ public class GroupService {
 		if (lastId > 0) repository.markRead(id, userId, lastId);
 	}
 
+	/** "Fulano está digitando": só vai pelo tempo real, para os outros membros; nada é gravado. */
+	@Transactional(readOnly = true)
+	public void typing(String token, UUID id) {
+		UUID userId = requireUser(token);
+		if (!stream.allowTyping(userId, id, System.currentTimeMillis())) return;
+		activeMembership(id, userId);
+		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(userId)).toList();
+		stream.publish(others, "typing", Map.of("groupId", id, "userId", userId));
+	}
+
 	/* ----------------------------- Mensagens ----------------------------- */
 
 	@Transactional(readOnly = true)

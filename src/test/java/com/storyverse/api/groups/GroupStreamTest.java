@@ -23,4 +23,14 @@ class GroupStreamTest {
 		assertNotNull(extra);
 		assertTrue(stream.online(user));
 	}
+
+	@Test
+	void typingIsThrottledPerPersonAndGroup() {
+		GroupStream stream = new GroupStream();
+		UUID user = UUID.randomUUID(), group = UUID.randomUUID(), other = UUID.randomUUID();
+		assertTrue(stream.allowTyping(user, group, 1_000));
+		assertFalse(stream.allowTyping(user, group, 2_000), "dentro do intervalo não repete");
+		assertTrue(stream.allowTyping(user, other, 2_000), "outro grupo é outro aviso");
+		assertTrue(stream.allowTyping(user, group, 1_000 + GroupStream.TYPING_INTERVAL_MS));
+	}
 }

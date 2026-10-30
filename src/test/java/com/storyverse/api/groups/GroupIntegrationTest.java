@@ -131,6 +131,14 @@ class GroupIntegrationTest {
 	}
 
 	@Test
+	void typingOnlyForMembers() {
+		String owner = member(), stranger = member();
+		UUID groupId = id(newGroup(owner, "private"));
+		assertDoesNotThrow(() -> groups.typing(owner, groupId));
+		assertThrows(AuthException.class, () -> groups.typing(stranger, groupId));
+	}
+
+	@Test
 	void privateGroupNeedsInviteAndResendIsIdempotent() {
 		String owner = member(), friend = member();
 		Map<String, Object> group = newGroup(owner, "private");
