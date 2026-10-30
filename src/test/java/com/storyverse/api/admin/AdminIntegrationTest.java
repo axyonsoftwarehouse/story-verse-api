@@ -897,7 +897,7 @@ class AdminIntegrationTest {
     features.grant(admin,id(user()),"library",false);
     assertEquals(before+1,libraryCount(bearer,false,admin));
     assertEquals(before+1,libraryCount(bearer,true,admin));
-    assertEquals(Set.of("library"),FeatureAccessService.known());
+    assertEquals(Set.of("library","groups"),FeatureAccessService.known());
     assertEquals(before+1,features.catalog(admin).stream().filter(e->e.feature().equals("library")).findFirst().orElseThrow().enabledCount());
   }
   @Test void featureUsersPaginates() throws Exception {
