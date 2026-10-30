@@ -33,6 +33,8 @@ class BillingAccessFilterTest {
 		assertTrue(BillingAccessFilter.exempt("GET", "/api/v1/account"));
 		assertTrue(BillingAccessFilter.exempt("GET", "/api/v1/admin/contas"));
 		assertTrue(BillingAccessFilter.exempt("GET", "/api/v1/storage/public/profile-media/a"));
+		assertTrue(BillingAccessFilter.exempt("GET", "/api/v1/push/key"));
+		assertTrue(BillingAccessFilter.exempt("POST", "/api/v1/push/subscriptions"));
 	}
 
 	@Test
