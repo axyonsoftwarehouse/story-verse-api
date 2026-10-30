@@ -70,7 +70,7 @@ app:
   features:
     # Recursos ligados para todas as contas, sem concessão por conta (lista separada por vírgula).
     # Vazio volta ao controle por conta no painel (aba "Recursos em teste").
-    everyone: ${FEATURES_FOR_EVERYONE:library}
+    everyone: ${FEATURES_FOR_EVERYONE:library,groups}
   billing:
     # Desligado no beta: o paywall só entra quando a flag estiver true.
     enabled: ${BILLING_ENABLED:false}
