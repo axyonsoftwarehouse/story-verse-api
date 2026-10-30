@@ -89,7 +89,10 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 		if (path.startsWith("/api/v1/auth/") || path.startsWith("/api/v1/billing/")
 				|| path.startsWith("/api/v1/account") || path.startsWith("/api/v1/health")
 				|| path.startsWith("/api/v1/presence") || path.startsWith("/api/v1/storage/public/")
-				|| path.startsWith("/api/v1/admin/") || path.equals("/api/v1/ai/status")) {
+				|| path.startsWith("/api/v1/admin/") || path.equals("/api/v1/ai/status")
+				// Notificação no celular: a chave pública é aberta e a inscrição confere a conta no
+				// serviço (sair da conta também precisa cancelar a inscrição sem assinatura ativa).
+				|| path.startsWith("/api/v1/push/")) {
 			return true;
 		}
 		if ("GET".equals(method) && path.startsWith("/api/v1/community/submissions")) {
