@@ -36,12 +36,12 @@ public class GroupRepository {
 			                                 limit 100) unread)
 			       else 0 end as unread,
 			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_code end as invite_code,
-			       lm.id as last_message_id, lm.author_name as last_author_name,
+			       lm.id as last_message_id, lm.author_name as last_author_name, lm.media_kind as last_media_kind,
 			       case when lm.spoiler_chapter is not null then null else left(lm.body, 120) end as last_body
 			  from public.chat_groups g
 			  left join public.chat_members m on m.group_id = g.id and m.user_id = :viewer
 			  left join lateral (
-			    select x.id, x.body, x.spoiler_chapter, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name
+			    select x.id, x.body, x.spoiler_chapter, x.media_kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name
 			      from public.chat_messages x
 			      join auth.users u on u.id = x.author_id
 			     where x.group_id = g.id and x.deleted_at is null
@@ -60,6 +60,9 @@ public class GroupRepository {
 			            when x.author_id <> :viewer and hidden.n >= %d then null
 			            else x.body end as body,
 			       x.spoiler_chapter, x.reply_to, x.client_id, x.created_at,
+			       x.media_kind, x.media_mime, x.media_duration_ms, x.media_width, x.media_height, x.media_expires_at,
+			       (x.media_path is not null and x.deleted_at is null
+			        and not (x.author_id <> :viewer and hidden.n >= %d)) as media_available,
 			       x.deleted_at is not null as deleted,
 			       (x.deleted_at is null and x.author_id <> :viewer and hidden.n >= %d) as hidden
 			  from public.chat_messages x
@@ -68,7 +71,7 @@ public class GroupRepository {
 			    select count(distinct r.reporter_id) as n from public.chat_reports r
 			     where r.message_id = x.id and r.status = 'pending'
 			  ) hidden
-			""".formatted(AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS);
+			""".formatted(AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS);
 
 	private final JdbcClient jdbc;
 	/**
@@ -343,13 +346,32 @@ public class GroupRepository {
 	}
 
 	public long insertMessage(UUID groupId, UUID author, String body, Integer spoilerChapter, Long replyTo, UUID clientId) {
+		return insertMessage(groupId, author, body, spoilerChapter, replyTo, clientId, null);
+	}
+
+	/** Dados da foto/áudio de uma mensagem (o arquivo fica no {@link ChatMediaStore}). */
+	record Media(String kind, String path, String mime, long bytes, Integer durationMs, Integer width, Integer height,
+			java.time.OffsetDateTime expiresAt) {
+	}
+
+	public long insertMessage(UUID groupId, UUID author, String body, Integer spoilerChapter, Long replyTo, UUID clientId, Media media) {
 		long id = jdbc.sql("""
-				insert into public.chat_messages (group_id, author_id, body, spoiler_chapter, reply_to, client_id)
-				values (:group, :author, :body, :spoiler, :reply, :client)
+				insert into public.chat_messages (group_id, author_id, body, spoiler_chapter, reply_to, client_id,
+				  media_kind, media_path, media_mime, media_bytes, media_duration_ms, media_width, media_height, media_expires_at)
+				values (:group, :author, :body, :spoiler, :reply, :client,
+				  :kind, :path, :mime, :bytes, :duration, :width, :height, :expires)
 				returning id
 				""")
 				.param("group", groupId).param("author", author).param("body", body)
 				.param("spoiler", spoilerChapter).param("reply", replyTo).param("client", clientId)
+				.param("kind", media == null ? null : media.kind())
+				.param("path", media == null ? null : media.path())
+				.param("mime", media == null ? null : media.mime())
+				.param("bytes", media == null ? null : (int) media.bytes())
+				.param("duration", media == null ? null : media.durationMs())
+				.param("width", media == null ? null : media.width())
+				.param("height", media == null ? null : media.height())
+				.param("expires", media == null ? null : media.expiresAt())
 				.query(Long.class).single();
 		// Quem escreve já leu até a própria mensagem.
 		jdbc.sql("update public.chat_members set last_read_id = :id where group_id = :group and user_id = :author")
@@ -358,8 +380,23 @@ public class GroupRepository {
 	}
 
 	public void softDeleteMessage(long id, UUID by) {
-		jdbc.sql("update public.chat_messages set deleted_at = now(), deleted_by = :by where id = :id and deleted_at is null")
-				.param("id", id).param("by", by).update();
+		jdbc.sql("""
+				update public.chat_messages set deleted_at = now(), deleted_by = :by, media_path = null
+				 where id = :id and deleted_at is null
+				""").param("id", id).param("by", by).update();
+	}
+
+	/** Arquivo da foto/áudio de uma mensagem (vazio: sem mídia, apagada ou vencida). */
+	public Optional<Map<String, Object>> mediaFile(long id) {
+		return DbRows.one(jdbc, """
+				select group_id, author_id, media_path, media_mime, deleted_at from public.chat_messages
+				 where id = :id and media_path is not null and deleted_at is null
+				""", Map.of("id", id));
+	}
+
+	/** Solta as mídias vencidas e devolve os caminhos para apagar do disco. */
+	public List<String> expireMedia() {
+		return jdbc.sql("select media_path from public.chat_expire_media()").query(String.class).list();
 	}
 
 	public void addReaction(long messageId, UUID userId, String emoji) {

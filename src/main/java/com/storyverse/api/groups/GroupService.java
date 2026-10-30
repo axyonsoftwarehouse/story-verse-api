@@ -1,6 +1,10 @@
 package com.storyverse.api.groups;
 
+import java.io.InputStream;
+import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
@@ -8,6 +12,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -15,9 +20,12 @@ import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -60,11 +68,15 @@ public class GroupService {
 	private final RateLimitGate limits;
 	private final TransactionTemplate transactions;
 	private final PushService push;
+	private final ChatMediaStore media;
+	/** Fotos e áudios por pessoa por dia (o disco fica pequeno de qualquer jeito, mas sem abuso). */
+	static final int MEDIA_PER_DAY = 40;
+	static final int MAX_AUDIO_MS = 125_000;
 	/** Endereço público da API: a foto do grupo precisa ser um arquivo do Storage dela. */
 	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push,
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -76,6 +88,7 @@ public class GroupService {
 		this.limits = limits;
 		this.transactions = new TransactionTemplate(transactions);
 		this.push = push;
+		this.media = media;
 		stream.onPresence(this::presenceChanged);
 	}
 
@@ -318,6 +331,79 @@ public class GroupService {
 		return message;
 	}
 
+	/**
+	 * Foto ou áudio: o arquivo vem no corpo (já comprimido pelo celular), a mensagem é criada junto
+	 * e o arquivo vence em {@link ChatMediaStore#TTL}. Reenvio com o mesmo clientId não duplica.
+	 */
+	@Transactional
+	public Map<String, Object> sendMedia(String token, UUID id, String kind, String contentType, InputStream body,
+			Map<String, String> params) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		UUID clientId = uuid(params.get("clientId"));
+		if (clientId == null) throw new AuthException(400, "Mensagem sem identificador.");
+		var existing = repository.messageByClientId(userId, clientId);
+		if (existing.isPresent()) {
+			return repository.message(userId, existing.get()).orElseThrow(() -> new AuthException(500, "Mensagem não encontrada."));
+		}
+		String mime = ChatMediaStore.mime(kind, contentType);
+		String caption = text(params.get("caption"));
+		if (caption != null && caption.length() > 1000) throw new AuthException(400, "Legenda grande demais.");
+		Integer spoiler = optionalInt(params.get("spoilerChapter"), 1, 10000, "Capítulo do spoiler inválido.");
+		Integer duration = "audio".equals(kind) ? optionalInt(params.get("durationMs"), 0, MAX_AUDIO_MS, "Áudio de no máximo 2 minutos.") : null;
+		Integer width = "image".equals(kind) ? optionalInt(params.get("width"), 1, 10000, "Largura inválida.") : null;
+		Integer height = "image".equals(kind) ? optionalInt(params.get("height"), 1, 10000, "Altura inválida.") : null;
+		String reply = params.get("replyTo");
+		Long replyTo = reply == null || reply.isBlank() ? null : longValue(reply);
+		if (replyTo != null) {
+			Map<String, Object> parent = repository.messageState(replyTo)
+					.orElseThrow(() -> new AuthException(400, "Mensagem respondida não encontrada."));
+			if (!id.equals(parent.get("group_id"))) throw new AuthException(400, "A mensagem respondida é de outro grupo.");
+		}
+		limits.check("group-message:" + userId, 20, Duration.ofMinutes(1));
+		limits.check("group-media:" + userId, MEDIA_PER_DAY, Duration.ofDays(1));
+		ChatMediaStore.Stored stored = media.write(id, mime, body);
+		// Se a transação não fechar, o arquivo não pode ficar para trás.
+		TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+			@Override
+			public void afterCompletion(int status) {
+				if (status != STATUS_COMMITTED) media.remove(stored.path());
+			}
+		});
+		long messageId = repository.insertMessage(id, userId, caption, spoiler, replyTo, clientId,
+				new GroupRepository.Media(kind, stored.path(), mime, stored.bytes(), duration, width, height,
+						OffsetDateTime.now().plus(ChatMediaStore.TTL)));
+		Map<String, Object> message = repository.message(userId, messageId)
+				.orElseThrow(() -> new AuthException(500, "Mensagem não gravada."));
+		stream.publish(repository.activeMemberIds(id), "message", publicView(message));
+		String label = "image".equals(kind) ? "📷 Foto" : "🎤 Áudio";
+		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
+				spoiler != null ? "🙈 mensagem com spoiler" : caption == null ? label : label + ": " + preview(caption));
+		return message;
+	}
+
+	/** Arquivo de uma foto/áudio: só para quem é membro do grupo, enquanto não venceu. */
+	@Transactional(readOnly = true)
+	public Optional<Map.Entry<Path, String>> mediaFile(String token, long messageId) {
+		UUID userId = requireUser(token);
+		Map<String, Object> row = repository.mediaFile(messageId).orElse(null);
+		if (row == null) return Optional.empty();
+		activeMembership(UUID.fromString(String.valueOf(row.get("group_id"))), userId);
+		return media.file(String.valueOf(row.get("media_path"))).map(path -> Map.entry(path, String.valueOf(row.get("media_mime"))));
+	}
+
+	/** A cada 10 minutos: apaga do disco as fotos e áudios vencidos (e o que sobrou órfão). */
+	@Scheduled(fixedRate = 600_000, initialDelay = 60_000)
+	public void expireMedia() {
+		try {
+			List<String> expired = transactions.execute(status -> repository.expireMedia());
+			if (expired != null) expired.forEach(media::remove);
+			media.sweep(Instant.now());
+		} catch (RuntimeException exception) {
+			// Tenta de novo na próxima rodada.
+		}
+	}
+
 	@Transactional
 	public void deleteMessage(String token, long messageId) {
 		UUID userId = requireUser(token);
@@ -335,6 +421,7 @@ public class GroupService {
 		} else if (author && !staff) {
 			activeMembership(groupId, userId);
 		}
+		repository.mediaFile(messageId).ifPresent(row -> media.removeAfterCommit(String.valueOf(row.get("media_path"))));
 		repository.softDeleteMessage(messageId, userId);
 		if (staff && !author) {
 			authz.audit(userId, "group.message.delete", "chat_message", String.valueOf(messageId), Map.of("groupId", groupId.toString()));
