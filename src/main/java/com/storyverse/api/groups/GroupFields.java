@@ -5,6 +5,7 @@ record GroupFields(
 		String name,
 		String description,
 		String photoUrl,
+		String background,
 		String visibility,
 		String bookKey,
 		String bookTitle,
