@@ -127,6 +127,14 @@ public class GroupController {
 		service.markRead(AuthTokens.bearer(authorization), id, body);
 	}
 
+	@PostMapping("/{id}/typing")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void typing(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.typing(AuthTokens.bearer(authorization), id);
+	}
+
 	@DeleteMapping("/{id}/members/{userId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void removeMember(

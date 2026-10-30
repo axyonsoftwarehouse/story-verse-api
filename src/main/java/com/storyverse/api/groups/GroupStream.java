@@ -25,8 +25,11 @@ public class GroupStream {
 
 	static final int MAX_CONNECTIONS = 400;
 	static final int MAX_PER_USER = 4;
+	/** O "digitando" vale por alguns segundos no cliente: um aviso por pessoa e grupo nesse intervalo basta. */
+	static final long TYPING_INTERVAL_MS = 2_500;
 
 	private final Map<UUID, Deque<SseEmitter>> users = new ConcurrentHashMap<>();
+	private final Map<String, Long> typing = new ConcurrentHashMap<>();
 
 	public synchronized SseEmitter connect(UUID userId) {
 		int total = users.values().stream().mapToInt(Deque::size).sum();
@@ -51,6 +54,16 @@ public class GroupStream {
 	public boolean online(UUID userId) {
 		Deque<SseEmitter> emitters = users.get(userId);
 		return emitters != null && !emitters.isEmpty();
+	}
+
+	/** Se este aviso de "digitando" deve sair (no máximo um a cada {@link #TYPING_INTERVAL_MS} por pessoa e grupo). */
+	public boolean allowTyping(UUID userId, UUID groupId, long nowMs) {
+		if (typing.size() > 10_000) typing.values().removeIf(at -> nowMs - at > TYPING_INTERVAL_MS);
+		String key = userId + ":" + groupId;
+		Long last = typing.get(key);
+		if (last != null && nowMs - last < TYPING_INTERVAL_MS) return false;
+		typing.put(key, nowMs);
+		return true;
 	}
 
 	/** Envia para cada conta da lista que está conectada, depois do commit da transação atual. */
