@@ -53,6 +53,8 @@ public class RpcService {
 				}
 				case "weekly_ranking" -> DbRows.list(jdbc, "select * from public.weekly_ranking(p_offset => :offset, p_limit => :limit)",
 						Map.of("offset", intArg(args, "p_offset", 0), "limit", intArg(args, "p_limit", 50)));
+				case "alltime_ranking" -> DbRows.list(jdbc, "select * from public.alltime_ranking(p_limit => :limit)",
+						Map.of("limit", intArg(args, "p_limit", 50)));
 				case "my_ranking_profile" -> DbRows.list(jdbc, "select * from public.my_ranking_profile()", Map.of());
 				case "my_weekly_awards" -> DbRows.list(jdbc, "select * from public.my_weekly_awards()", Map.of());
 				case "gift_rules" -> DbRows.list(jdbc, "select * from public.gift_rules()", Map.of());

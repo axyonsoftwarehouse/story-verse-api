@@ -355,6 +355,18 @@ class SecurityIntegrationTest {
     assertEquals(600,jdbc.sql("select seconds from public.reading_days where user_id=:uid and day=cast(:day as date)").param("uid",uid).param("day",day).query(Integer.class).single());
     assertTrue(jdbc.sql("select count(*) from public.diamond_ledger where user_id=:uid and reason='ranking'").param("uid",uid).query(Integer.class).single()<=1);
   }
+  /** V32: o ranking geral soma semanas antigas e respeita quem se escondeu. */
+  @Test void alltimeRankingSumsEveryWeekAndHidesHiddenReaders() {
+    AuthResponse session=user();UUID uid=id(session);
+    jdbc.sql("insert into public.reading_days(user_id,day,seconds) values(:uid,public.ranking_week_start(0)-60,600),(:uid,public.ranking_week_start(0),300)").param("uid",uid).update();
+    rpc.call(uid,"report_reading",Map.of("p_days",Map.of()));
+    @SuppressWarnings("unchecked") List<Map<String,Object>> rows=(List<Map<String,Object>>)rpc.call(uid,"alltime_ranking",Map.of("p_limit",3));
+    Map<String,Object> me=rows.stream().filter(r->Boolean.TRUE.equals(r.get("is_me"))).findFirst().orElseThrow();
+    assertEquals(15,((Number)me.get("minutes")).intValue());
+    rpc.call(uid,"set_ranking_hidden",Map.of("p_hidden",true));
+    @SuppressWarnings("unchecked") List<Map<String,Object>> hidden=(List<Map<String,Object>>)rpc.call(uid,"alltime_ranking",Map.of());
+    assertTrue(hidden.stream().noneMatch(r->uid.toString().equals(String.valueOf(r.get("user_id")))));
+  }
   @Test void approvalRejectsSubmissionPointingToAnotherAuthorsFolder() {
     AuthResponse author=user(), victim=user(), admin=user();
     jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
