@@ -16,6 +16,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.AuthException;
@@ -53,6 +55,15 @@ class GroupIntegrationTest {
 	@Autowired GroupService groups;
 	@Autowired AccountService account;
 	@Autowired JdbcClient jdbc;
+	@Autowired PlatformTransactionManager transactions;
+
+	/** Roda com o papel de runtime da VPS (sem superusuário): a RLS vale de verdade. */
+	<T> T asRuntime(java.util.function.Supplier<T> action) {
+		return new TransactionTemplate(transactions).execute(status -> {
+			jdbc.sql("set local role storyverse_api").update();
+			return action.get();
+		});
+	}
 
 	/** Conta com a feature de grupos e com mais de 24 h (pode criar grupo público). */
 	String member() {
@@ -136,6 +147,39 @@ class GroupIntegrationTest {
 		UUID groupId = id(newGroup(owner, "private"));
 		assertDoesNotThrow(() -> groups.typing(owner, groupId));
 		assertThrows(AuthException.class, () -> groups.typing(stranger, groupId));
+	}
+
+	/**
+	 * Quem ainda não é membro não enxerga o grupo privado pela RLS: o convite precisa achar o
+	 * grupo mesmo assim (era o "convite inválido ou expirado" em produção), e o limite de membros
+	 * precisa contar todo mundo, não só a linha da própria conta.
+	 */
+	@Test
+	void inviteWorksUnderTheRuntimeRoleForSomeoneOutsideTheGroup() {
+		String owner = member(), friend = member(), late = member();
+		Map<String, Object> group = newGroup(owner, "private");
+		UUID groupId = id(group);
+		String code = String.valueOf(group.get("invite_code"));
+		Map<String, Object> joined = asRuntime(() -> groups.joinByInvite(friend, code));
+		assertEquals(groupId, joined.get("id"));
+		assertEquals(Boolean.TRUE, joined.get("is_member"));
+		assertEquals(2, ((List<?>) joined.get("members")).size());
+		assertThrows(AuthException.class, () -> asRuntime(() -> groups.joinByInvite(late, "codigo-que-nao-existe-123")));
+
+		// Grupo cheio: quem chega de fora também é barrado.
+		for (int i = 0; i < GroupService.MAX_MEMBERS - 2; i++) {
+			jdbc.sql("insert into auth.users (id, email) values (:id, :email)")
+					.param("id", UUID.randomUUID()).param("email", UUID.randomUUID() + "@example.invalid").update();
+		}
+		jdbc.sql("""
+				insert into public.chat_members (group_id, user_id, role)
+				select :group, id, 'member' from auth.users
+				 where id not in (select user_id from public.chat_members where group_id = :group)
+				   and id <> :late
+				 limit :n
+				""").param("group", groupId).param("late", idOf(late)).param("n", GroupService.MAX_MEMBERS - 2).update();
+		AuthException full = assertThrows(AuthException.class, () -> asRuntime(() -> groups.joinByInvite(late, code)));
+		assertEquals(409, full.status());
 	}
 
 	@Test
