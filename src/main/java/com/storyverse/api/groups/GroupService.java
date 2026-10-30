@@ -411,9 +411,10 @@ public class GroupService {
 			throw new AuthException(409, "Você já está no número máximo de grupos.");
 		}
 		limits.check("group-join:" + userId, 20, Duration.ofHours(1));
-		List<UUID> before = repository.activeMemberIds(id);
 		repository.addMember(id, userId);
-		stream.publish(before, "group", Map.of("groupId", id, "type", "member_joined", "userId", userId));
+		// Só depois de entrar a conta enxerga os outros membros (RLS) para avisá-los.
+		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(userId)).toList();
+		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", userId));
 		return group(userId, id);
 	}
 

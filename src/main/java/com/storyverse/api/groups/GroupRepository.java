@@ -106,7 +106,7 @@ public class GroupRepository {
 
 	public Optional<Map<String, Object>> groupByInvite(String code) {
 		return DbRows.one(jdbc, """
-				select id, visibility from public.chat_groups where invite_code = :code and deleted_at is null
+				select id, visibility from public.chat_group_by_invite(:code)
 				""", Map.of("code", code));
 	}
 
@@ -140,7 +140,8 @@ public class GroupRepository {
 	}
 
 	public int countMembers(UUID groupId) {
-		return jdbc.sql("select count(*) from public.chat_members where group_id = :group and banned_at is null")
+		// Função security definer: quem ainda está de fora só veria a própria linha pela RLS.
+		return jdbc.sql("select public.chat_member_count(:group)")
 				.param("group", groupId).query(Integer.class).single();
 	}
 
