@@ -62,4 +62,12 @@ class GroupStreamTest {
 		assertEquals(List.of("online", "offline"), events);
 		assertFalse(stream.online(user));
 	}
+
+	@Test
+	void pushPreviewDropsTheFormattingMarks() {
+		assertEquals("Ana disse oi e tchau", GroupService.preview("*Ana* disse _oi_ ~e~ tchau"));
+		assertEquals("tudo junto", GroupService.preview("*tudo _junto_*"));
+		assertEquals("2*3*4", GroupService.preview("2*3*4"));
+		assertEquals(140, GroupService.preview("a".repeat(500)).length());
+	}
 }

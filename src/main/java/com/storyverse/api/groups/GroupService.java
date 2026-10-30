@@ -27,6 +27,7 @@ import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.common.RateLimitGate;
 import com.storyverse.api.feature.FeatureAccessService;
+import com.storyverse.api.push.PushService;
 
 /**
  * Grupos com chat (docs/SPEC_GRUPOS.md no story-verse-web). Todas as rotas exigem conta e a
@@ -58,11 +59,12 @@ public class GroupService {
 	private final JdbcClient jdbc;
 	private final RateLimitGate limits;
 	private final TransactionTemplate transactions;
+	private final PushService push;
 	/** Endereço público da API: a foto do grupo precisa ser um arquivo do Storage dela. */
 	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions,
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -73,6 +75,7 @@ public class GroupService {
 		this.jdbc = jdbc;
 		this.limits = limits;
 		this.transactions = new TransactionTemplate(transactions);
+		this.push = push;
 		stream.onPresence(this::presenceChanged);
 	}
 
@@ -310,6 +313,8 @@ public class GroupService {
 		Map<String, Object> message = repository.message(userId, messageId)
 				.orElseThrow(() -> new AuthException(500, "Mensagem não gravada."));
 		stream.publish(repository.activeMemberIds(id), "message", publicView(message));
+		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
+				spoiler != null ? "🙈 mensagem com spoiler" : preview(text));
 		return message;
 	}
 
@@ -492,6 +497,19 @@ public class GroupService {
 
 	private static boolean isMember(Map<String, Object> group) {
 		return Boolean.TRUE.equals(group.get("is_member"));
+	}
+
+	/** Mesma regra do app (lib/groups.ts FORMAT_MARK): marcador encostado no texto, na mesma linha. */
+	private static final Pattern FORMAT_MARK = Pattern.compile(
+			"(^|[\\s(\\[{\"'“‘])([*_~])(?!\\s)([^\\n]*?\\S)\\2(?=$|[\\s.,!?;:)\\]}\"'”’…])");
+
+	/** Texto do aviso no celular: sem os marcadores de negrito, itálico e riscado, e curto. */
+	static String preview(String text) {
+		String plain = text;
+		// Duas passadas: um marcador dentro do outro.
+		for (int i = 0; i < 2; i++) plain = FORMAT_MARK.matcher(plain).replaceAll("$1$3");
+		plain = plain.replaceAll("\\s+", " ").trim();
+		return plain.length() > 140 ? plain.substring(0, 139) + "…" : plain;
 	}
 
 	/** O evento vai para todos os membros: sem os campos que dependem de quem pediu. */
