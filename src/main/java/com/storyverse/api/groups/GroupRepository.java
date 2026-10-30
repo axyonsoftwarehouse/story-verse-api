@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -53,6 +54,8 @@ public class GroupRepository {
 			select x.id, x.group_id, x.author_id,
 			       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name,
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as author_avatar,
+			       case when starts_with(u.raw_user_meta_data->>'photo', :media || x.author_id::text || '/')
+			            then u.raw_user_meta_data->>'photo' end as author_photo,
 			       case when x.deleted_at is not null then null
 			            when x.author_id <> :viewer and hidden.n >= %d then null
 			            else x.body end as body,
@@ -68,9 +71,17 @@ public class GroupRepository {
 			""".formatted(AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS);
 
 	private final JdbcClient jdbc;
+	/**
+	 * Começo do endereço das fotos de perfil no Storage da API. A foto do perfil aceita qualquer
+	 * URL; nos grupos só sai a que é um arquivo da própria pasta da pessoa (uma URL de fora
+	 * serviria para rastrear quem abre a conversa).
+	 */
+	private final String media;
 
-	public GroupRepository(JdbcClient jdbc) {
+	public GroupRepository(JdbcClient jdbc,
+			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.jdbc = jdbc;
+		this.media = publicApiUrl.trim().replaceAll("/+$", "") + "/api/v1/storage/public/profile-media/";
 	}
 
 	public List<Map<String, Object>> myGroups(UUID viewer) {
@@ -259,6 +270,8 @@ public class GroupRepository {
 				select m.user_id, m.role, m.joined_at,
 				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
+				       case when starts_with(u.raw_user_meta_data->>'photo', :media || m.user_id::text || '/')
+				            then u.raw_user_meta_data->>'photo' end as photo,
 				       e.progress_percent, e.status as book_status
 				  from public.chat_members m
 				  join auth.users u on u.id = m.user_id
@@ -266,7 +279,18 @@ public class GroupRepository {
 				 where m.group_id = :group and m.banned_at is null
 				 order by case m.role when 'owner' then 0 when 'moderator' then 1 else 2 end, m.joined_at
 				 limit 200
-				""", Map.of("group", groupId));
+				""", Map.of("group", groupId, "media", media));
+	}
+
+	/** Quem divide algum grupo com a conta (para o aviso de online). Precisa de app.user_id. */
+	public List<UUID> coMemberIds(UUID userId) {
+		return jdbc.sql("""
+				select distinct o.user_id
+				  from public.chat_members m
+				  join public.chat_groups g on g.id = m.group_id and g.deleted_at is null
+				  join public.chat_members o on o.group_id = m.group_id and o.banned_at is null
+				 where m.user_id = :user and m.banned_at is null and o.user_id <> :user
+				""").param("user", userId).query(UUID.class).list();
 	}
 
 	public List<UUID> activeMemberIds(UUID groupId) {
@@ -280,6 +304,7 @@ public class GroupRepository {
 		params.put("viewer", viewer);
 		params.put("group", groupId);
 		params.put("limit", limit);
+		params.put("media", media);
 		if (after != null) {
 			// Reconexão: o que chegou depois do último visto, do mais antigo para o mais novo.
 			sql.append(" and x.id > :after order by x.id asc limit :limit");
@@ -297,7 +322,7 @@ public class GroupRepository {
 	}
 
 	public Optional<Map<String, Object>> message(UUID viewer, long id) {
-		return DbRows.one(jdbc, MESSAGE_ROW + " where x.id = :id", Map.of("viewer", viewer, "id", id))
+		return DbRows.one(jdbc, MESSAGE_ROW + " where x.id = :id", Map.of("viewer", viewer, "id", id, "media", media))
 				.map(row -> withReactions(viewer, List.of(row)).get(0));
 	}
 

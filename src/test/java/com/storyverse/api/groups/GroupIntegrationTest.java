@@ -258,6 +258,32 @@ class GroupIntegrationTest {
 		assertNull(deleted.get("body"));
 	}
 
+	/** A foto do perfil aparece no chat só se for um arquivo da própria pasta no Storage. */
+	@Test
+	void profilePhotoOnlyFromTheOwnStorageFolder() {
+		String owner = member(), outsider = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(outsider, groupId);
+		String mine = "https://api.example.test/api/v1/storage/public/profile-media/" + idOf(owner) + "/avatar?v=1";
+		setPhoto(owner, mine);
+		setPhoto(outsider, "https://rastreador.example/pixel.png");
+		send(owner, groupId, "com foto");
+		send(outsider, groupId, "foto de fora");
+
+		List<Map<String, Object>> messages = groups.messages(owner, groupId, null, null, null);
+		assertEquals(mine, messages.get(0).get("author_photo"));
+		assertNull(messages.get(1).get("author_photo"));
+		@SuppressWarnings("unchecked")
+		List<Map<String, Object>> members = (List<Map<String, Object>>) groups.group(owner, groupId).get("members");
+		assertEquals(mine, members.stream().filter(m -> idOf(owner).equals(m.get("user_id"))).findFirst().orElseThrow().get("photo"));
+		assertNull(members.stream().filter(m -> idOf(outsider).equals(m.get("user_id"))).findFirst().orElseThrow().get("photo"));
+	}
+
+	void setPhoto(String token, String url) {
+		jdbc.sql("update auth.users set raw_user_meta_data = raw_user_meta_data || jsonb_build_object('photo', :url) where id = :id")
+				.param("url", url).param("id", idOf(token)).update();
+	}
+
 	@Test
 	void newAccountsOnlyCreatePrivateGroupsAndExportHasMessages() throws Exception {
 		AuthResponse session = (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID() + "@example.invalid", "test-secret", "Nova"));

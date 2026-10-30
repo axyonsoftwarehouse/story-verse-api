@@ -33,4 +33,33 @@ class GroupStreamTest {
 		assertTrue(stream.allowTyping(user, other, 2_000), "outro grupo é outro aviso");
 		assertTrue(stream.allowTyping(user, group, 1_000 + GroupStream.TYPING_INTERVAL_MS));
 	}
+
+	@Test
+	void presenceGoesOnlineOnceAndOfflineOnlyAfterTheGrace() {
+		GroupStream stream = new GroupStream();
+		List<String> events = new ArrayList<>();
+		stream.onPresence((user, online) -> events.add(online ? "online" : "offline"));
+		UUID user = UUID.randomUUID();
+
+		SseEmitter first = stream.connect(user);
+		SseEmitter second = stream.connect(user);
+		assertEquals(List.of("online"), events, "segunda aba não repete o aviso");
+
+		stream.leave(user, first);
+		stream.leave(user, second);
+		long left = System.currentTimeMillis();
+		assertTrue(stream.online(user), "caiu agora: ainda conta como online");
+		stream.flushOffline(left + GroupStream.OFFLINE_GRACE_MS / 2);
+		assertEquals(List.of("online"), events);
+
+		// Voltou dentro da tolerância: nada pisca.
+		SseEmitter back = stream.connect(user);
+		stream.flushOffline(left + GroupStream.OFFLINE_GRACE_MS * 2);
+		assertEquals(List.of("online"), events);
+
+		stream.leave(user, back);
+		stream.flushOffline(System.currentTimeMillis() + GroupStream.OFFLINE_GRACE_MS + 1);
+		assertEquals(List.of("online", "offline"), events);
+		assertFalse(stream.online(user));
+	}
 }
