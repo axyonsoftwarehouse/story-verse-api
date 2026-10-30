@@ -1,10 +1,16 @@
 package com.storyverse.api.groups;
 
+import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,7 +26,10 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthTokens;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 /** Grupos com chat. Todas as rotas exigem conta e a feature {@code groups}. */
 @RestController
@@ -170,6 +179,34 @@ public class GroupController {
 			@RequestBody Map<String, Object> body,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		return service.send(AuthTokens.bearer(authorization), id, body);
+	}
+
+	/** Foto ou áudio: o arquivo no corpo (Content-Type do arquivo) e os dados na URL. */
+	@PostMapping("/{id}/media")
+	@ResponseStatus(HttpStatus.CREATED)
+	public Map<String, Object> sendMedia(
+			@PathVariable UUID id,
+			@RequestParam String kind,
+			@RequestParam Map<String, String> params,
+			@RequestHeader(value = "Content-Type", required = false) String contentType,
+			HttpServletRequest request,
+			@RequestHeader(value = "Authorization", required = false) String authorization) throws IOException {
+		return service.sendMedia(AuthTokens.bearer(authorization), id, kind, contentType, request.getInputStream(), params);
+	}
+
+	/** O arquivo de uma foto/áudio, só para membros. 404 depois que venceu. */
+	@GetMapping("/media/{messageId}")
+	public ResponseEntity<Resource> media(
+			@PathVariable long messageId,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		var file = service.mediaFile(AuthTokens.bearer(authorization), messageId)
+				.orElseThrow(() -> new AuthException(404, "Esta mídia já expirou."));
+		return ResponseEntity.ok()
+				.contentType(MediaType.parseMediaType(file.getValue()))
+				// O arquivo nunca muda: o celular guarda e não baixa de novo.
+				.cacheControl(CacheControl.maxAge(Duration.ofDays(1)).cachePrivate().immutable())
+				.header("X-Content-Type-Options", "nosniff")
+				.body(new FileSystemResource(file.getKey()));
 	}
 
 	@DeleteMapping("/messages/{messageId}")

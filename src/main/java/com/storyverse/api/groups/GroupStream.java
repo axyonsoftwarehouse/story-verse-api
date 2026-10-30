@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.function.BiConsumer;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -27,11 +28,31 @@ public class GroupStream {
 	static final int MAX_PER_USER = 4;
 	/** O "digitando" vale por alguns segundos no cliente: um aviso por pessoa e grupo nesse intervalo basta. */
 	static final long TYPING_INTERVAL_MS = 2_500;
+	/**
+	 * A conexão cai e volta sozinha (vida finita, troca de tela, rede): só avisa que a pessoa saiu
+	 * se ela não voltar dentro deste tempo, para a bolinha de online não piscar.
+	 */
+	static final long OFFLINE_GRACE_MS = 20_000;
 
 	private final Map<UUID, Deque<SseEmitter>> users = new ConcurrentHashMap<>();
 	private final Map<String, Long> typing = new ConcurrentHashMap<>();
+	/** Contas sem conexão aberta, desde quando (ainda dentro do tempo de tolerância). */
+	private final Map<UUID, Long> leaving = new ConcurrentHashMap<>();
+	private volatile BiConsumer<UUID, Boolean> presence = (user, online) -> {};
 
-	public synchronized SseEmitter connect(UUID userId) {
+	/** Quem avisa os outros membros quando a conta entra ou sai (fora de qualquer trava daqui). */
+	public void onPresence(BiConsumer<UUID, Boolean> listener) {
+		presence = listener;
+	}
+
+	public SseEmitter connect(UUID userId) {
+		boolean wasOffline = !online(userId);
+		SseEmitter emitter = open(userId);
+		if (wasOffline) presence.accept(userId, true);
+		return emitter;
+	}
+
+	private synchronized SseEmitter open(UUID userId) {
 		int total = users.values().stream().mapToInt(Deque::size).sum();
 		if (total >= MAX_CONNECTIONS) throw new AuthException(429, "Limite de conexões atingido.");
 		Deque<SseEmitter> mine = users.computeIfAbsent(userId, ignored -> new ConcurrentLinkedDeque<>());
@@ -44,6 +65,7 @@ public class GroupStream {
 		// Vida finita: o cliente reconecta e conexão morta não fica para sempre.
 		SseEmitter emitter = new SseEmitter(300_000L);
 		mine.addLast(emitter);
+		leaving.remove(userId);
 		emitter.onCompletion(() -> leave(userId, emitter));
 		emitter.onTimeout(() -> leave(userId, emitter));
 		emitter.onError(ignored -> leave(userId, emitter));
@@ -51,9 +73,18 @@ public class GroupStream {
 		return emitter;
 	}
 
+	/** Com conexão aberta, ou que caiu há pouco e ainda pode voltar (tolerância). */
 	public boolean online(UUID userId) {
 		Deque<SseEmitter> emitters = users.get(userId);
-		return emitters != null && !emitters.isEmpty();
+		return (emitters != null && !emitters.isEmpty()) || leaving.containsKey(userId);
+	}
+
+	/** Avisa a saída de quem passou da tolerância sem voltar. */
+	void flushOffline(long nowMs) {
+		for (var entry : leaving.entrySet()) {
+			if (nowMs - entry.getValue() < OFFLINE_GRACE_MS) continue;
+			if (leaving.remove(entry.getKey(), entry.getValue())) presence.accept(entry.getKey(), false);
+		}
 	}
 
 	/** Se este aviso de "digitando" deve sair (no máximo um a cada {@link #TYPING_INTERVAL_MS} por pessoa e grupo). */
@@ -89,11 +120,14 @@ public class GroupStream {
 		}
 	}
 
-	private synchronized void leave(UUID userId, SseEmitter emitter) {
+	synchronized void leave(UUID userId, SseEmitter emitter) {
 		Deque<SseEmitter> emitters = users.get(userId);
 		if (emitters == null) return;
 		emitters.remove(emitter);
-		if (emitters.isEmpty()) users.remove(userId);
+		if (emitters.isEmpty()) {
+			users.remove(userId);
+			leaving.put(userId, System.currentTimeMillis());
+		}
 	}
 
 	private static void send(SseEmitter emitter, String event, Object data) {
@@ -105,6 +139,11 @@ public class GroupStream {
 	}
 
 	/** Mantém as conexões vivas por trás do proxy (e revela conexões mortas). */
+	@Scheduled(fixedRate = 10_000)
+	public void presenceTick() {
+		flushOffline(System.currentTimeMillis());
+	}
+
 	@Scheduled(fixedRate = 25_000)
 	public void heartbeat() {
 		for (Deque<SseEmitter> emitters : users.values()) {

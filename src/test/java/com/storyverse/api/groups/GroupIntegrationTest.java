@@ -4,10 +4,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -16,12 +18,18 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import com.storyverse.api.push.PushService;
+import com.storyverse.api.push.PushTestKeys;
 
 import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthResponse;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.SignupRequest;
+import com.storyverse.api.common.DbSession;
 
 /** Grupos com chat (V33): entrada, convite, mensagens, reações, denúncias e permissões. */
 @SpringBootTest
@@ -53,6 +61,15 @@ class GroupIntegrationTest {
 	@Autowired GroupService groups;
 	@Autowired AccountService account;
 	@Autowired JdbcClient jdbc;
+	@Autowired PlatformTransactionManager transactions;
+
+	/** Roda com o papel de runtime da VPS (sem superusuário): a RLS vale de verdade. */
+	<T> T asRuntime(java.util.function.Supplier<T> action) {
+		return new TransactionTemplate(transactions).execute(status -> {
+			jdbc.sql("set local role storyverse_api").update();
+			return action.get();
+		});
+	}
 
 	/** Conta com a feature de grupos e com mais de 24 h (pode criar grupo público). */
 	String member() {
@@ -138,6 +155,39 @@ class GroupIntegrationTest {
 		assertThrows(AuthException.class, () -> groups.typing(stranger, groupId));
 	}
 
+	/**
+	 * Quem ainda não é membro não enxerga o grupo privado pela RLS: o convite precisa achar o
+	 * grupo mesmo assim (era o "convite inválido ou expirado" em produção), e o limite de membros
+	 * precisa contar todo mundo, não só a linha da própria conta.
+	 */
+	@Test
+	void inviteWorksUnderTheRuntimeRoleForSomeoneOutsideTheGroup() {
+		String owner = member(), friend = member(), late = member();
+		Map<String, Object> group = newGroup(owner, "private");
+		UUID groupId = id(group);
+		String code = String.valueOf(group.get("invite_code"));
+		Map<String, Object> joined = asRuntime(() -> groups.joinByInvite(friend, code));
+		assertEquals(groupId, joined.get("id"));
+		assertEquals(Boolean.TRUE, joined.get("is_member"));
+		assertEquals(2, ((List<?>) joined.get("members")).size());
+		assertThrows(AuthException.class, () -> asRuntime(() -> groups.joinByInvite(late, "codigo-que-nao-existe-123")));
+
+		// Grupo cheio: quem chega de fora também é barrado.
+		for (int i = 0; i < GroupService.MAX_MEMBERS - 2; i++) {
+			jdbc.sql("insert into auth.users (id, email) values (:id, :email)")
+					.param("id", UUID.randomUUID()).param("email", UUID.randomUUID() + "@example.invalid").update();
+		}
+		jdbc.sql("""
+				insert into public.chat_members (group_id, user_id, role)
+				select :group, id, 'member' from auth.users
+				 where id not in (select user_id from public.chat_members where group_id = :group)
+				   and id <> :late
+				 limit :n
+				""").param("group", groupId).param("late", idOf(late)).param("n", GroupService.MAX_MEMBERS - 2).update();
+		AuthException full = assertThrows(AuthException.class, () -> asRuntime(() -> groups.joinByInvite(late, code)));
+		assertEquals(409, full.status());
+	}
+
 	@Test
 	void privateGroupNeedsInviteAndResendIsIdempotent() {
 		String owner = member(), friend = member();
@@ -214,6 +264,32 @@ class GroupIntegrationTest {
 		assertNull(deleted.get("body"));
 	}
 
+	/** A foto do perfil aparece no chat só se for um arquivo da própria pasta no Storage. */
+	@Test
+	void profilePhotoOnlyFromTheOwnStorageFolder() {
+		String owner = member(), outsider = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(outsider, groupId);
+		String mine = "https://api.example.test/api/v1/storage/public/profile-media/" + idOf(owner) + "/avatar?v=1";
+		setPhoto(owner, mine);
+		setPhoto(outsider, "https://rastreador.example/pixel.png");
+		send(owner, groupId, "com foto");
+		send(outsider, groupId, "foto de fora");
+
+		List<Map<String, Object>> messages = groups.messages(owner, groupId, null, null, null);
+		assertEquals(mine, messages.get(0).get("author_photo"));
+		assertNull(messages.get(1).get("author_photo"));
+		@SuppressWarnings("unchecked")
+		List<Map<String, Object>> members = (List<Map<String, Object>>) groups.group(owner, groupId).get("members");
+		assertEquals(mine, members.stream().filter(m -> idOf(owner).equals(m.get("user_id"))).findFirst().orElseThrow().get("photo"));
+		assertNull(members.stream().filter(m -> idOf(outsider).equals(m.get("user_id"))).findFirst().orElseThrow().get("photo"));
+	}
+
+	void setPhoto(String token, String url) {
+		jdbc.sql("update auth.users set raw_user_meta_data = raw_user_meta_data || jsonb_build_object('photo', :url) where id = :id")
+				.param("url", url).param("id", idOf(token)).update();
+	}
+
 	@Test
 	void newAccountsOnlyCreatePrivateGroupsAndExportHasMessages() throws Exception {
 		AuthResponse session = (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID() + "@example.invalid", "test-secret", "Nova"));
@@ -286,5 +362,184 @@ class GroupIntegrationTest {
 		List<Map<String, Object>> members = (List<Map<String, Object>>) groups.group(owner, id(group)).get("members");
 		assertEquals(42, ((Number) members.get(0).get("progress_percent")).intValue());
 		assertThrows(AuthException.class, () -> groups.create(owner, Map.of("name", "Livro ruim", "visibility", "public", "bookKey", "x:1")));
+	}
+
+	/* ------------------------- Notificação no celular (V37) ------------------------- */
+
+	@Autowired PushService push;
+
+	String pushAccount() {
+		return member();
+	}
+
+	static Map<String, Object> subscription(String endpoint) {
+		byte[] secret = new byte[16];
+		new SecureRandom().nextBytes(secret);
+		String p256dh = PushTestKeys.browserPublicKey();
+		return Map.of("endpoint", endpoint, "keys", Map.of("p256dh", p256dh, "auth", PushTestKeys.b64(secret)));
+	}
+
+	<T> T asRuntimeUser(UUID user, Supplier<T> action) {
+		return new TransactionTemplate(transactions).execute(status -> {
+			jdbc.sql("set local role storyverse_api").update();
+			DbSession.setUser(jdbc, user);
+			return action.get();
+		});
+	}
+
+	@Test
+	void vapidKeyIsGeneratedOnceAndKept() {
+		String first = push.publicKey();
+		assertEquals(65, PushTestKeys.unb64(first).length);
+		assertEquals(first, push.publicKey());
+		assertEquals(1, jdbc.sql("select count(*) from public.push_vapid_keys").query(Integer.class).single());
+	}
+
+	@Test
+	void devicesSubscribeOnlyToBrowserPushServicesAndMoveBetweenAccounts() {
+		String ana = pushAccount(), bia = pushAccount();
+		String endpoint = "https://fcm.googleapis.com/fcm/send/" + UUID.randomUUID();
+		// Como na VPS: papel de runtime, com a RLS valendo.
+		asRuntimeUser(idOf(ana), () -> {
+			push.subscribe(ana, subscription(endpoint));
+			return push.publicKey();
+		});
+		assertEquals(idOf(ana), owner(endpoint));
+
+		assertThrows(AuthException.class, () -> push.subscribe(ana, subscription("https://169.254.169.254/latest")));
+		Map<String, Object> badKeys = new HashMap<>(subscription("https://fcm.googleapis.com/fcm/send/x"));
+		badKeys.put("keys", Map.of("p256dh", "abc", "auth", "abc"));
+		assertThrows(AuthException.class, () -> push.subscribe(ana, badKeys));
+
+		// O mesmo navegador entra com outra conta: a inscrição muda de dono.
+		asRuntimeUser(idOf(bia), () -> {
+			push.subscribe(bia, subscription(endpoint));
+			return null;
+		});
+		assertEquals(idOf(bia), owner(endpoint));
+
+		// Quem não é dono não apaga; o dono apaga.
+		push.unsubscribe(ana, endpoint);
+		assertEquals(idOf(bia), owner(endpoint));
+		push.unsubscribe(bia, endpoint);
+		assertNull(owner(endpoint));
+	}
+
+	@Test
+	void groupMessageTargetsOtherMembersThatDidNotMuteTheGroup() {
+		String author = pushAccount(), reader = pushAccount(), muted = pushAccount(), outsider = pushAccount();
+		jdbc.sql("update auth.users set created_at = now() - interval '2 days' where id = :id").param("id", idOf(author)).update();
+		UUID groupId = UUID.fromString(String.valueOf(groups.create(author, Map.of("name", "Clube do Push", "visibility", "public")).get("id")));
+		groups.join(reader, groupId);
+		groups.join(muted, groupId);
+		groups.setMuted(muted, groupId, Map.of("muted", true));
+		for (String token : List.of(author, reader, muted, outsider)) {
+			push.subscribe(token, subscription("https://fcm.googleapis.com/fcm/send/" + UUID.randomUUID()));
+		}
+
+		List<UUID> targets = asRuntimeUser(idOf(author), () -> jdbc.sql("select user_id from public.chat_push_targets(:group)")
+				.param("group", groupId).query(UUID.class).list());
+		assertEquals(List.of(idOf(reader)), targets, "nem quem escreveu, nem quem silenciou, nem quem é de fora");
+
+		List<UUID> fromOutside = asRuntimeUser(idOf(outsider), () -> jdbc.sql("select user_id from public.chat_push_targets(:group)")
+				.param("group", groupId).query(UUID.class).list());
+		assertEquals(List.of(), fromOutside, "quem não é membro não descobre os aparelhos do grupo");
+
+		// A conta não lê os aparelhos dos outros nem a chave privada.
+		Integer visible = asRuntimeUser(idOf(reader), () -> jdbc.sql("select count(*) from public.push_subscriptions").query(Integer.class).single());
+		assertEquals(1, visible);
+	}
+
+	UUID owner(String endpoint) {
+		return jdbc.sql("select user_id from public.push_subscriptions where endpoint = :e").param("e", endpoint)
+				.query(UUID.class).optional().orElse(null);
+	}
+
+	/* ------------------------------ Foto e áudio (V38) ------------------------------ */
+
+	@Autowired ChatMediaStore mediaStore;
+
+	static byte[] webp() {
+		byte[] bytes = new byte[600];
+		System.arraycopy("RIFF".getBytes(), 0, bytes, 0, 4);
+		System.arraycopy("WEBPVP8 ".getBytes(), 0, bytes, 8, 8);
+		return bytes;
+	}
+
+	static byte[] webmAudio() {
+		byte[] bytes = new byte[800];
+		bytes[0] = 0x1a;
+		bytes[1] = 0x45;
+		bytes[2] = (byte) 0xdf;
+		bytes[3] = (byte) 0xa3;
+		return bytes;
+	}
+
+	Map<String, Object> sendMedia(String token, UUID group, String kind, String type, byte[] bytes, Map<String, String> extra) {
+		Map<String, String> params = new HashMap<>(extra);
+		params.put("clientId", UUID.randomUUID().toString());
+		return groups.sendMedia(token, group, kind, type, new java.io.ByteArrayInputStream(bytes), params);
+	}
+
+	@Test
+	void photoAndAudioOnlyForMembersAndTheFileGoesAwayWithTheMessage() {
+		String owner = member(), friend = member(), outsider = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(friend, groupId);
+
+		Map<String, Object> photo = sendMedia(owner, groupId, "image", "image/webp", webp(), Map.of("width", "800", "height", "600", "caption", "Olha a *capa*"));
+		assertEquals("image", photo.get("media_kind"));
+		assertEquals(Boolean.TRUE, photo.get("media_available"));
+		assertEquals("Olha a *capa*", photo.get("body"));
+		assertEquals(800, ((Number) photo.get("media_width")).intValue());
+		long photoId = messageId(photo);
+
+		Map<String, Object> audio = sendMedia(friend, groupId, "audio", "audio/webm;codecs=opus", webmAudio(), Map.of("durationMs", "4200"));
+		assertEquals("audio", audio.get("media_kind"));
+		assertNull(audio.get("body"), "áudio sem legenda");
+		assertEquals(4200, ((Number) audio.get("media_duration_ms")).intValue());
+
+		// Membro baixa; quem é de fora não.
+		var file = groups.mediaFile(friend, photoId).orElseThrow();
+		assertEquals("image/webp", file.getValue());
+		assertTrue(java.nio.file.Files.isRegularFile(file.getKey()));
+		assertThrows(AuthException.class, () -> groups.mediaFile(outsider, photoId));
+
+		// Apagar a mensagem apaga o arquivo.
+		groups.deleteMessage(owner, photoId);
+		assertFalse(java.nio.file.Files.exists(file.getKey()));
+		assertTrue(groups.mediaFile(friend, photoId).isEmpty());
+
+		// A lista de grupos mostra que a última foi um áudio.
+		Map<String, Object> mine = groups.myGroups(owner).stream().filter(g -> groupId.equals(g.get("id"))).findFirst().orElseThrow();
+		assertEquals("audio", mine.get("last_media_kind"));
+	}
+
+	@Test
+	void mediaIsValidatedAndExpiresAfterTheDeadline() {
+		String owner = member();
+		UUID groupId = id(newGroup(owner, "private"));
+		// Arquivo que diz ser imagem mas não é; tipo não aceito; áudio longo demais.
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "image", "image/webp", "<html>oi</html>xxxxxxxx".getBytes(), Map.of()));
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "image", "image/svg+xml", webp(), Map.of()));
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "audio", "audio/webm", webmAudio(), Map.of("durationMs", "600000")));
+		assertThrows(AuthException.class, () -> sendMedia(owner, groupId, "image", "image/webp", new byte[(int) ChatMediaStore.MAX_BYTES + 1], Map.of()));
+
+		Map<String, Object> photo = sendMedia(owner, groupId, "image", "image/webp", webp(), Map.of());
+		long photoId = messageId(photo);
+		var file = groups.mediaFile(owner, photoId).orElseThrow().getKey();
+
+		// Venceu: a limpeza solta a referência e apaga o arquivo; a mensagem continua.
+		jdbc.sql("update public.chat_messages set media_expires_at = now() - interval '1 minute' where id = :id").param("id", photoId).update();
+		groups.expireMedia();
+		assertFalse(java.nio.file.Files.exists(file));
+		Map<String, Object> after = groups.messages(owner, groupId, null, null, null).stream()
+				.filter(m -> photoId == messageId(m)).findFirst().orElseThrow();
+		assertEquals("image", after.get("media_kind"));
+		assertEquals(Boolean.FALSE, after.get("media_available"), "mostra mídia expirada");
+		assertTrue(groups.mediaFile(owner, photoId).isEmpty());
+
+		// Mensagem só de texto continua exigindo texto.
+		assertThrows(AuthException.class, () -> groups.send(owner, groupId, Map.of("body", "", "clientId", UUID.randomUUID().toString())));
 	}
 }
