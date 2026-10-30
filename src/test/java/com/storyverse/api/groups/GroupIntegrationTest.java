@@ -249,6 +249,24 @@ class GroupIntegrationTest {
 	}
 
 	@Test
+	void chatBackgroundIsAPresetOrTheEditorsOwnImage() {
+		String owner = member(), other = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		assertEquals("preset:floresta", groups.update(owner, groupId, Map.of("background", "preset:floresta")).get("background"));
+		assertThrows(AuthException.class, () -> groups.update(owner, groupId, Map.of("background", "preset:inventado")));
+		assertThrows(AuthException.class, () -> groups.update(owner, groupId, Map.of("background", "https://evil.example/fundo.png")));
+		String base = "https://api.example.test/api/v1/storage/public/profile-media/";
+		String mine = base + idOf(owner) + "/grupos/" + UUID.randomUUID();
+		assertEquals(mine, groups.update(owner, groupId, Map.of("background", mine)).get("background"));
+		assertThrows(AuthException.class, () -> groups.update(owner, groupId, Map.of("background", base + idOf(other) + "/grupos/" + UUID.randomUUID())));
+		// Editar outro campo mantém o fundo; null volta ao padrão.
+		assertEquals(mine, groups.update(owner, groupId, Map.of("name", "Outro nome")).get("background"));
+		Map<String, Object> cleared = new HashMap<>();
+		cleared.put("background", null);
+		assertNull(groups.update(owner, groupId, cleared).get("background"));
+	}
+
+	@Test
 	void clubShowsMemberProgressOnTheBook() {
 		String owner = member();
 		Map<String, Object> body = new HashMap<>();

@@ -45,6 +45,8 @@ public class GroupService {
 	private static final Set<String> REASONS = Set.of("spam", "abuso", "assedio", "spoiler", "outro");
 	private static final Set<String> REPORT_STATUSES = Set.of("actioned", "dismissed");
 	private static final SecureRandom RANDOM = new SecureRandom();
+	/** Temas prontos de fundo da conversa (o desenho de cada um fica no app). */
+	static final Set<String> BACKGROUNDS = Set.of("noite", "biblioteca", "floresta", "oceano", "por-do-sol", "papel");
 
 	private final GroupRepository repository;
 	private final GroupStream stream;
@@ -481,6 +483,8 @@ public class GroupService {
 		if (description != null && description.length() > 300) throw new AuthException(400, "A descrição pode ter até 300 caracteres.");
 		String photoUrl = body.containsKey("photoUrl") ? photoUrl(text(body.get("photoUrl")), editor)
 				: current == null ? null : text(current.get("photo_url"));
+		String background = body.containsKey("background") ? background(text(body.get("background")), editor)
+				: current == null ? null : text(current.get("background"));
 		String visibility = pick(body, current, "visibility", "visibility");
 		if (!"public".equals(visibility) && !"private".equals(visibility)) throw new AuthException(400, "Escolha público ou privado.");
 		String bookKey = bookKey(pick(body, current, "bookKey", "book_key"));
@@ -502,7 +506,7 @@ public class GroupService {
 				}
 			}
 		}
-		return new GroupFields(name, description, photoUrl, visibility, bookKey, bookTitle, bookCover, goalChapter, goalUntil);
+		return new GroupFields(name, description, photoUrl, background, visibility, bookKey, bookTitle, bookCover, goalChapter, goalUntil);
 	}
 
 	/**
@@ -511,12 +515,22 @@ public class GroupService {
 	 */
 	private String photoUrl(String value, UUID editor) {
 		if (value == null) return null;
-		String prefix = publicApiUrl + "/api/v1/storage/public/profile-media/" + editor + "/grupos/";
-		if (value.length() > 500 || !value.startsWith(prefix)
-				|| !value.substring(prefix.length()).matches("[0-9a-fA-F-]{36}(\\?v=[0-9]{1,15})?")) {
-			throw new AuthException(400, "Foto do grupo inválida.");
-		}
+		if (!ownUpload(value, editor)) throw new AuthException(400, "Foto do grupo inválida.");
 		return value;
+	}
+
+	/** Fundo da conversa: um tema pronto ({@code preset:<nome>}) ou uma imagem do próprio Storage. */
+	private String background(String value, UUID editor) {
+		if (value == null) return null;
+		if (value.startsWith("preset:") && BACKGROUNDS.contains(value.substring(7))) return value;
+		if (!ownUpload(value, editor)) throw new AuthException(400, "Fundo do grupo inválido.");
+		return value;
+	}
+
+	private boolean ownUpload(String value, UUID editor) {
+		String prefix = publicApiUrl + "/api/v1/storage/public/profile-media/" + editor + "/grupos/";
+		return value.length() <= 500 && value.startsWith(prefix)
+				&& value.substring(prefix.length()).matches("[0-9a-fA-F-]{36}(\\?v=[0-9]{1,15})?");
 	}
 
 	private static String pick(Map<String, Object> body, Map<String, Object> current, String field, String column) {
