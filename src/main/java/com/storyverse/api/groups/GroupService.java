@@ -16,7 +16,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.storyverse.api.auth.AuthException;
@@ -55,11 +57,12 @@ public class GroupService {
 	private final FeatureAccessService features;
 	private final JdbcClient jdbc;
 	private final RateLimitGate limits;
+	private final TransactionTemplate transactions;
 	/** Endereço público da API: a foto do grupo precisa ser um arquivo do Storage dela. */
 	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits,
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -69,6 +72,23 @@ public class GroupService {
 		this.features = features;
 		this.jdbc = jdbc;
 		this.limits = limits;
+		this.transactions = new TransactionTemplate(transactions);
+		stream.onPresence(this::presenceChanged);
+	}
+
+	/**
+	 * Entrou ou saiu do app: avisa quem divide grupo com a conta (a bolinha verde). Roda fora de
+	 * uma requisição, então abre a própria transação como a conta para a RLS mostrar os grupos.
+	 */
+	void presenceChanged(UUID userId, boolean online) {
+		try {
+			transactions.executeWithoutResult(status -> {
+				DbSession.setUser(jdbc, userId);
+				stream.publish(repository.coMemberIds(userId), "presence", Map.of("userId", userId, "online", online));
+			});
+		} catch (RuntimeException exception) {
+			// Aviso de online é enfeite: nunca derruba a conexão de quem entrou.
+		}
 	}
 
 	/* ------------------------------ Grupos ------------------------------ */
@@ -92,7 +112,7 @@ public class GroupService {
 		Map<String, Object> group = visibleGroup(userId, id);
 		Map<String, Object> out = new LinkedHashMap<>(group);
 		// Quem ainda não entrou num grupo público vê a capa do grupo, não quem está nele.
-		out.put("members", isMember(group) ? repository.members(id) : List.of());
+		out.put("members", isMember(group) ? withPresence(repository.members(id)) : List.of());
 		return out;
 	}
 
@@ -421,8 +441,16 @@ public class GroupService {
 	private Map<String, Object> group(UUID userId, UUID id) {
 		Map<String, Object> group = repository.group(userId, id).orElseThrow(() -> new AuthException(404, "Grupo não encontrado."));
 		Map<String, Object> out = new LinkedHashMap<>(group);
-		out.put("members", isMember(group) ? repository.members(id) : List.of());
+		out.put("members", isMember(group) ? withPresence(repository.members(id)) : List.of());
 		return out;
+	}
+
+	private List<Map<String, Object>> withPresence(List<Map<String, Object>> members) {
+		return members.stream().map(row -> {
+			Map<String, Object> member = new LinkedHashMap<>(row);
+			member.put("online", stream.online(UUID.fromString(String.valueOf(row.get("user_id")))));
+			return member;
+		}).toList();
 	}
 
 	/** Grupo que a conta pode ver: público, ou privado em que ela é membro, ou para a equipe. */
@@ -469,7 +497,6 @@ public class GroupService {
 	/** O evento vai para todos os membros: sem os campos que dependem de quem pediu. */
 	private static Map<String, Object> publicView(Map<String, Object> message) {
 		Map<String, Object> out = new LinkedHashMap<>(message);
-		out.remove("client_id");
 		out.put("reactions", List.of());
 		return out;
 	}
