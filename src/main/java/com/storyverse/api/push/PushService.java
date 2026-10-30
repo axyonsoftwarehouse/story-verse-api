@@ -30,6 +30,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.common.DbSession;
+import com.storyverse.api.common.RateLimitGate;
 
 /**
  * Notificação no celular (Web Push) sem chave para configurar: o par VAPID é gerado aqui na
@@ -54,6 +55,7 @@ public class PushService {
 
 	private final JdbcClient jdbc;
 	private final AuthService auth;
+	private final RateLimitGate limits;
 	private final String subject;
 	private final HttpClient http = HttpClient.newBuilder()
 			.connectTimeout(Duration.ofSeconds(10))
@@ -69,10 +71,11 @@ public class PushService {
 	record Target(UUID userId, String endpoint, String p256dh, String auth) {
 	}
 
-	public PushService(JdbcClient jdbc, AuthService auth,
+	public PushService(JdbcClient jdbc, AuthService auth, RateLimitGate limits,
 			@Value("${app.public-url:https://storyverse.2.29.42.104.sslip.io}") String publicUrl) {
 		this.jdbc = jdbc;
 		this.auth = auth;
+		this.limits = limits;
 		this.subject = publicUrl.trim().replaceAll("/+$", "");
 	}
 
@@ -186,7 +189,8 @@ public class PushService {
 		}
 	}
 
-	void deliver(Target target, String payload) {
+	/** Envia e devolve o status do serviço de push (0 quando nem chegou a enviar). */
+	int deliver(Target target, String payload) {
 		try {
 			Keys vapid = keys();
 			byte[] body = WebPushCrypto.encrypt(payload.getBytes(StandardCharsets.UTF_8), WebPushCrypto.unb64(target.p256dh()),
@@ -209,11 +213,32 @@ public class PushService {
 			} else if (status >= 400) {
 				log.warn("Serviço de push respondeu {} para {}", status, URI.create(target.endpoint()).getHost());
 			}
+			return status;
 		} catch (InterruptedException interrupted) {
 			Thread.currentThread().interrupt();
 		} catch (Exception exception) {
 			log.warn("Falha ao enviar notificação: {}", exception.getMessage());
 		}
+		return 0;
+	}
+
+	/**
+	 * "Testar notificação": manda um aviso para os aparelhos da própria conta e conta quantos o
+	 * serviço de push aceitou. Ajuda a separar "aparelho não inscrito" de "celular segurando o aviso".
+	 */
+	@Transactional
+	public Map<String, Object> test(String token) {
+		UUID userId = auth.authenticate(token);
+		DbSession.setUser(jdbc, userId);
+		limits.check("push-test:" + userId, 5, Duration.ofMinutes(10));
+		List<Target> mine = jdbc.sql("select user_id, endpoint, p256dh, auth from public.push_subscriptions where user_id = :user")
+				.param("user", userId)
+				.query((rs, rowNum) -> new Target(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4)))
+				.list();
+		String payload = "{\"title\":\"Storyverse\",\"body\":\"Teste: os avisos estão chegando neste aparelho ✅\",\"url\":\"/grupos\",\"tag\":\"push-test\"}";
+		long accepted = mine.stream().filter(target -> allowedEndpoint(target.endpoint()))
+				.map(target -> deliver(target, payload)).filter(status -> status >= 200 && status < 300).count();
+		return Map.of("devices", mine.size(), "accepted", accepted);
 	}
 
 	static boolean allowedEndpoint(String endpoint) {
