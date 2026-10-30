@@ -39,6 +39,12 @@ public class PushController {
 		push.subscribe(AuthTokens.bearer(authorization), body);
 	}
 
+	/** Manda um aviso de teste para os aparelhos da própria conta. */
+	@PostMapping("/test")
+	public Map<String, Object> test(@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return push.test(AuthTokens.bearer(authorization));
+	}
+
 	@DeleteMapping("/subscriptions")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void unsubscribe(
