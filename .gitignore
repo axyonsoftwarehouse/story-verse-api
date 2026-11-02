@@ -2,6 +2,7 @@ HELP.md
 target/
 build/
 graphify-out/
+*.log
 .env
 .env.*
 !.env.example
