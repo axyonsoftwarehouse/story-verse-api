@@ -23,6 +23,9 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       STORYVERSE_TEST_DB_URL: jdbc:postgresql://127.0.0.1:5432/postgres
+      # A suíte inteira cria muitos contextos do Spring; um pool menor evita esgotar
+      # as 100 conexões padrão do serviço Postgres do job.
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 4
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
