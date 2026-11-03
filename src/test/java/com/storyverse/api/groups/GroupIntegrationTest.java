@@ -619,4 +619,27 @@ class GroupIntegrationTest {
 		return ((List<Map<String, Object>>) groups.group(viewer, groupId).get("members")).stream()
 				.filter(m -> idOf(who).equals(m.get("user_id"))).findFirst().orElseThrow();
 	}
+
+	/** Apagar o grupo que criou (e sair sendo a única pessoa) com a RLS valendo, como na VPS. */
+	@Test
+	void ownerDeletesTheGroupUnderTheRuntimeRole() {
+		String owner = member(), friend = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(friend, groupId);
+		send(owner, groupId, "tchau");
+		asRuntimeUser(idOf(owner), () -> {
+			groups.delete(owner, groupId);
+			return null;
+		});
+		assertTrue(groups.myGroups(owner).stream().noneMatch(g -> groupId.equals(g.get("id"))));
+		assertThrows(AuthException.class, () -> groups.group(friend, groupId));
+
+		String alone = member();
+		UUID soloId = id(newGroup(alone, "private"));
+		asRuntimeUser(idOf(alone), () -> {
+			groups.leave(alone, soloId);
+			return null;
+		});
+		assertTrue(groups.myGroups(alone).stream().noneMatch(g -> soloId.equals(g.get("id"))));
+	}
 }
