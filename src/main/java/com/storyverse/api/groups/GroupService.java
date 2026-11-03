@@ -274,7 +274,60 @@ public class GroupService {
 		UUID userId = requireUser(token);
 		activeMembership(id, userId);
 		long lastId = longValue(body.get("lastId"));
-		if (lastId > 0) repository.markRead(id, userId, lastId);
+		if (lastId <= 0) return;
+		long[] before = repository.receipts(id, userId);
+		repository.markRead(id, userId, lastId);
+		repository.markDelivered(id, userId, lastId);
+		publishReceipts(id, userId, before);
+	}
+
+	/** O aparelho recebeu as mensagens até `lastId` (selo ✓✓ para quem escreveu). */
+	@Transactional
+	public void markDelivered(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		long lastId = longValue(body.get("lastId"));
+		if (lastId <= 0) return;
+		long[] before = repository.receipts(id, userId);
+		if (before[0] >= lastId) return;
+		repository.markDelivered(id, userId, lastId);
+		publishReceipts(id, userId, before);
+	}
+
+	/** Avisa só quem escreveu mensagens que mudaram de selo (não o grupo inteiro). */
+	private void publishReceipts(UUID groupId, UUID userId, long[] before) {
+		long[] after = repository.receipts(groupId, userId);
+		if (after[0] == before[0] && after[1] == before[1]) return;
+		java.util.Set<UUID> authors = new java.util.HashSet<>(repository.authorsBetween(groupId, before[0], after[0], userId));
+		authors.addAll(repository.authorsBetween(groupId, before[1], after[1], userId));
+		if (authors.isEmpty()) return;
+		stream.publish(authors, "receipt", Map.of("groupId", groupId, "userId", userId, "deliveredId", after[0], "readId", after[1]));
+	}
+
+	/** Cria o aviso do sininho e cutuca o app da pessoa (depois do commit). */
+	private void notifyUser(UUID user, String kind, UUID groupId, Long messageId, String emoji) {
+		if (user == null) return;
+		try {
+			if (repository.notify(user, kind, groupId, messageId, emoji)) stream.publish(List.of(user), "notification", Map.of("kind", kind));
+		} catch (RuntimeException exception) {
+			// Aviso é extra: nunca impede a ação principal.
+		}
+	}
+
+	/* ------------------------------ Sininho ------------------------------ */
+
+	@Transactional(readOnly = true)
+	public Map<String, Object> notifications(String token) {
+		UUID userId = auth.authenticate(token);
+		DbSession.setUser(jdbc, userId);
+		return Map.of("items", repository.notifications(userId, 50), "unread", repository.unreadNotifications(userId));
+	}
+
+	@Transactional
+	public void readNotifications(String token) {
+		UUID userId = auth.authenticate(token);
+		DbSession.setUser(jdbc, userId);
+		repository.markNotificationsRead(userId);
 	}
 
 	/** "Fulano está digitando": só vai pelo tempo real, para os outros membros; nada é gravado. */
@@ -328,6 +381,7 @@ public class GroupService {
 		stream.publish(repository.activeMemberIds(id), "message", publicView(message));
 		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
 				spoiler != null ? "🙈 mensagem com spoiler" : preview(text));
+		if (replyTo != null) notifyReply(replyTo, id, messageId);
 		return message;
 	}
 
@@ -376,6 +430,7 @@ public class GroupService {
 		Map<String, Object> message = repository.message(userId, messageId)
 				.orElseThrow(() -> new AuthException(500, "Mensagem não gravada."));
 		stream.publish(repository.activeMemberIds(id), "message", publicView(message));
+		if (replyTo != null) notifyReply(replyTo, id, messageId);
 		String label = "image".equals(kind) ? "📷 Foto" : "🎤 Áudio";
 		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
 				spoiler != null ? "🙈 mensagem com spoiler" : caption == null ? label : label + ": " + preview(caption));
@@ -392,6 +447,13 @@ public class GroupService {
 		return media.file(String.valueOf(row.get("media_path"))).map(path -> Map.entry(path, String.valueOf(row.get("media_mime"))));
 	}
 
+	private void notifyReply(long parentId, UUID groupId, long messageId) {
+		repository.messageState(parentId).ifPresent(parent -> {
+			Object author = parent.get("author_id");
+			if (author != null) notifyUser(UUID.fromString(String.valueOf(author)), "reply", groupId, messageId, null);
+		});
+	}
+
 	/** A cada 10 minutos: apaga do disco as fotos e áudios vencidos (e o que sobrou órfão). */
 	@Scheduled(fixedRate = 600_000, initialDelay = 60_000)
 	public void expireMedia() {
@@ -399,6 +461,7 @@ public class GroupService {
 			List<String> expired = transactions.execute(status -> repository.expireMedia());
 			if (expired != null) expired.forEach(media::remove);
 			media.sweep(Instant.now());
+			transactions.execute(status -> repository.pruneNotifications());
 		} catch (RuntimeException exception) {
 			// Tenta de novo na próxima rodada.
 		}
@@ -438,6 +501,8 @@ public class GroupService {
 		limits.check("group-reaction:" + userId, 60, Duration.ofMinutes(1));
 		if (add) {
 			repository.addReaction(messageId, userId, emoji);
+			Object author = state.get("author_id");
+			if (author != null) notifyUser(UUID.fromString(String.valueOf(author)), "reaction", groupId, messageId, emoji);
 		} else {
 			repository.removeReaction(messageId, userId, emoji);
 		}
@@ -527,6 +592,7 @@ public class GroupService {
 		// Só depois de entrar a conta enxerga os outros membros (RLS) para avisá-los.
 		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(userId)).toList();
 		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", userId));
+		notifyUser(repository.ownerOf(id), "member_joined", id, null, null);
 		return group(userId, id);
 	}
 
