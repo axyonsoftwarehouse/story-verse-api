@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
+import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.catalog.CatalogRepository;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
@@ -43,15 +44,17 @@ public class CatalogAudioService {
 	private final AuthzService authz;
 	private final JdbcClient jdbc;
 	private final R2Storage r2;
+	private final BillingService billing;
 
 	public CatalogAudioService(CatalogAudioRepository repository, CatalogRepository books, AuthService auth,
-			AuthzService authz, JdbcClient jdbc, R2Storage r2) {
+			AuthzService authz, JdbcClient jdbc, R2Storage r2, BillingService billing) {
 		this.repository = repository;
 		this.books = books;
 		this.auth = auth;
 		this.authz = authz;
 		this.jdbc = jdbc;
 		this.r2 = r2;
+		this.billing = billing;
 	}
 
 	@Transactional(readOnly = true)
@@ -62,6 +65,113 @@ public class CatalogAudioService {
 				.map(this::withChapters)
 				.toList();
 		return Map.of("editions", editions);
+	}
+
+	@Transactional(readOnly = true)
+	public Map<String, Object> publicList() {
+		List<Map<String, Object>> audiobooks = repository.listPublishedEditions().stream()
+				.map(row -> {
+					Map<String, Object> out = new LinkedHashMap<>();
+					out.put("bookKey", row.get("book_key"));
+					out.put("title", row.get("book_title"));
+					out.put("author", row.get("book_author"));
+					out.put("coverUrl", row.get("cover_url") != null
+							? row.get("cover_url")
+							: row.get("book_cover_url"));
+					out.put("narrator", row.get("narrator"));
+					out.put("language", row.get("language"));
+					out.put("totalDurationSeconds", row.get("total_duration_seconds"));
+					out.put("chapterCount", row.get("chapter_count"));
+					out.put("rights", row.get("rights"));
+					out.put("licenseNote", row.get("license_note"));
+					out.put("publishedAt", row.get("published_at"));
+					return out;
+				})
+				.toList();
+		return Map.of("audiobooks", audiobooks);
+	}
+
+	@Transactional(readOnly = true)
+	public Map<String, Object> publicManifest(String bookKey) {
+		Map<String, Object> book = repository.findPublishedBookByKey(bookKey)
+				.orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
+		String bookCover = existingString(book, "cover_url");
+		List<Map<String, Object>> editions = repository.listEditions(uuid(book.get("id"))).stream()
+				.filter(edition -> "published".equals(existingString(edition, "status")))
+				.map(edition -> publicEdition(edition, bookCover))
+				.toList();
+		Map<String, Object> bookOut = new LinkedHashMap<>();
+		bookOut.put("bookKey", book.get("book_key"));
+		bookOut.put("title", book.get("title"));
+		bookOut.put("author", book.get("author"));
+		bookOut.put("coverUrl", bookCover);
+		return Map.of("book", bookOut, "editions", editions);
+	}
+
+	@Transactional(readOnly = true)
+	public Map<String, Object> publicStream(String token, String bookKey, UUID audioId, int chapterIndex) {
+		if (chapterIndex <= 0) throw new AuthException(404, "Capítulo não encontrado.");
+		Map<String, Object> book = repository.findPublishedBookByKey(bookKey)
+				.orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
+		Map<String, Object> edition = repository.findEdition(audioId)
+				.orElseThrow(() -> new AuthException(404, "Audiolivro não encontrado."));
+		if (!String.valueOf(book.get("book_key")).equals(String.valueOf(edition.get("book_key")))
+				|| !"published".equals(existingString(edition, "status"))) {
+			throw new AuthException(404, "Audiolivro não encontrado.");
+		}
+		if (chapterIndex > 1) {
+			UUID user = auth.authenticate(token);
+			billing.requireAccess(user);
+			DbSession.setUser(jdbc, user);
+		}
+		Map<String, Object> chapter = repository.findChapter(audioId, chapterIndex)
+				.orElseThrow(() -> new AuthException(404, "Capítulo não encontrado."));
+		String url = r2.presignGet(String.valueOf(chapter.get("audio_path")), Duration.ofHours(1));
+		Map<String, Object> out = new LinkedHashMap<>();
+		out.put("url", url);
+		out.put("startSeconds", chapter.get("start_seconds"));
+		out.put("endSeconds", chapter.get("end_seconds"));
+		out.put("durationSeconds", chapter.get("duration_seconds"));
+		out.put("mimeType", chapter.get("mime_type"));
+		out.put("expiresInSeconds", 3600);
+		return out;
+	}
+
+	@Transactional(readOnly = true)
+	public Map<String, Object> progress(String token, UUID audioId) {
+		UUID user = auth.authenticate(token);
+		DbSession.setUser(jdbc, user);
+		return repository.findProgress(user, audioId).map(this::progressMap).orElseGet(() -> {
+			Map<String, Object> out = new LinkedHashMap<>();
+			out.put("chapterIndex", 1);
+			out.put("positionSeconds", 0);
+			out.put("playbackRate", 1.0);
+			out.put("completed", false);
+			out.put("updatedAt", null);
+			return out;
+		});
+	}
+
+	@Transactional
+	public Map<String, Object> saveProgress(String token, UUID audioId, Map<String, Object> body) {
+		UUID user = auth.authenticate(token);
+		DbSession.setUser(jdbc, user);
+		requirePublishedEdition(audioId);
+		int chapterIndex = integer(body, "chapterIndex", 1);
+		if (chapterIndex <= 0) throw new AuthException(400, "Capítulo inválido.");
+		Map<String, Object> chapter = repository.findChapter(audioId, chapterIndex)
+				.orElseThrow(() -> new AuthException(404, "Capítulo não encontrado."));
+		int position = integer(body, "positionSeconds", 0);
+		int duration = Math.max(1, number(chapter.get("duration_seconds")));
+		if (position < 0 || position > duration) {
+			throw new AuthException(400, "Posição inválida.");
+		}
+		double rate = doubleValue(body, "playbackRate", 1.0);
+		if (rate < 0.5 || rate > 2.0) throw new AuthException(400, "Velocidade inválida.");
+		boolean completed = Boolean.TRUE.equals(body.get("completed"));
+		return repository.upsertProgress(user, audioId, chapterIndex, position, rate, completed)
+				.map(this::progressMap)
+				.orElseThrow(() -> new AuthException(400, "Não foi possível salvar o progresso."));
 	}
 
 	@Transactional(readOnly = true)
@@ -324,6 +434,57 @@ public class CatalogAudioService {
 		return out;
 	}
 
+	private Map<String, Object> publicEdition(Map<String, Object> edition, String bookCover) {
+		List<Map<String, Object>> chapters = repository.listChapters(uuid(edition.get("id"))).stream()
+				.map(chapter -> {
+					int index = number(chapter.get("chapter_index"));
+					Map<String, Object> out = new LinkedHashMap<>();
+					out.put("index", index);
+					out.put("title", chapter.get("title"));
+					out.put("durationSeconds", chapter.get("duration_seconds"));
+					out.put("startSeconds", chapter.get("start_seconds"));
+					out.put("endSeconds", chapter.get("end_seconds"));
+					out.put("textChapterIndex", chapter.get("text_chapter_index"));
+					out.put("textChapterEndIndex", chapter.get("text_chapter_end_index"));
+					out.put("free", index == 1);
+					return out;
+				})
+				.toList();
+		Map<String, Object> out = new LinkedHashMap<>();
+		out.put("id", edition.get("id"));
+		out.put("language", edition.get("language"));
+		out.put("narrator", edition.get("narrator"));
+		out.put("source", edition.get("source"));
+		out.put("sourceUrl", edition.get("source_url"));
+		out.put("rights", edition.get("rights"));
+		out.put("licenseNote", edition.get("license_note"));
+		out.put("totalDurationSeconds", edition.get("total_duration_seconds"));
+		out.put("chapterCount", edition.get("chapter_count"));
+		out.put("coverUrl", edition.get("cover_url") != null ? edition.get("cover_url") : bookCover);
+		out.put("freeChapterIndex", 1);
+		out.put("requiresSubscription", true);
+		out.put("chapters", chapters);
+		return out;
+	}
+
+	private Map<String, Object> progressMap(Map<String, Object> row) {
+		Map<String, Object> out = new LinkedHashMap<>();
+		out.put("chapterIndex", number(row.get("chapter_index")));
+		out.put("positionSeconds", number(row.get("position_seconds")));
+		out.put("playbackRate", row.get("playback_rate"));
+		out.put("completed", row.get("completed"));
+		out.put("updatedAt", row.get("updated_at"));
+		return out;
+	}
+
+	private Map<String, Object> requirePublishedEdition(UUID audioId) {
+		Map<String, Object> edition = requireEdition(audioId);
+		if (!"published".equals(existingString(edition, "status"))) {
+			throw new AuthException(404, "Audiolivro não encontrado.");
+		}
+		return edition;
+	}
+
 	private Map<String, Object> requireBook(UUID bookId) {
 		return books.findById(bookId).orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
 	}
@@ -462,6 +623,19 @@ public class CatalogAudioService {
 		if (value instanceof String string) {
 			try {
 				return Integer.parseInt(string.strip());
+			} catch (NumberFormatException ignored) {
+				return fallback;
+			}
+		}
+		return fallback;
+	}
+
+	private static double doubleValue(Map<String, Object> body, String key, double fallback) {
+		Object value = body.get(key);
+		if (value instanceof Number number) return number.doubleValue();
+		if (value instanceof String string && !string.isBlank()) {
+			try {
+				return Double.parseDouble(string.strip());
 			} catch (NumberFormatException ignored) {
 				return fallback;
 			}
