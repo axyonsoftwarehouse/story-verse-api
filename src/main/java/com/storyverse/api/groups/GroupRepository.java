@@ -213,9 +213,9 @@ public class GroupRepository {
 				.update();
 	}
 
+	/** Marca o grupo como apagado (função do banco: só dono ou equipe; ver V41). */
 	public void softDeleteGroup(UUID id) {
-		jdbc.sql("update public.chat_groups set deleted_at = now(), updated_at = now() where id = :id")
-				.param("id", id).update();
+		jdbc.sql("select public.chat_delete_group(:id)").param("id", id).query(Boolean.class).single();
 	}
 
 	public void rotateInvite(UUID id, String code) {
