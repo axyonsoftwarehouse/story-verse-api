@@ -144,6 +144,16 @@ public class GroupController {
 		service.typing(AuthTokens.bearer(authorization), id);
 	}
 
+	/** O aparelho recebeu as mensagens até lastId (selo de recebido). */
+	@PostMapping("/{id}/delivered")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void delivered(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.markDelivered(AuthTokens.bearer(authorization), id, body);
+	}
+
 	@DeleteMapping("/{id}/members/{userId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void removeMember(

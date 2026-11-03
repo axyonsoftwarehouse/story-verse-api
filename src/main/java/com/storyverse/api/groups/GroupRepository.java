@@ -259,6 +259,84 @@ public class GroupRepository {
 				.param("group", groupId).param("user", userId).param("muted", muted).update();
 	}
 
+	/** Posições de "recebido" e "lido" da conta no grupo: [entregue, lido]. */
+	public long[] receipts(UUID groupId, UUID userId) {
+		return jdbc.sql("select last_delivered_id, last_read_id from public.chat_members where group_id = :group and user_id = :user")
+				.param("group", groupId).param("user", userId)
+				.query((rs, rowNum) -> new long[] { rs.getLong(1), rs.getLong(2) })
+				.optional().orElse(new long[] { 0, 0 });
+	}
+
+	/** O aparelho recebeu até a mensagem `lastId` (nunca volta para trás nem passa da última). */
+	public void markDelivered(UUID groupId, UUID userId, long lastId) {
+		jdbc.sql("""
+				update public.chat_members
+				   set last_delivered_id = least(:last, coalesce((select max(id) from public.chat_messages where group_id = :group), 0))
+				 where group_id = :group and user_id = :user and last_delivered_id < :last
+				""").param("group", groupId).param("user", userId).param("last", lastId).update();
+	}
+
+	/** Quem escreveu mensagens no intervalo (de, até]: só essas pessoas se importam com o selo. */
+	public List<UUID> authorsBetween(UUID groupId, long from, long to, UUID except) {
+		if (to <= from) return List.of();
+		return jdbc.sql("""
+				select distinct author_id from public.chat_messages
+				 where group_id = :group and id > :from and id <= :to and author_id <> :except and deleted_at is null
+				""").param("group", groupId).param("from", from).param("to", to).param("except", except)
+				.query(UUID.class).list();
+	}
+
+	public UUID ownerOf(UUID groupId) {
+		return jdbc.sql("select owner_id from public.chat_groups where id = :group").param("group", groupId)
+				.query(UUID.class).optional().orElse(null);
+	}
+
+	/* ------------------------------ Sininho ------------------------------ */
+
+	/** Aviso para outra pessoa do grupo (a função do banco confere que as duas estão nele). */
+	public boolean notify(UUID user, String kind, UUID groupId, Long messageId, String emoji) {
+		return jdbc.sql("select public.chat_notify(:user, :kind, :group, :message, :emoji)")
+				.param("user", user).param("kind", kind).param("group", groupId).param("message", messageId).param("emoji", emoji)
+				.query((rs, rowNum) -> rs.getObject(1)).optional().filter(java.util.Objects::nonNull).isPresent();
+	}
+
+	public List<Map<String, Object>> notifications(UUID viewer, int limit) {
+		return DbRows.list(jdbc, """
+				select n.id, n.kind, n.group_id, g.name as group_name, n.message_id, n.emoji, n.created_at,
+				       n.read_at is not null as read, n.actor_id,
+				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as actor_name,
+				       coalesce(u.raw_user_meta_data->>'avatar', '') as actor_avatar,
+				       case when starts_with(u.raw_user_meta_data->>'photo', :media || n.actor_id::text || '/')
+				            then u.raw_user_meta_data->>'photo' end as actor_photo,
+				       case when x.deleted_at is null and x.spoiler_chapter is null then left(x.body, 100) end as message_body,
+				       x.media_kind as message_media_kind
+				  from public.user_notifications n
+				  join public.chat_groups g on g.id = n.group_id and g.deleted_at is null
+				  join auth.users u on u.id = n.actor_id
+				  left join public.chat_messages x on x.id = n.message_id
+				 where n.user_id = :viewer
+				 order by n.id desc
+				 limit :limit
+				""", Map.of("viewer", viewer, "limit", limit, "media", media));
+	}
+
+	public int unreadNotifications(UUID viewer) {
+		return jdbc.sql("""
+				select count(*) from public.user_notifications n
+				  join public.chat_groups g on g.id = n.group_id and g.deleted_at is null
+				 where n.user_id = :viewer and n.read_at is null
+				""").param("viewer", viewer).query(Integer.class).single();
+	}
+
+	public void markNotificationsRead(UUID viewer) {
+		jdbc.sql("update public.user_notifications set read_at = now() where user_id = :viewer and read_at is null")
+				.param("viewer", viewer).update();
+	}
+
+	public int pruneNotifications() {
+		return jdbc.sql("select public.chat_prune_notifications()").query(Integer.class).single();
+	}
+
 	public void markRead(UUID groupId, UUID userId, long lastId) {
 		jdbc.sql("""
 				update public.chat_members
@@ -270,7 +348,7 @@ public class GroupRepository {
 	/** Membros ativos, com o progresso no livro do grupo (estante) quando houver. */
 	public List<Map<String, Object>> members(UUID groupId) {
 		return DbRows.list(jdbc, """
-				select m.user_id, m.role, m.joined_at,
+				select m.user_id, m.role, m.joined_at, m.last_read_id, m.last_delivered_id,
 				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || m.user_id::text || '/')

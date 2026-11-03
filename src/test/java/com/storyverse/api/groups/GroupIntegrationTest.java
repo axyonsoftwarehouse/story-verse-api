@@ -542,4 +542,81 @@ class GroupIntegrationTest {
 		// Mensagem só de texto continua exigindo texto.
 		assertThrows(AuthException.class, () -> groups.send(owner, groupId, Map.of("body", "", "clientId", UUID.randomUUID().toString())));
 	}
+
+	/* ------------------------- Sininho e selos de status (V40) ------------------------- */
+
+	@SuppressWarnings("unchecked")
+	List<Map<String, Object>> items(String token) {
+		return (List<Map<String, Object>>) groups.notifications(token).get("items");
+	}
+
+	int unread(String token) {
+		return ((Number) groups.notifications(token).get("unread")).intValue();
+	}
+
+	@Test
+	void bellGetsRepliesReactionsAndNewMembersButNotOwnActions() {
+		String owner = member(), ana = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		assertEquals(0, unread(owner));
+
+		// Entrou alguém: o dono é avisado (pelo papel de runtime, com a RLS valendo).
+		asRuntimeUser(idOf(ana), () -> groups.join(ana, groupId));
+		List<Map<String, Object>> ownerItems = items(owner);
+		assertEquals("member_joined", ownerItems.get(0).get("kind"));
+		assertEquals(idOf(ana), ownerItems.get(0).get("actor_id"));
+
+		// Resposta e reação na mensagem do dono: avisos para ele.
+		long mine = messageId(send(owner, groupId, "Que capítulo!"));
+		asRuntimeUser(idOf(ana), () -> groups.send(ana, groupId, Map.of("body", "Né?", "clientId", UUID.randomUUID().toString(), "replyTo", mine)));
+		asRuntimeUser(idOf(ana), () -> groups.react(ana, mine, "🔥", true));
+		ownerItems = items(owner);
+		assertEquals(List.of("reaction", "reply", "member_joined"), ownerItems.stream().map(n -> n.get("kind")).toList());
+		assertEquals("🔥", ownerItems.get(0).get("emoji"));
+		assertEquals("Que capítulo!", ownerItems.get(0).get("message_body"));
+		assertEquals(3, unread(owner));
+
+		// Ações na própria mensagem não avisam ninguém; quem é de fora não vê avisos dos outros.
+		groups.react(owner, mine, "❤️", true);
+		assertEquals(3, unread(owner));
+		assertEquals(0, unread(ana));
+		assertEquals(0, items(member()).size());
+
+		groups.readNotifications(owner);
+		assertEquals(0, unread(owner));
+		assertEquals(3, items(owner).size(), "lidos continuam na lista");
+	}
+
+	@Test
+	void deliveredAndReadPositionsForTheStatusTicks() {
+		String owner = member(), ana = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(ana, groupId);
+		long first = messageId(send(owner, groupId, "um"));
+		long second = messageId(send(owner, groupId, "dois"));
+
+		groups.markDelivered(ana, groupId, Map.of("lastId", second));
+		Map<String, Object> anaRow = memberRow(owner, groupId, ana);
+		assertEquals(second, ((Number) anaRow.get("last_delivered_id")).longValue());
+		assertTrue(((Number) anaRow.get("last_read_id")).longValue() < first, "recebeu, mas não leu");
+
+		// Ler também conta como recebido; nunca volta para trás.
+		groups.markRead(ana, groupId, Map.of("lastId", first));
+		groups.markDelivered(ana, groupId, Map.of("lastId", first));
+		anaRow = memberRow(owner, groupId, ana);
+		assertEquals(first, ((Number) anaRow.get("last_read_id")).longValue());
+		assertEquals(second, ((Number) anaRow.get("last_delivered_id")).longValue());
+
+		// Não passa da última mensagem do grupo nem funciona para quem é de fora.
+		groups.markDelivered(ana, groupId, Map.of("lastId", second + 1000));
+		assertEquals(second, ((Number) memberRow(owner, groupId, ana).get("last_delivered_id")).longValue());
+		String outsider = member();
+		assertThrows(AuthException.class, () -> groups.markDelivered(outsider, groupId, Map.of("lastId", second)));
+	}
+
+	@SuppressWarnings("unchecked")
+	Map<String, Object> memberRow(String viewer, UUID groupId, String who) {
+		return ((List<Map<String, Object>>) groups.group(viewer, groupId).get("members")).stream()
+				.filter(m -> idOf(who).equals(m.get("user_id"))).findFirst().orElseThrow();
+	}
 }
