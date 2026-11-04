@@ -752,4 +752,57 @@ class GroupIntegrationTest {
 		assertTrue(system.contains("NUNCA fale"));
 		assertEquals("Texto", NarratorService.clean("**Narrador:** Texto"));
 	}
+
+	/* ------------------------------ Roleplay que vira livro (V44) ------------------------------ */
+
+	@Autowired RoleplayBookService roleplayBooks;
+
+	@Test
+	void roleplayBecomesABookForTheMembers() throws Exception {
+		java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+		roleplayBooks.useWriter((system, history) -> "# A chegada " + calls.incrementAndGet()
+				+ "\n\nA tempestade trouxe os viajantes ao castelo.\n\n— Tem alguém aí? — perguntou Mina.");
+		try {
+			String owner = member(), ana = member(), outsider = member();
+			Map<String, Object> body = new HashMap<>();
+			body.put("name", "Noite no Castelo");
+			body.put("visibility", "public");
+			body.put("mode", "roleplay");
+			body.put("rpPremise", "Viajantes presos num castelo nos Cárpatos.");
+			UUID groupId = id(groups.create(owner, body));
+			groups.join(ana, groupId);
+			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker"));
+
+			assertThrows(AuthException.class, () -> groups.startBook(owner, groupId), "curta demais");
+			for (int i = 0; i < 6; i++) send(i % 2 == 0 ? ana : owner, groupId, "*Mina anda pelo corredor " + i + ".* Que frio!");
+			assertThrows(AuthException.class, () -> groups.startBook(ana, groupId), "só o dono");
+			assertThrows(AuthException.class, () -> groups.book(ana, groupId), "ainda não existe");
+
+			Map<String, Object> started = groups.startBook(owner, groupId);
+			assertEquals("writing", started.get("status"));
+			Map<String, Object> ready = null;
+			for (int i = 0; i < 50; i++) {
+				ready = groups.book(ana, groupId);
+				if ("ready".equals(ready.get("status"))) break;
+				Thread.sleep(100);
+			}
+			assertEquals("ready", ready.get("status"));
+			assertEquals("Noite no Castelo", ready.get("title"));
+			String text = String.valueOf(ready.get("text"));
+			assertTrue(text.startsWith("Capítulo 1 — A chegada 1"), text);
+			assertTrue(text.contains("— Tem alguém aí? — perguntou Mina."));
+			assertThrows(AuthException.class, () -> groups.book(outsider, groupId), "quem é de fora não lê");
+		} finally {
+			roleplayBooks.useWriter(null);
+		}
+	}
+
+	@Test
+	void bookChaptersSplitAndTitlesAreCleaned() {
+		List<Map<String, Object>> story = new java.util.ArrayList<>();
+		for (int i = 0; i < 80; i++) story.add(Map.of("kind", "user", "body", "linha " + i, "author_name", "Ana"));
+		assertEquals(4, RoleplayBookService.chapters(story).size());
+		assertEquals("O castelo", RoleplayBookService.chapter("**Capítulo 2: O castelo**\n\nTexto.", 2).title());
+		assertEquals("Parte 3", RoleplayBookService.chapter("", 3).title());
+	}
 }

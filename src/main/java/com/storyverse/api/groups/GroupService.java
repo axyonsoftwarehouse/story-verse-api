@@ -70,6 +70,7 @@ public class GroupService {
 	private final PushService push;
 	private final ChatMediaStore media;
 	private final NarratorService narrator;
+	private final RoleplayBookService books;
 	/** Fotos e áudios por pessoa por dia (o disco fica pequeno de qualquer jeito, mas sem abuso). */
 	static final int MEDIA_PER_DAY = 40;
 	static final int MAX_AUDIO_MS = 125_000;
@@ -77,7 +78,7 @@ public class GroupService {
 	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media, NarratorService narrator,
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media, NarratorService narrator, RoleplayBookService books,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -91,6 +92,7 @@ public class GroupService {
 		this.push = push;
 		this.media = media;
 		this.narrator = narrator;
+		this.books = books;
 		stream.onPresence(this::presenceChanged);
 	}
 
@@ -476,6 +478,27 @@ public class GroupService {
 		if (!"roleplay".equals(group.get("mode"))) throw new AuthException(400, "Este grupo não é de roleplay.");
 		limits.check("narrate:" + userId, 6, Duration.ofMinutes(1));
 		narrator.requestNow(id, userId);
+	}
+
+	/** "Encerrar e virar livro": só quem criou o grupo (a IA usa a cota dele). */
+	@Transactional
+	public Map<String, Object> startBook(String token, UUID id) {
+		UUID userId = requireUser(token);
+		Map<String, Object> group = visibleGroup(userId, id);
+		if (!"roleplay".equals(group.get("mode"))) throw new AuthException(400, "Só roleplays viram livro.");
+		if (!"owner".equals(group.get("my_role"))) throw new AuthException(403, "Só quem criou o grupo transforma a história em livro.");
+		limits.check("roleplay-book:" + userId, 3, Duration.ofDays(1));
+		books.start(id, userId, String.valueOf(group.get("name")));
+		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "book_writing"));
+		return books.book(id).orElseThrow();
+	}
+
+	/** O livro do roleplay (status e, quando pronto, o texto) para quem é membro. */
+	@Transactional(readOnly = true)
+	public Map<String, Object> book(String token, UUID id) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		return books.book(id).orElseThrow(() -> new AuthException(404, "Esta história ainda não virou livro."));
 	}
 
 	/** O personagem que a pessoa interpreta no roleplay. */

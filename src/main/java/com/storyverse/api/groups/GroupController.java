@@ -144,6 +144,23 @@ public class GroupController {
 		service.typing(AuthTokens.bearer(authorization), id);
 	}
 
+	/** Roleplay: encerra e transforma a história em livro (só o dono). */
+	@PostMapping("/{id}/book")
+	@ResponseStatus(HttpStatus.ACCEPTED)
+	public Map<String, Object> startBook(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.startBook(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Roleplay: o livro (status e texto) para os membros. */
+	@GetMapping("/{id}/book")
+	public Map<String, Object> book(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.book(AuthTokens.bearer(authorization), id);
+	}
+
 	/** Roleplay: chama o narrador agora. */
 	@PostMapping("/{id}/narrate")
 	@ResponseStatus(HttpStatus.ACCEPTED)
