@@ -691,6 +691,15 @@ class GroupIntegrationTest {
 			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker"));
 			assertEquals("Mina Harker", groups.group(ana, groupId).get("my_character"));
 
+			// Foto do personagem: só da própria pasta no Storage; aparece para os outros membros.
+			String base = "https://api.example.test/api/v1/storage/public/profile-media/";
+			String minaPhoto = base + idOf(ana) + "/grupos/" + UUID.randomUUID();
+			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker", "photo", minaPhoto));
+			assertEquals(minaPhoto, groups.group(ana, groupId).get("my_character_photo"));
+			assertEquals(minaPhoto, memberRow(owner, groupId, ana).get("rp_photo"));
+			assertThrows(AuthException.class, () -> groups.setCharacter(ana, groupId, Map.of("character", "Mina", "photo", base + idOf(owner) + "/grupos/" + UUID.randomUUID())));
+			assertThrows(AuthException.class, () -> groups.setCharacter(ana, groupId, Map.of("character", "Mina", "photo", "https://evil.example/x.png")));
+
 			// Duas mensagens não bastam; a terceira chama o narrador (passado o intervalo).
 			jdbc.sql("update public.chat_groups set rp_last_narration_at = now() - interval '1 hour' where id = :id").param("id", groupId).update();
 			send(ana, groupId, "*Mina acende uma lamparina.* Tem alguém aí?");
