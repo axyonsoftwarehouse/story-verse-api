@@ -144,6 +144,24 @@ public class GroupController {
 		service.typing(AuthTokens.bearer(authorization), id);
 	}
 
+	/** Roleplay: chama o narrador agora. */
+	@PostMapping("/{id}/narrate")
+	@ResponseStatus(HttpStatus.ACCEPTED)
+	public void narrate(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.narrate(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Roleplay: o personagem que a pessoa interpreta. */
+	@PutMapping("/{id}/character")
+	public Map<String, Object> character(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.setCharacter(AuthTokens.bearer(authorization), id, body);
+	}
+
 	/** O aparelho recebeu as mensagens até lastId (selo de recebido). */
 	@PostMapping("/{id}/delivered")
 	@ResponseStatus(HttpStatus.NO_CONTENT)

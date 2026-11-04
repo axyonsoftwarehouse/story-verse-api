@@ -642,4 +642,105 @@ class GroupIntegrationTest {
 		});
 		assertTrue(groups.myGroups(alone).stream().noneMatch(g -> soloId.equals(g.get("id"))));
 	}
+
+	/* ------------------------------ Roleplay (V42) ------------------------------ */
+
+	@Autowired NarratorService narrator;
+
+	List<Map<String, Object>> narrations(String token, UUID groupId) {
+		return groups.messages(token, groupId, null, null, null).stream().filter(m -> "narrator".equals(m.get("kind"))).toList();
+	}
+
+	List<Map<String, Object>> waitNarrations(String token, UUID groupId, int count) throws InterruptedException {
+		for (int i = 0; i < 50; i++) {
+			List<Map<String, Object>> found = narrations(token, groupId);
+			if (found.size() >= count) return found;
+			Thread.sleep(100);
+		}
+		return narrations(token, groupId);
+	}
+
+	@Test
+	void roleplayGroupOpensWithTheNarratorAndNarratesEveryThreeMessages() throws Exception {
+		java.util.concurrent.atomic.AtomicReference<String> lastSystem = new java.util.concurrent.atomic.AtomicReference<>();
+		java.util.concurrent.atomic.AtomicReference<List<com.storyverse.api.ai.AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
+		narrator.useWriter((system, history) -> {
+			lastSystem.set(system);
+			lastHistory.set(history);
+			return "Narrador: *A porta do castelo range.* Um vento frio apaga as velas.";
+		});
+		try {
+			String owner = member(), ana = member();
+			Map<String, Object> body = new HashMap<>();
+			body.put("name", "Noite no Castelo");
+			body.put("visibility", "private");
+			body.put("mode", "roleplay");
+			body.put("rpPremise", "Viajantes presos num castelo nos Cárpatos durante uma tempestade.");
+			Map<String, Object> created = groups.create(owner, body);
+			UUID groupId = id(created);
+			assertEquals("roleplay", created.get("mode"));
+			groups.joinByInvite(ana, String.valueOf(created.get("invite_code")));
+
+			// Abertura: a primeira fala do narrador sai sozinha, sem o rótulo "Narrador:".
+			List<Map<String, Object>> first = waitNarrations(owner, groupId, 1);
+			assertEquals(1, first.size());
+			assertEquals("*A porta do castelo range.* Um vento frio apaga as velas.", first.get(0).get("body"));
+			assertTrue(lastSystem.get().contains("Cárpatos"));
+
+			// Personagens entram nas instruções do narrador.
+			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker"));
+			assertEquals("Mina Harker", groups.group(ana, groupId).get("my_character"));
+
+			// Duas mensagens não bastam; a terceira chama o narrador (passado o intervalo).
+			jdbc.sql("update public.chat_groups set rp_last_narration_at = now() - interval '1 hour' where id = :id").param("id", groupId).update();
+			send(ana, groupId, "*Mina acende uma lamparina.* Tem alguém aí?");
+			send(owner, groupId, "*Jonathan segura a espada.*");
+			Thread.sleep(400);
+			assertEquals(1, narrations(owner, groupId).size());
+			send(ana, groupId, "Vamos subir a escada.");
+			assertEquals(2, waitNarrations(owner, groupId, 2).size());
+			assertTrue(lastSystem.get().contains("Mina Harker (jogado por"));
+			String told = lastHistory.get().get(lastHistory.get().size() - 1).content();
+			assertTrue(told.contains("Mina Harker"), told);
+			assertEquals("assistant", lastHistory.get().get(lastHistory.get().size() - 2).role(), "a abertura entra como fala do narrador");
+
+			// Intervalo: logo em seguida não narra de novo; com o teto do dia batido também não.
+			assertNull(narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
+			jdbc.sql("""
+					update public.chat_groups set rp_last_narration_at = now() - interval '1 hour',
+					       rp_narrations_day = (now() at time zone 'America/Sao_Paulo')::date, rp_narrations_count = 50
+					 where id = :id""").param("id", groupId).update();
+			assertNull(narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
+
+			// Pela conta restrita da VPS, com a RLS valendo, o "Narrar" funciona.
+			jdbc.sql("update public.chat_groups set rp_narrations_count = 0 where id = :id").param("id", groupId).update();
+			Long id = asRuntimeUser(idOf(ana), () -> narrator.run(groupId, idOf(ana), NarratorService.Trigger.MANUAL));
+			assertNotNull(id);
+		} finally {
+			narrator.useWriter(null);
+		}
+	}
+
+	@Test
+	void roleplayNeedsAPremiseAndNarrateOnlyInRoleplayGroups() {
+		String owner = member();
+		Map<String, Object> body = new HashMap<>();
+		body.put("name", "Sem premissa");
+		body.put("visibility", "private");
+		body.put("mode", "roleplay");
+		assertThrows(AuthException.class, () -> groups.create(owner, body));
+		UUID chat = id(newGroup(owner, "private"));
+		assertThrows(AuthException.class, () -> groups.narrate(owner, chat));
+		assertEquals("chat", groups.group(owner, chat).get("mode"));
+	}
+
+	@Test
+	void narratorPromptKeepsTheRules() {
+		String system = NarratorService.system(Map.of("name", "Clube", "rp_premise", "Piratas no Caribe."),
+				List.of(Map.of("name", "Ana", "rp_character", "Capitã Rosa")));
+		assertTrue(system.contains("Piratas no Caribe."));
+		assertTrue(system.contains("Capitã Rosa (jogado por Ana)"));
+		assertTrue(system.contains("NUNCA fale"));
+		assertEquals("Texto", NarratorService.clean("**Narrador:** Texto"));
+	}
 }

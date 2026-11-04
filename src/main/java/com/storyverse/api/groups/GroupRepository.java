@@ -22,7 +22,8 @@ public class GroupRepository {
 
 	private static final String GROUP_ROW = """
 			select g.id, g.name, g.description, g.photo_url, g.background, g.visibility, g.owner_id, g.book_key, g.book_title, g.book_cover,
-			       g.goal_chapter, g.goal_until, g.last_message_at, g.created_at,
+			       g.goal_chapter, g.goal_until, g.last_message_at, g.created_at, g.mode, g.rp_premise,
+			       case when m.banned_at is null then m.rp_character end as my_character,
 			       (select count(*) from public.chat_members c
 			         where c.group_id = g.id and c.banned_at is null) as member_count,
 			       (m.user_id is not null and m.banned_at is null) as is_member,
@@ -36,12 +37,12 @@ public class GroupRepository {
 			                                 limit 100) unread)
 			       else 0 end as unread,
 			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_code end as invite_code,
-			       lm.id as last_message_id, lm.author_name as last_author_name, lm.media_kind as last_media_kind,
+			       lm.id as last_message_id, lm.author_name as last_author_name, lm.media_kind as last_media_kind, lm.kind as last_kind,
 			       case when lm.spoiler_chapter is not null then null else left(lm.body, 120) end as last_body
 			  from public.chat_groups g
 			  left join public.chat_members m on m.group_id = g.id and m.user_id = :viewer
 			  left join lateral (
-			    select x.id, x.body, x.spoiler_chapter, x.media_kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name
+			    select x.id, x.body, x.spoiler_chapter, x.media_kind, x.kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name
 			      from public.chat_messages x
 			      join auth.users u on u.id = x.author_id
 			     where x.group_id = g.id and x.deleted_at is null
@@ -59,7 +60,7 @@ public class GroupRepository {
 			       case when x.deleted_at is not null then null
 			            when x.author_id <> :viewer and hidden.n >= %d then null
 			            else x.body end as body,
-			       x.spoiler_chapter, x.reply_to, x.client_id, x.created_at,
+			       x.spoiler_chapter, x.reply_to, x.client_id, x.created_at, x.kind,
 			       x.media_kind, x.media_mime, x.media_duration_ms, x.media_width, x.media_height, x.media_expires_at,
 			       (x.media_path is not null and x.deleted_at is null
 			        and not (x.author_id <> :viewer and hidden.n >= %d)) as media_available,
@@ -348,7 +349,7 @@ public class GroupRepository {
 	/** Membros ativos, com o progresso no livro do grupo (estante) quando houver. */
 	public List<Map<String, Object>> members(UUID groupId) {
 		return DbRows.list(jdbc, """
-				select m.user_id, m.role, m.joined_at, m.last_read_id, m.last_delivered_id,
+				select m.user_id, m.role, m.joined_at, m.last_read_id, m.last_delivered_id, m.rp_character,
 				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || m.user_id::text || '/')
@@ -372,6 +373,96 @@ public class GroupRepository {
 				  join public.chat_members o on o.group_id = m.group_id and o.banned_at is null
 				 where m.user_id = :user and m.banned_at is null and o.user_id <> :user
 				""").param("user", userId).query(UUID.class).list();
+	}
+
+	/* ------------------------------ Roleplay ------------------------------ */
+
+	public void setRoleplay(UUID groupId, String premise) {
+		jdbc.sql("update public.chat_groups set mode = 'roleplay', rp_premise = :premise where id = :group")
+				.param("group", groupId).param("premise", premise).update();
+	}
+
+	public void updatePremise(UUID groupId, String premise) {
+		jdbc.sql("update public.chat_groups set rp_premise = :premise, updated_at = now() where id = :group and mode = 'roleplay'")
+				.param("group", groupId).param("premise", premise).update();
+	}
+
+	public void setCharacter(UUID groupId, UUID userId, String character) {
+		jdbc.sql("update public.chat_members set rp_character = :character where group_id = :group and user_id = :user")
+				.param("group", groupId).param("user", userId).param("character", character).update();
+	}
+
+	/** Modo, premissa, dono, nome e livro do grupo (vazio se apagado ou invisível para a sessão). */
+	public Optional<Map<String, Object>> roleplayInfo(UUID groupId) {
+		return DbRows.one(jdbc, """
+				select id, mode, rp_premise, owner_id, name, book_title from public.chat_groups
+				 where id = :group and deleted_at is null
+				""", Map.of("group", groupId));
+	}
+
+	/**
+	 * Vez do narrador: no máximo uma narração a cada {@code cooldownSeconds} e {@code dailyCap} por
+	 * dia (horário de Brasília). Atômico: duas chamadas juntas não narram duas vezes.
+	 */
+	public boolean claimNarration(UUID groupId, int cooldownSeconds, int dailyCap) {
+		return jdbc.sql("""
+				update public.chat_groups
+				   set rp_last_narration_at = now(),
+				       rp_narrations_count = case when rp_narrations_day = (now() at time zone 'America/Sao_Paulo')::date
+				                                  then rp_narrations_count + 1 else 1 end,
+				       rp_narrations_day = (now() at time zone 'America/Sao_Paulo')::date
+				 where id = :group and mode = 'roleplay' and deleted_at is null
+				   and (rp_last_narration_at is null or rp_last_narration_at < now() - make_interval(secs => :cooldown))
+				   and (rp_narrations_day is distinct from (now() at time zone 'America/Sao_Paulo')::date or rp_narrations_count < :cap)
+				returning id
+				""").param("group", groupId).param("cooldown", cooldownSeconds).param("cap", dailyCap)
+				.query(UUID.class).optional().isPresent();
+	}
+
+	/** Mensagens das pessoas desde a última narração (gatilho do narrador automático). */
+	public int playerMessagesSinceNarration(UUID groupId) {
+		return jdbc.sql("""
+				select count(*) from public.chat_messages
+				 where group_id = :group and kind = 'user' and deleted_at is null
+				   and id > coalesce((select max(id) from public.chat_messages where group_id = :group and kind = 'narrator'), 0)
+				""").param("group", groupId).query(Integer.class).single();
+	}
+
+	/** As últimas mensagens da história, da mais antiga para a mais nova, para o narrador ler. */
+	public List<Map<String, Object>> storySoFar(UUID groupId, int limit) {
+		List<Map<String, Object>> rows = new ArrayList<>(DbRows.list(jdbc, """
+				select x.id, x.kind, x.body, x.media_kind,
+				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name, m.rp_character
+				  from public.chat_messages x
+				  join auth.users u on u.id = x.author_id
+				  left join public.chat_members m on m.group_id = x.group_id and m.user_id = x.author_id
+				 where x.group_id = :group and x.deleted_at is null
+				 order by x.id desc
+				 limit :limit
+				""", Map.of("group", groupId, "limit", limit)));
+		java.util.Collections.reverse(rows);
+		return rows;
+	}
+
+	/** Quem joga e com qual personagem. */
+	public List<Map<String, Object>> players(UUID groupId) {
+		return DbRows.list(jdbc, """
+				select coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name, m.rp_character
+				  from public.chat_members m
+				  join auth.users u on u.id = m.user_id
+				 where m.group_id = :group and m.banned_at is null
+				 order by m.joined_at
+				 limit 50
+				""", Map.of("group", groupId));
+	}
+
+	/** Fala do narrador (no nome do dono do grupo, cuja cota de IA pagou). */
+	public long insertNarration(UUID groupId, UUID owner, String text) {
+		return jdbc.sql("""
+				insert into public.chat_messages (group_id, author_id, body, client_id, kind)
+				values (:group, :owner, :body, gen_random_uuid(), 'narrator')
+				returning id
+				""").param("group", groupId).param("owner", owner).param("body", text).query(Long.class).single();
 	}
 
 	public String groupName(UUID groupId) {
