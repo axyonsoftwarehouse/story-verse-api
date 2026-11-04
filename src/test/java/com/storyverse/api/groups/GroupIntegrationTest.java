@@ -542,4 +542,294 @@ class GroupIntegrationTest {
 		// Mensagem só de texto continua exigindo texto.
 		assertThrows(AuthException.class, () -> groups.send(owner, groupId, Map.of("body", "", "clientId", UUID.randomUUID().toString())));
 	}
+
+	/* ------------------------- Sininho e selos de status (V40) ------------------------- */
+
+	@SuppressWarnings("unchecked")
+	List<Map<String, Object>> items(String token) {
+		return (List<Map<String, Object>>) groups.notifications(token).get("items");
+	}
+
+	int unread(String token) {
+		return ((Number) groups.notifications(token).get("unread")).intValue();
+	}
+
+	@Test
+	void bellGetsRepliesReactionsAndNewMembersButNotOwnActions() {
+		String owner = member(), ana = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		assertEquals(0, unread(owner));
+
+		// Entrou alguém: o dono é avisado (pelo papel de runtime, com a RLS valendo).
+		asRuntimeUser(idOf(ana), () -> groups.join(ana, groupId));
+		List<Map<String, Object>> ownerItems = items(owner);
+		assertEquals("member_joined", ownerItems.get(0).get("kind"));
+		assertEquals(idOf(ana), ownerItems.get(0).get("actor_id"));
+
+		// Resposta e reação na mensagem do dono: avisos para ele.
+		long mine = messageId(send(owner, groupId, "Que capítulo!"));
+		asRuntimeUser(idOf(ana), () -> groups.send(ana, groupId, Map.of("body", "Né?", "clientId", UUID.randomUUID().toString(), "replyTo", mine)));
+		asRuntimeUser(idOf(ana), () -> groups.react(ana, mine, "🔥", true));
+		ownerItems = items(owner);
+		assertEquals(List.of("reaction", "reply", "member_joined"), ownerItems.stream().map(n -> n.get("kind")).toList());
+		assertEquals("🔥", ownerItems.get(0).get("emoji"));
+		assertEquals("Que capítulo!", ownerItems.get(0).get("message_body"));
+		assertEquals(3, unread(owner));
+
+		// Ações na própria mensagem não avisam ninguém; quem é de fora não vê avisos dos outros.
+		groups.react(owner, mine, "❤️", true);
+		assertEquals(3, unread(owner));
+		assertEquals(0, unread(ana));
+		assertEquals(0, items(member()).size());
+
+		groups.readNotifications(owner);
+		assertEquals(0, unread(owner));
+		assertEquals(3, items(owner).size(), "lidos continuam na lista");
+	}
+
+	@Test
+	void deliveredAndReadPositionsForTheStatusTicks() {
+		String owner = member(), ana = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(ana, groupId);
+		long first = messageId(send(owner, groupId, "um"));
+		long second = messageId(send(owner, groupId, "dois"));
+
+		groups.markDelivered(ana, groupId, Map.of("lastId", second));
+		Map<String, Object> anaRow = memberRow(owner, groupId, ana);
+		assertEquals(second, ((Number) anaRow.get("last_delivered_id")).longValue());
+		assertTrue(((Number) anaRow.get("last_read_id")).longValue() < first, "recebeu, mas não leu");
+
+		// Ler também conta como recebido; nunca volta para trás.
+		groups.markRead(ana, groupId, Map.of("lastId", first));
+		groups.markDelivered(ana, groupId, Map.of("lastId", first));
+		anaRow = memberRow(owner, groupId, ana);
+		assertEquals(first, ((Number) anaRow.get("last_read_id")).longValue());
+		assertEquals(second, ((Number) anaRow.get("last_delivered_id")).longValue());
+
+		// Não passa da última mensagem do grupo nem funciona para quem é de fora.
+		groups.markDelivered(ana, groupId, Map.of("lastId", second + 1000));
+		assertEquals(second, ((Number) memberRow(owner, groupId, ana).get("last_delivered_id")).longValue());
+		String outsider = member();
+		assertThrows(AuthException.class, () -> groups.markDelivered(outsider, groupId, Map.of("lastId", second)));
+	}
+
+	@SuppressWarnings("unchecked")
+	Map<String, Object> memberRow(String viewer, UUID groupId, String who) {
+		return ((List<Map<String, Object>>) groups.group(viewer, groupId).get("members")).stream()
+				.filter(m -> idOf(who).equals(m.get("user_id"))).findFirst().orElseThrow();
+	}
+
+	/** Apagar o grupo que criou (e sair sendo a única pessoa) com a RLS valendo, como na VPS. */
+	@Test
+	void ownerDeletesTheGroupUnderTheRuntimeRole() {
+		String owner = member(), friend = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(friend, groupId);
+		send(owner, groupId, "tchau");
+		asRuntimeUser(idOf(owner), () -> {
+			groups.delete(owner, groupId);
+			return null;
+		});
+		assertTrue(groups.myGroups(owner).stream().noneMatch(g -> groupId.equals(g.get("id"))));
+		assertThrows(AuthException.class, () -> groups.group(friend, groupId));
+
+		String alone = member();
+		UUID soloId = id(newGroup(alone, "private"));
+		asRuntimeUser(idOf(alone), () -> {
+			groups.leave(alone, soloId);
+			return null;
+		});
+		assertTrue(groups.myGroups(alone).stream().noneMatch(g -> soloId.equals(g.get("id"))));
+	}
+
+	/* ------------------------------ Roleplay (V42) ------------------------------ */
+
+	@Autowired NarratorService narrator;
+
+	List<Map<String, Object>> narrations(String token, UUID groupId) {
+		return groups.messages(token, groupId, null, null, null).stream().filter(m -> "narrator".equals(m.get("kind"))).toList();
+	}
+
+	List<Map<String, Object>> waitNarrations(String token, UUID groupId, int count) throws InterruptedException {
+		for (int i = 0; i < 50; i++) {
+			List<Map<String, Object>> found = narrations(token, groupId);
+			if (found.size() >= count) return found;
+			Thread.sleep(100);
+		}
+		return narrations(token, groupId);
+	}
+
+	@Test
+	void roleplayGroupOpensWithTheNarratorAndNarratesEveryThreeMessages() throws Exception {
+		java.util.concurrent.atomic.AtomicReference<String> lastSystem = new java.util.concurrent.atomic.AtomicReference<>();
+		java.util.concurrent.atomic.AtomicReference<List<com.storyverse.api.ai.AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
+		narrator.useWriter((system, history) -> {
+			lastSystem.set(system);
+			lastHistory.set(history);
+			return "Narrador: *A porta do castelo range.* Um vento frio apaga as velas.";
+		});
+		try {
+			String owner = member(), ana = member();
+			Map<String, Object> body = new HashMap<>();
+			body.put("name", "Noite no Castelo");
+			body.put("visibility", "private");
+			body.put("mode", "roleplay");
+			body.put("rpPremise", "Viajantes presos num castelo nos Cárpatos durante uma tempestade.");
+			Map<String, Object> created = groups.create(owner, body);
+			UUID groupId = id(created);
+			assertEquals("roleplay", created.get("mode"));
+			groups.joinByInvite(ana, String.valueOf(created.get("invite_code")));
+
+			// Abertura: a primeira fala do narrador sai sozinha, sem o rótulo "Narrador:".
+			List<Map<String, Object>> first = waitNarrations(owner, groupId, 1);
+			assertEquals(1, first.size());
+			assertEquals("*A porta do castelo range.* Um vento frio apaga as velas.", first.get(0).get("body"));
+			assertTrue(lastSystem.get().contains("Cárpatos"));
+
+			// Personagens entram nas instruções do narrador.
+			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker"));
+			assertEquals("Mina Harker", groups.group(ana, groupId).get("my_character"));
+
+			// Foto do personagem: só da própria pasta no Storage; aparece para os outros membros.
+			String base = "https://api.example.test/api/v1/storage/public/profile-media/";
+			String minaPhoto = base + idOf(ana) + "/grupos/" + UUID.randomUUID();
+			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker", "photo", minaPhoto));
+			assertEquals(minaPhoto, groups.group(ana, groupId).get("my_character_photo"));
+			assertEquals(minaPhoto, memberRow(owner, groupId, ana).get("rp_photo"));
+			assertThrows(AuthException.class, () -> groups.setCharacter(ana, groupId, Map.of("character", "Mina", "photo", base + idOf(owner) + "/grupos/" + UUID.randomUUID())));
+			assertThrows(AuthException.class, () -> groups.setCharacter(ana, groupId, Map.of("character", "Mina", "photo", "https://evil.example/x.png")));
+
+			// Duas mensagens não bastam; a terceira chama o narrador (passado o intervalo).
+			jdbc.sql("update public.chat_groups set rp_last_narration_at = now() - interval '1 hour' where id = :id").param("id", groupId).update();
+			for (int i = 0; i < 5; i++) send(i % 2 == 0 ? ana : owner, groupId, "*Mina acende uma lamparina.* Tem alguém aí? " + i);
+			Thread.sleep(400);
+			assertEquals(1, narrations(owner, groupId).size(), "cinco mensagens ainda não chamam o narrador");
+			send(ana, groupId, "Vamos subir a escada.");
+			assertEquals(2, waitNarrations(owner, groupId, 2).size());
+			assertTrue(lastSystem.get().contains("Mina Harker (jogado por"));
+			String told = lastHistory.get().get(lastHistory.get().size() - 1).content();
+			assertTrue(told.contains("Mina Harker"), told);
+			assertEquals("assistant", lastHistory.get().get(lastHistory.get().size() - 2).role(), "a abertura entra como fala do narrador");
+
+			// Intervalo: logo em seguida não narra de novo; com o teto do dia batido também não.
+			assertNull(narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
+			jdbc.sql("""
+					update public.chat_groups set rp_last_narration_at = now() - interval '1 hour',
+					       rp_narrations_day = (now() at time zone 'America/Sao_Paulo')::date, rp_narrations_count = 50
+					 where id = :id""").param("id", groupId).update();
+			assertNull(narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
+
+			// "Narrar" é só de quem administra; pela conta restrita da VPS, com a RLS valendo, funciona.
+			assertThrows(AuthException.class, () -> groups.narrate(ana, groupId));
+			jdbc.sql("update public.chat_groups set rp_narrations_count = 0 where id = :id").param("id", groupId).update();
+			Long id = asRuntimeUser(idOf(owner), () -> narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
+			assertNotNull(id);
+		} finally {
+			narrator.useWriter(null);
+		}
+	}
+
+	@Test
+	void roleplayNeedsAPremiseAndNarrateOnlyInRoleplayGroups() {
+		String owner = member();
+		Map<String, Object> body = new HashMap<>();
+		body.put("name", "Sem premissa");
+		body.put("visibility", "private");
+		body.put("mode", "roleplay");
+		assertThrows(AuthException.class, () -> groups.create(owner, body));
+		UUID chat = id(newGroup(owner, "private"));
+		assertThrows(AuthException.class, () -> groups.narrate(owner, chat));
+		assertEquals("chat", groups.group(owner, chat).get("mode"));
+	}
+
+	@Test
+	void narratorPromptKeepsTheRules() {
+		String system = NarratorService.system(Map.of("name", "Clube", "rp_premise", "Piratas no Caribe."),
+				List.of(Map.of("name", "Ana", "rp_character", "Capitã Rosa")));
+		assertTrue(system.contains("Piratas no Caribe."));
+		assertTrue(system.contains("Capitã Rosa (jogado por Ana)"));
+		assertTrue(system.contains("NUNCA fale"));
+		assertEquals("Texto", NarratorService.clean("**Narrador:** Texto"));
+	}
+
+	/* ------------------------------ Roleplay que vira livro (V44) ------------------------------ */
+
+	@Autowired RoleplayBookService roleplayBooks;
+
+	@Test
+	void roleplayBecomesABookForTheMembers() throws Exception {
+		java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+		roleplayBooks.useWriter((system, history) -> "# A chegada " + calls.incrementAndGet()
+				+ "\n\nA tempestade trouxe os viajantes ao castelo.\n\n— Tem alguém aí? — perguntou Mina.");
+		try {
+			String owner = member(), ana = member(), outsider = member();
+			Map<String, Object> body = new HashMap<>();
+			body.put("name", "Noite no Castelo");
+			body.put("visibility", "public");
+			body.put("mode", "roleplay");
+			body.put("rpPremise", "Viajantes presos num castelo nos Cárpatos.");
+			UUID groupId = id(groups.create(owner, body));
+			groups.join(ana, groupId);
+			groups.setCharacter(ana, groupId, Map.of("character", "Mina Harker"));
+
+			assertThrows(AuthException.class, () -> groups.startBook(owner, groupId), "curta demais");
+			for (int i = 0; i < 6; i++) send(i % 2 == 0 ? ana : owner, groupId, "*Mina anda pelo corredor " + i + ".* Que frio!");
+			assertThrows(AuthException.class, () -> groups.startBook(ana, groupId), "só o dono");
+			assertThrows(AuthException.class, () -> groups.book(ana, groupId), "ainda não existe");
+
+			Map<String, Object> started = groups.startBook(owner, groupId);
+			assertEquals("writing", started.get("status"));
+			Map<String, Object> ready = null;
+			for (int i = 0; i < 50; i++) {
+				ready = groups.book(ana, groupId);
+				if ("ready".equals(ready.get("status"))) break;
+				Thread.sleep(100);
+			}
+			assertEquals("ready", ready.get("status"));
+			assertEquals("Noite no Castelo", ready.get("title"));
+			String text = String.valueOf(ready.get("text"));
+			assertTrue(text.startsWith("Capítulo 1 — A chegada 1"), text);
+			assertTrue(text.contains("— Tem alguém aí? — perguntou Mina."));
+			assertThrows(AuthException.class, () -> groups.book(outsider, groupId), "quem é de fora não lê");
+		} finally {
+			roleplayBooks.useWriter(null);
+		}
+	}
+
+	@Test
+	void bookChaptersSplitAndTitlesAreCleaned() {
+		List<Map<String, Object>> story = new java.util.ArrayList<>();
+		for (int i = 0; i < 80; i++) story.add(Map.of("kind", "user", "body", "linha " + i, "author_name", "Ana"));
+		assertEquals(4, RoleplayBookService.chapters(story).size());
+		assertEquals("O castelo", RoleplayBookService.chapter("**Capítulo 2: O castelo**\n\nTexto.", 2).title());
+		assertEquals("Parte 3", RoleplayBookService.chapter("", 3).title());
+	}
+
+	/* ------------------------------ Adicionar pessoa (V45) ------------------------------ */
+
+	String emailOf(String token) {
+		return jdbc.sql("select email from auth.users where id = :id").param("id", idOf(token)).query(String.class).single();
+	}
+
+	@Test
+	void managersAddPeopleByEmailAndThePersonIsNotified() {
+		String owner = member(), mod = member(), plain = member(), friend = member(), other = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(mod, groupId);
+		groups.join(plain, groupId);
+		groups.setRole(owner, groupId, idOf(mod), Map.of("role", "moderator"));
+
+		// Pela conta restrita (RLS valendo): o dono adiciona pelo e-mail, em maiúsculas inclusive.
+		Map<String, Object> after = asRuntimeUser(idOf(owner), () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend).toUpperCase())));
+		assertTrue(((List<?>) after.get("members")).size() >= 4);
+		assertEquals(Boolean.TRUE, groups.group(friend, groupId).get("is_member"));
+		assertEquals("member_added", items(friend).get(0).get("kind"));
+
+		// Moderador também adiciona; membro comum não; e-mail desconhecido e quem já está dão erro.
+		groups.addByEmail(mod, groupId, Map.of("email", emailOf(other)));
+		assertThrows(AuthException.class, () -> groups.addByEmail(plain, groupId, Map.of("email", emailOf(member()))));
+		assertThrows(AuthException.class, () -> groups.addByEmail(owner, groupId, Map.of("email", "ninguem@example.invalid")));
+		assertThrows(AuthException.class, () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend))));
+	}
 }

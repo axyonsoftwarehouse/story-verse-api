@@ -69,6 +69,9 @@ public class GroupService {
 	private final TransactionTemplate transactions;
 	private final PushService push;
 	private final ChatMediaStore media;
+	private final NarratorService narrator;
+	private final RoleplayBookService books;
+	private final com.storyverse.api.auth.UserRepository users;
 	/** Fotos e áudios por pessoa por dia (o disco fica pequeno de qualquer jeito, mas sem abuso). */
 	static final int MEDIA_PER_DAY = 40;
 	static final int MAX_AUDIO_MS = 125_000;
@@ -76,7 +79,8 @@ public class GroupService {
 	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media,
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media, NarratorService narrator, RoleplayBookService books,
+			com.storyverse.api.auth.UserRepository users,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -89,6 +93,9 @@ public class GroupService {
 		this.transactions = new TransactionTemplate(transactions);
 		this.push = push;
 		this.media = media;
+		this.narrator = narrator;
+		this.books = books;
+		this.users = users;
 		stream.onPresence(this::presenceChanged);
 	}
 
@@ -143,7 +150,13 @@ public class GroupService {
 			throw new AuthException(409, "Você já está no número máximo de grupos.");
 		}
 		limits.check("group-create:" + userId, 5, Duration.ofDays(1));
+		boolean roleplay = "roleplay".equals(body.get("mode"));
+		String premise = roleplay ? premise(body.get("rpPremise")) : null;
 		UUID id = repository.insertGroup(userId, fields, newInviteCode());
+		if (roleplay) {
+			repository.setRoleplay(id, premise);
+			narrator.opening(id, userId);
+		}
 		return group(userId, id);
 	}
 
@@ -154,6 +167,7 @@ public class GroupService {
 		requireOwnerOrStaff(userId, current);
 		GroupFields fields = fields(body, current, userId);
 		repository.updateGroup(id, fields);
+		if (body.containsKey("rpPremise") && "roleplay".equals(current.get("mode"))) repository.updatePremise(id, premise(body.get("rpPremise")));
 		auditIfStaffAction(userId, current, "group.update", id);
 		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "updated"));
 		return group(userId, id);
@@ -274,7 +288,60 @@ public class GroupService {
 		UUID userId = requireUser(token);
 		activeMembership(id, userId);
 		long lastId = longValue(body.get("lastId"));
-		if (lastId > 0) repository.markRead(id, userId, lastId);
+		if (lastId <= 0) return;
+		long[] before = repository.receipts(id, userId);
+		repository.markRead(id, userId, lastId);
+		repository.markDelivered(id, userId, lastId);
+		publishReceipts(id, userId, before);
+	}
+
+	/** O aparelho recebeu as mensagens até `lastId` (selo ✓✓ para quem escreveu). */
+	@Transactional
+	public void markDelivered(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		long lastId = longValue(body.get("lastId"));
+		if (lastId <= 0) return;
+		long[] before = repository.receipts(id, userId);
+		if (before[0] >= lastId) return;
+		repository.markDelivered(id, userId, lastId);
+		publishReceipts(id, userId, before);
+	}
+
+	/** Avisa só quem escreveu mensagens que mudaram de selo (não o grupo inteiro). */
+	private void publishReceipts(UUID groupId, UUID userId, long[] before) {
+		long[] after = repository.receipts(groupId, userId);
+		if (after[0] == before[0] && after[1] == before[1]) return;
+		java.util.Set<UUID> authors = new java.util.HashSet<>(repository.authorsBetween(groupId, before[0], after[0], userId));
+		authors.addAll(repository.authorsBetween(groupId, before[1], after[1], userId));
+		if (authors.isEmpty()) return;
+		stream.publish(authors, "receipt", Map.of("groupId", groupId, "userId", userId, "deliveredId", after[0], "readId", after[1]));
+	}
+
+	/** Cria o aviso do sininho e cutuca o app da pessoa (depois do commit). */
+	private void notifyUser(UUID user, String kind, UUID groupId, Long messageId, String emoji) {
+		if (user == null) return;
+		try {
+			if (repository.notify(user, kind, groupId, messageId, emoji)) stream.publish(List.of(user), "notification", Map.of("kind", kind));
+		} catch (RuntimeException exception) {
+			// Aviso é extra: nunca impede a ação principal.
+		}
+	}
+
+	/* ------------------------------ Sininho ------------------------------ */
+
+	@Transactional(readOnly = true)
+	public Map<String, Object> notifications(String token) {
+		UUID userId = auth.authenticate(token);
+		DbSession.setUser(jdbc, userId);
+		return Map.of("items", repository.notifications(userId, 50), "unread", repository.unreadNotifications(userId));
+	}
+
+	@Transactional
+	public void readNotifications(String token) {
+		UUID userId = auth.authenticate(token);
+		DbSession.setUser(jdbc, userId);
+		repository.markNotificationsRead(userId);
 	}
 
 	/** "Fulano está digitando": só vai pelo tempo real, para os outros membros; nada é gravado. */
@@ -328,6 +395,8 @@ public class GroupService {
 		stream.publish(repository.activeMemberIds(id), "message", publicView(message));
 		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
 				spoiler != null ? "🙈 mensagem com spoiler" : preview(text));
+		if (replyTo != null) notifyReply(replyTo, id, messageId);
+		narrator.afterPlayerMessage(id, userId);
 		return message;
 	}
 
@@ -376,6 +445,7 @@ public class GroupService {
 		Map<String, Object> message = repository.message(userId, messageId)
 				.orElseThrow(() -> new AuthException(500, "Mensagem não gravada."));
 		stream.publish(repository.activeMemberIds(id), "message", publicView(message));
+		if (replyTo != null) notifyReply(replyTo, id, messageId);
 		String label = "image".equals(kind) ? "📷 Foto" : "🎤 Áudio";
 		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
 				spoiler != null ? "🙈 mensagem com spoiler" : caption == null ? label : label + ": " + preview(caption));
@@ -392,6 +462,98 @@ public class GroupService {
 		return media.file(String.valueOf(row.get("media_path"))).map(path -> Map.entry(path, String.valueOf(row.get("media_mime"))));
 	}
 
+	/* ------------------------------ Roleplay ------------------------------ */
+
+	private static String premise(Object value) {
+		String text = value == null ? null : String.valueOf(value).trim();
+		if (text == null || text.length() < 10 || text.length() > 1500) {
+			throw new AuthException(400, "Conte a premissa do roleplay (de 10 a 1500 caracteres).");
+		}
+		return text;
+	}
+
+	/** "Narrar": quem administra o grupo chama o narrador (respeita o intervalo e o teto do dia). */
+	@Transactional(readOnly = true)
+	public void narrate(String token, UUID id) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		Map<String, Object> group = visibleGroup(userId, id);
+		if (!"roleplay".equals(group.get("mode"))) throw new AuthException(400, "Este grupo não é de roleplay.");
+		Object role = group.get("my_role");
+		if (!"owner".equals(role) && !"moderator".equals(role)) throw new AuthException(403, "Só quem administra o grupo chama o narrador.");
+		limits.check("narrate:" + userId, 6, Duration.ofMinutes(1));
+		narrator.requestNow(id, userId);
+	}
+
+	/**
+	 * Quem administra o grupo adiciona uma pessoa pelo e-mail da conta dela. A pessoa recebe o
+	 * aviso no sininho. E-mail exato (sem busca) e com limite por hora, para não virar varredura.
+	 */
+	@Transactional
+	public Map<String, Object> addByEmail(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		Map<String, Object> membership = activeMembership(id, userId);
+		String role = String.valueOf(membership.get("role"));
+		if (!"owner".equals(role) && !"moderator".equals(role)) throw new AuthException(403, "Só quem administra o grupo adiciona pessoas.");
+		String email = text(body.get("email"));
+		if (email == null || email.length() > 254 || !email.contains("@")) throw new AuthException(400, "Digite o e-mail da conta da pessoa.");
+		limits.check("group-add:" + userId, 30, Duration.ofHours(1));
+		UUID target = users.findByEmail(email.trim().toLowerCase(java.util.Locale.ROOT)).map(com.storyverse.api.auth.User::id)
+				.orElseThrow(() -> new AuthException(404, "Não encontramos uma conta com esse e-mail."));
+		var existing = repository.membership(id, target);
+		if (existing.isPresent() && existing.get().get("banned_at") == null) throw new AuthException(409, "Essa pessoa já está no grupo.");
+		if (repository.countMembers(id) >= MAX_MEMBERS) throw new AuthException(409, "Este grupo está cheio.");
+		if (!repository.addMemberByManager(id, target)) throw new AuthException(403, "Só quem administra o grupo adiciona pessoas.");
+		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(target)).toList();
+		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", target));
+		notifyUser(target, "member_added", id, null, null);
+		stream.publish(List.of(target), "group", Map.of("groupId", id, "type", "added"));
+		return group(userId, id);
+	}
+
+	/** "Encerrar e virar livro": só quem criou o grupo (a IA usa a cota dele). */
+	@Transactional
+	public Map<String, Object> startBook(String token, UUID id) {
+		UUID userId = requireUser(token);
+		Map<String, Object> group = visibleGroup(userId, id);
+		if (!"roleplay".equals(group.get("mode"))) throw new AuthException(400, "Só roleplays viram livro.");
+		if (!"owner".equals(group.get("my_role"))) throw new AuthException(403, "Só quem criou o grupo transforma a história em livro.");
+		limits.check("roleplay-book:" + userId, 3, Duration.ofDays(1));
+		books.start(id, userId, String.valueOf(group.get("name")));
+		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "book_writing"));
+		return books.book(id).orElseThrow();
+	}
+
+	/** O livro do roleplay (status e, quando pronto, o texto) para quem é membro. */
+	@Transactional(readOnly = true)
+	public Map<String, Object> book(String token, UUID id) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		return books.book(id).orElseThrow(() -> new AuthException(404, "Esta história ainda não virou livro."));
+	}
+
+	/** O personagem que a pessoa interpreta no roleplay. */
+	@Transactional
+	public Map<String, Object> setCharacter(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		String character = text(body.get("character"));
+		if (character != null && character.length() > 60) throw new AuthException(400, "Nome de personagem de até 60 caracteres.");
+		// Foto do personagem: arquivo da própria pasta de grupos no Storage (como a foto do grupo).
+		String photo = character == null ? null : text(body.get("photo"));
+		if (photo != null && !ownUpload(photo, userId)) throw new AuthException(400, "Foto do personagem inválida.");
+		repository.setCharacter(id, userId, character, photo);
+		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "updated"));
+		return group(userId, id);
+	}
+
+	private void notifyReply(long parentId, UUID groupId, long messageId) {
+		repository.messageState(parentId).ifPresent(parent -> {
+			Object author = parent.get("author_id");
+			if (author != null) notifyUser(UUID.fromString(String.valueOf(author)), "reply", groupId, messageId, null);
+		});
+	}
+
 	/** A cada 10 minutos: apaga do disco as fotos e áudios vencidos (e o que sobrou órfão). */
 	@Scheduled(fixedRate = 600_000, initialDelay = 60_000)
 	public void expireMedia() {
@@ -399,6 +561,7 @@ public class GroupService {
 			List<String> expired = transactions.execute(status -> repository.expireMedia());
 			if (expired != null) expired.forEach(media::remove);
 			media.sweep(Instant.now());
+			transactions.execute(status -> repository.pruneNotifications());
 		} catch (RuntimeException exception) {
 			// Tenta de novo na próxima rodada.
 		}
@@ -438,6 +601,8 @@ public class GroupService {
 		limits.check("group-reaction:" + userId, 60, Duration.ofMinutes(1));
 		if (add) {
 			repository.addReaction(messageId, userId, emoji);
+			Object author = state.get("author_id");
+			if (author != null) notifyUser(UUID.fromString(String.valueOf(author)), "reaction", groupId, messageId, emoji);
 		} else {
 			repository.removeReaction(messageId, userId, emoji);
 		}
@@ -527,6 +692,7 @@ public class GroupService {
 		// Só depois de entrar a conta enxerga os outros membros (RLS) para avisá-los.
 		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(userId)).toList();
 		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", userId));
+		notifyUser(repository.ownerOf(id), "member_joined", id, null, null);
 		return group(userId, id);
 	}
 

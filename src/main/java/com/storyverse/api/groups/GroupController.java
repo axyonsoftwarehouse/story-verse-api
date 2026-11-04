@@ -144,6 +144,60 @@ public class GroupController {
 		service.typing(AuthTokens.bearer(authorization), id);
 	}
 
+	/** Quem administra adiciona uma pessoa pelo e-mail da conta dela. */
+	@PostMapping("/{id}/members")
+	public Map<String, Object> addMember(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.addByEmail(AuthTokens.bearer(authorization), id, body);
+	}
+
+	/** Roleplay: encerra e transforma a história em livro (só o dono). */
+	@PostMapping("/{id}/book")
+	@ResponseStatus(HttpStatus.ACCEPTED)
+	public Map<String, Object> startBook(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.startBook(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Roleplay: o livro (status e texto) para os membros. */
+	@GetMapping("/{id}/book")
+	public Map<String, Object> book(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.book(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Roleplay: chama o narrador agora. */
+	@PostMapping("/{id}/narrate")
+	@ResponseStatus(HttpStatus.ACCEPTED)
+	public void narrate(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.narrate(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Roleplay: o personagem que a pessoa interpreta. */
+	@PutMapping("/{id}/character")
+	public Map<String, Object> character(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.setCharacter(AuthTokens.bearer(authorization), id, body);
+	}
+
+	/** O aparelho recebeu as mensagens até lastId (selo de recebido). */
+	@PostMapping("/{id}/delivered")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void delivered(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.markDelivered(AuthTokens.bearer(authorization), id, body);
+	}
+
 	@DeleteMapping("/{id}/members/{userId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void removeMember(
