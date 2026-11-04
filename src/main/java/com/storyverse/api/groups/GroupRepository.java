@@ -24,6 +24,7 @@ public class GroupRepository {
 			select g.id, g.name, g.description, g.photo_url, g.background, g.visibility, g.owner_id, g.book_key, g.book_title, g.book_cover,
 			       g.goal_chapter, g.goal_until, g.last_message_at, g.created_at, g.mode, g.rp_premise,
 			       case when m.banned_at is null then m.rp_character end as my_character,
+			       case when m.banned_at is null then m.rp_photo end as my_character_photo,
 			       (select count(*) from public.chat_members c
 			         where c.group_id = g.id and c.banned_at is null) as member_count,
 			       (m.user_id is not null and m.banned_at is null) as is_member,
@@ -349,7 +350,7 @@ public class GroupRepository {
 	/** Membros ativos, com o progresso no livro do grupo (estante) quando houver. */
 	public List<Map<String, Object>> members(UUID groupId) {
 		return DbRows.list(jdbc, """
-				select m.user_id, m.role, m.joined_at, m.last_read_id, m.last_delivered_id, m.rp_character,
+				select m.user_id, m.role, m.joined_at, m.last_read_id, m.last_delivered_id, m.rp_character, m.rp_photo,
 				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || m.user_id::text || '/')
@@ -387,9 +388,9 @@ public class GroupRepository {
 				.param("group", groupId).param("premise", premise).update();
 	}
 
-	public void setCharacter(UUID groupId, UUID userId, String character) {
-		jdbc.sql("update public.chat_members set rp_character = :character where group_id = :group and user_id = :user")
-				.param("group", groupId).param("user", userId).param("character", character).update();
+	public void setCharacter(UUID groupId, UUID userId, String character, String photo) {
+		jdbc.sql("update public.chat_members set rp_character = :character, rp_photo = :photo where group_id = :group and user_id = :user")
+				.param("group", groupId).param("user", userId).param("character", character).param("photo", photo).update();
 	}
 
 	/** Modo, premissa, dono, nome e livro do grupo (vazio se apagado ou invisível para a sessão). */

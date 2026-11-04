@@ -485,7 +485,10 @@ public class GroupService {
 		activeMembership(id, userId);
 		String character = text(body.get("character"));
 		if (character != null && character.length() > 60) throw new AuthException(400, "Nome de personagem de até 60 caracteres.");
-		repository.setCharacter(id, userId, character);
+		// Foto do personagem: arquivo da própria pasta de grupos no Storage (como a foto do grupo).
+		String photo = character == null ? null : text(body.get("photo"));
+		if (photo != null && !ownUpload(photo, userId)) throw new AuthException(400, "Foto do personagem inválida.");
+		repository.setCharacter(id, userId, character, photo);
 		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "updated"));
 		return group(userId, id);
 	}
