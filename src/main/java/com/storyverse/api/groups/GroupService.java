@@ -69,6 +69,7 @@ public class GroupService {
 	private final TransactionTemplate transactions;
 	private final PushService push;
 	private final ChatMediaStore media;
+	private final NarratorService narrator;
 	/** Fotos e áudios por pessoa por dia (o disco fica pequeno de qualquer jeito, mas sem abuso). */
 	static final int MEDIA_PER_DAY = 40;
 	static final int MAX_AUDIO_MS = 125_000;
@@ -76,7 +77,7 @@ public class GroupService {
 	private final String publicApiUrl;
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
-			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media,
+			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media, NarratorService narrator,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -89,6 +90,7 @@ public class GroupService {
 		this.transactions = new TransactionTemplate(transactions);
 		this.push = push;
 		this.media = media;
+		this.narrator = narrator;
 		stream.onPresence(this::presenceChanged);
 	}
 
@@ -143,7 +145,13 @@ public class GroupService {
 			throw new AuthException(409, "Você já está no número máximo de grupos.");
 		}
 		limits.check("group-create:" + userId, 5, Duration.ofDays(1));
+		boolean roleplay = "roleplay".equals(body.get("mode"));
+		String premise = roleplay ? premise(body.get("rpPremise")) : null;
 		UUID id = repository.insertGroup(userId, fields, newInviteCode());
+		if (roleplay) {
+			repository.setRoleplay(id, premise);
+			narrator.opening(id, userId);
+		}
 		return group(userId, id);
 	}
 
@@ -154,6 +162,7 @@ public class GroupService {
 		requireOwnerOrStaff(userId, current);
 		GroupFields fields = fields(body, current, userId);
 		repository.updateGroup(id, fields);
+		if (body.containsKey("rpPremise") && "roleplay".equals(current.get("mode"))) repository.updatePremise(id, premise(body.get("rpPremise")));
 		auditIfStaffAction(userId, current, "group.update", id);
 		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "updated"));
 		return group(userId, id);
@@ -382,6 +391,7 @@ public class GroupService {
 		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
 				spoiler != null ? "🙈 mensagem com spoiler" : preview(text));
 		if (replyTo != null) notifyReply(replyTo, id, messageId);
+		narrator.afterPlayerMessage(id, userId);
 		return message;
 	}
 
@@ -445,6 +455,39 @@ public class GroupService {
 		if (row == null) return Optional.empty();
 		activeMembership(UUID.fromString(String.valueOf(row.get("group_id"))), userId);
 		return media.file(String.valueOf(row.get("media_path"))).map(path -> Map.entry(path, String.valueOf(row.get("media_mime"))));
+	}
+
+	/* ------------------------------ Roleplay ------------------------------ */
+
+	private static String premise(Object value) {
+		String text = value == null ? null : String.valueOf(value).trim();
+		if (text == null || text.length() < 10 || text.length() > 1500) {
+			throw new AuthException(400, "Conte a premissa do roleplay (de 10 a 1500 caracteres).");
+		}
+		return text;
+	}
+
+	/** "Narrar": qualquer membro chama o narrador (respeita o intervalo e o teto do dia). */
+	@Transactional(readOnly = true)
+	public void narrate(String token, UUID id) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		Map<String, Object> group = visibleGroup(userId, id);
+		if (!"roleplay".equals(group.get("mode"))) throw new AuthException(400, "Este grupo não é de roleplay.");
+		limits.check("narrate:" + userId, 6, Duration.ofMinutes(1));
+		narrator.requestNow(id, userId);
+	}
+
+	/** O personagem que a pessoa interpreta no roleplay. */
+	@Transactional
+	public Map<String, Object> setCharacter(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		activeMembership(id, userId);
+		String character = text(body.get("character"));
+		if (character != null && character.length() > 60) throw new AuthException(400, "Nome de personagem de até 60 caracteres.");
+		repository.setCharacter(id, userId, character);
+		stream.publish(repository.activeMemberIds(id), "group", Map.of("groupId", id, "type", "updated"));
+		return group(userId, id);
 	}
 
 	private void notifyReply(long parentId, UUID groupId, long messageId) {
