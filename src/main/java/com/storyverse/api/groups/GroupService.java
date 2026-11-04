@@ -71,6 +71,7 @@ public class GroupService {
 	private final ChatMediaStore media;
 	private final NarratorService narrator;
 	private final RoleplayBookService books;
+	private final com.storyverse.api.auth.UserRepository users;
 	/** Fotos e áudios por pessoa por dia (o disco fica pequeno de qualquer jeito, mas sem abuso). */
 	static final int MEDIA_PER_DAY = 40;
 	static final int MAX_AUDIO_MS = 125_000;
@@ -79,6 +80,7 @@ public class GroupService {
 
 	public GroupService(GroupRepository repository, GroupStream stream, AuthService auth, AuthzService authz,
 			FeatureAccessService features, JdbcClient jdbc, RateLimitGate limits, PlatformTransactionManager transactions, PushService push, ChatMediaStore media, NarratorService narrator, RoleplayBookService books,
+			com.storyverse.api.auth.UserRepository users,
 			@Value("${app.public-api-url:https://api.storyverse.2.29.42.104.sslip.io}") String publicApiUrl) {
 		this.publicApiUrl = publicApiUrl.trim().replaceAll("/+$", "");
 		this.repository = repository;
@@ -93,6 +95,7 @@ public class GroupService {
 		this.media = media;
 		this.narrator = narrator;
 		this.books = books;
+		this.users = users;
 		stream.onPresence(this::presenceChanged);
 	}
 
@@ -469,15 +472,43 @@ public class GroupService {
 		return text;
 	}
 
-	/** "Narrar": qualquer membro chama o narrador (respeita o intervalo e o teto do dia). */
+	/** "Narrar": quem administra o grupo chama o narrador (respeita o intervalo e o teto do dia). */
 	@Transactional(readOnly = true)
 	public void narrate(String token, UUID id) {
 		UUID userId = requireUser(token);
 		activeMembership(id, userId);
 		Map<String, Object> group = visibleGroup(userId, id);
 		if (!"roleplay".equals(group.get("mode"))) throw new AuthException(400, "Este grupo não é de roleplay.");
+		Object role = group.get("my_role");
+		if (!"owner".equals(role) && !"moderator".equals(role)) throw new AuthException(403, "Só quem administra o grupo chama o narrador.");
 		limits.check("narrate:" + userId, 6, Duration.ofMinutes(1));
 		narrator.requestNow(id, userId);
+	}
+
+	/**
+	 * Quem administra o grupo adiciona uma pessoa pelo e-mail da conta dela. A pessoa recebe o
+	 * aviso no sininho. E-mail exato (sem busca) e com limite por hora, para não virar varredura.
+	 */
+	@Transactional
+	public Map<String, Object> addByEmail(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		Map<String, Object> membership = activeMembership(id, userId);
+		String role = String.valueOf(membership.get("role"));
+		if (!"owner".equals(role) && !"moderator".equals(role)) throw new AuthException(403, "Só quem administra o grupo adiciona pessoas.");
+		String email = text(body.get("email"));
+		if (email == null || email.length() > 254 || !email.contains("@")) throw new AuthException(400, "Digite o e-mail da conta da pessoa.");
+		limits.check("group-add:" + userId, 30, Duration.ofHours(1));
+		UUID target = users.findByEmail(email.trim().toLowerCase(java.util.Locale.ROOT)).map(com.storyverse.api.auth.User::id)
+				.orElseThrow(() -> new AuthException(404, "Não encontramos uma conta com esse e-mail."));
+		var existing = repository.membership(id, target);
+		if (existing.isPresent() && existing.get().get("banned_at") == null) throw new AuthException(409, "Essa pessoa já está no grupo.");
+		if (repository.countMembers(id) >= MAX_MEMBERS) throw new AuthException(409, "Este grupo está cheio.");
+		if (!repository.addMemberByManager(id, target)) throw new AuthException(403, "Só quem administra o grupo adiciona pessoas.");
+		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(target)).toList();
+		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", target));
+		notifyUser(target, "member_added", id, null, null);
+		stream.publish(List.of(target), "group", Map.of("groupId", id, "type", "added"));
+		return group(userId, id);
 	}
 
 	/** "Encerrar e virar livro": só quem criou o grupo (a IA usa a cota dele). */

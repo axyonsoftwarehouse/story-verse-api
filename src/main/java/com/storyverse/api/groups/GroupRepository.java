@@ -225,6 +225,12 @@ public class GroupRepository {
 				.param("id", id).param("code", code).update();
 	}
 
+	/** Quem administra adiciona outra pessoa (função do banco confere o papel; ver V45). */
+	public boolean addMemberByManager(UUID groupId, UUID userId) {
+		return Boolean.TRUE.equals(jdbc.sql("select public.chat_add_member(:group, :user)")
+				.param("group", groupId).param("user", userId).query(Boolean.class).single());
+	}
+
 	public void addMember(UUID groupId, UUID userId) {
 		jdbc.sql("""
 				insert into public.chat_members (group_id, user_id, role)

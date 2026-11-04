@@ -144,6 +144,15 @@ public class GroupController {
 		service.typing(AuthTokens.bearer(authorization), id);
 	}
 
+	/** Quem administra adiciona uma pessoa pelo e-mail da conta dela. */
+	@PostMapping("/{id}/members")
+	public Map<String, Object> addMember(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.addByEmail(AuthTokens.bearer(authorization), id, body);
+	}
+
 	/** Roleplay: encerra e transforma a história em livro (só o dono). */
 	@PostMapping("/{id}/book")
 	@ResponseStatus(HttpStatus.ACCEPTED)
