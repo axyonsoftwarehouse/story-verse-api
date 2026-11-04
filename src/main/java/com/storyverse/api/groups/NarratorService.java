@@ -27,8 +27,8 @@ import com.storyverse.api.common.DbSession;
 
 /**
  * Narrador dos grupos de roleplay: a IA descreve o ambiente e as consequências das ações, sem
- * falar pelos personagens das pessoas. Entra a cada {@link #EVERY} mensagens, quando alguém
- * toca em "Narrar" e na abertura. Usa a cota de IA de quem criou o grupo, com teto diário.
+ * falar pelos personagens das pessoas. Entra a cada {@link #EVERY} mensagens, quando quem
+ * administra o grupo toca em "Narrar" e na abertura. Usa a cota de IA de quem criou o grupo, com teto diário.
  */
 @Service
 public class NarratorService {
@@ -36,7 +36,7 @@ public class NarratorService {
 	private static final Logger log = LoggerFactory.getLogger(NarratorService.class);
 
 	/** Mensagens das pessoas entre uma narração automática e outra. */
-	static final int EVERY = 3;
+	static final int EVERY = 6;
 	/** Intervalo mínimo entre duas narrações do mesmo grupo. */
 	static final int COOLDOWN_SECONDS = 20;
 	/** Narrações por grupo por dia (horário de Brasília). */

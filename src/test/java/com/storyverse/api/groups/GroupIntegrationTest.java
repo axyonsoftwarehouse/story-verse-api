@@ -702,10 +702,9 @@ class GroupIntegrationTest {
 
 			// Duas mensagens não bastam; a terceira chama o narrador (passado o intervalo).
 			jdbc.sql("update public.chat_groups set rp_last_narration_at = now() - interval '1 hour' where id = :id").param("id", groupId).update();
-			send(ana, groupId, "*Mina acende uma lamparina.* Tem alguém aí?");
-			send(owner, groupId, "*Jonathan segura a espada.*");
+			for (int i = 0; i < 5; i++) send(i % 2 == 0 ? ana : owner, groupId, "*Mina acende uma lamparina.* Tem alguém aí? " + i);
 			Thread.sleep(400);
-			assertEquals(1, narrations(owner, groupId).size());
+			assertEquals(1, narrations(owner, groupId).size(), "cinco mensagens ainda não chamam o narrador");
 			send(ana, groupId, "Vamos subir a escada.");
 			assertEquals(2, waitNarrations(owner, groupId, 2).size());
 			assertTrue(lastSystem.get().contains("Mina Harker (jogado por"));
@@ -721,9 +720,10 @@ class GroupIntegrationTest {
 					 where id = :id""").param("id", groupId).update();
 			assertNull(narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
 
-			// Pela conta restrita da VPS, com a RLS valendo, o "Narrar" funciona.
+			// "Narrar" é só de quem administra; pela conta restrita da VPS, com a RLS valendo, funciona.
+			assertThrows(AuthException.class, () -> groups.narrate(ana, groupId));
 			jdbc.sql("update public.chat_groups set rp_narrations_count = 0 where id = :id").param("id", groupId).update();
-			Long id = asRuntimeUser(idOf(ana), () -> narrator.run(groupId, idOf(ana), NarratorService.Trigger.MANUAL));
+			Long id = asRuntimeUser(idOf(owner), () -> narrator.run(groupId, idOf(owner), NarratorService.Trigger.MANUAL));
 			assertNotNull(id);
 		} finally {
 			narrator.useWriter(null);
@@ -804,5 +804,32 @@ class GroupIntegrationTest {
 		assertEquals(4, RoleplayBookService.chapters(story).size());
 		assertEquals("O castelo", RoleplayBookService.chapter("**Capítulo 2: O castelo**\n\nTexto.", 2).title());
 		assertEquals("Parte 3", RoleplayBookService.chapter("", 3).title());
+	}
+
+	/* ------------------------------ Adicionar pessoa (V45) ------------------------------ */
+
+	String emailOf(String token) {
+		return jdbc.sql("select email from auth.users where id = :id").param("id", idOf(token)).query(String.class).single();
+	}
+
+	@Test
+	void managersAddPeopleByEmailAndThePersonIsNotified() {
+		String owner = member(), mod = member(), plain = member(), friend = member(), other = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		groups.join(mod, groupId);
+		groups.join(plain, groupId);
+		groups.setRole(owner, groupId, idOf(mod), Map.of("role", "moderator"));
+
+		// Pela conta restrita (RLS valendo): o dono adiciona pelo e-mail, em maiúsculas inclusive.
+		Map<String, Object> after = asRuntimeUser(idOf(owner), () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend).toUpperCase())));
+		assertTrue(((List<?>) after.get("members")).size() >= 4);
+		assertEquals(Boolean.TRUE, groups.group(friend, groupId).get("is_member"));
+		assertEquals("member_added", items(friend).get(0).get("kind"));
+
+		// Moderador também adiciona; membro comum não; e-mail desconhecido e quem já está dão erro.
+		groups.addByEmail(mod, groupId, Map.of("email", emailOf(other)));
+		assertThrows(AuthException.class, () -> groups.addByEmail(plain, groupId, Map.of("email", emailOf(member()))));
+		assertThrows(AuthException.class, () -> groups.addByEmail(owner, groupId, Map.of("email", "ninguem@example.invalid")));
+		assertThrows(AuthException.class, () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend))));
 	}
 }
