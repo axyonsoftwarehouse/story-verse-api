@@ -172,6 +172,18 @@ class SecurityIntegrationTest {
     Number credit=(Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true));
     assertTrue(credit.intValue()>=15 && credit.intValue()<=16);
   }
+  @Test void heartbeatCreditsAtMostFourHoursPerDay() {
+    AuthResponse user=user();UUID uid=id(user);
+    java.util.function.Supplier<Integer> seconds=()->jdbc.sql("select coalesce(sum(seconds),0)::int from public.reading_days where user_id=:id").param("id",uid).query(Integer.class).single();
+    rpc.call(uid,"reading_heartbeat",Map.of("p_active",true));
+    jdbc.sql("insert into public.reading_days(user_id,day,seconds) values(:id,(now() at time zone 'America/Sao_Paulo')::date,14390)").param("id",uid).update();
+    jdbc.sql("update public.reading_clock set last_tick=clock_timestamp()-interval '15 seconds' where user_id=:id").param("id",uid).update();
+    rpc.call(uid,"reading_heartbeat",Map.of("p_active",true));
+    assertEquals(14400,seconds.get(),"o dia para em 4 h");
+    jdbc.sql("update public.reading_clock set last_tick=clock_timestamp()-interval '15 seconds' where user_id=:id").param("id",uid).update();
+    rpc.call(uid,"reading_heartbeat",Map.of("p_active",true));
+    assertEquals(14400,seconds.get(),"depois de 4 h nada mais é creditado no dia");
+  }
   @Test void reportedPagesAreCappedByServerTimeAndKeepTheHighestValue() {
     AuthResponse user=user();UUID uid=id(user);
     String today=jdbc.sql("select ((now() at time zone 'America/Sao_Paulo')::date)::text").query(String.class).single();
