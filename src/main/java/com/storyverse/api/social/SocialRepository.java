@@ -152,4 +152,48 @@ public class SocialRepository {
 		return jdbc.sql("select public.social_notify_follow(:user)").param("user", followee)
 				.query((rs, rowNum) -> rs.getObject(1)).optional().filter(java.util.Objects::nonNull).isPresent();
 	}
+	/* ------------------------------ Perfil público ------------------------------ */
+
+	/** Vitrine publicada pelo app da pessoa (null se nunca publicou). */
+	public Optional<Map<String, Object>> showcase(UUID userId) {
+		return DbRows.one(jdbc, """
+				select show_reading, badges::text as badges, badges_total, stats::text as stats, updated_at
+				  from public.profile_showcase where user_id = :user
+				""", Map.of("user", userId));
+	}
+
+	public boolean readingVisible(UUID userId) {
+		return jdbc.sql("select public.social_reading_visible(:user)").param("user", userId).query(Boolean.class).single();
+	}
+
+	public List<Map<String, Object>> books(UUID userId, int limit, int offset) {
+		return DbRows.list(jdbc, "select * from public.social_profile_books(:user, :limit, :offset)",
+				Map.of("user", userId, "limit", limit, "offset", offset));
+	}
+
+	public Map<String, Object> readingCounts(UUID userId) {
+		return DbRows.one(jdbc, "select * from public.social_profile_reading_counts(:user)", Map.of("user", userId))
+				.orElse(Map.of("reading", 0, "finished", 0));
+	}
+
+	public List<Map<String, Object>> gifts(UUID userId) {
+		return DbRows.list(jdbc, "select * from public.social_profile_gifts(:user)", Map.of("user", userId));
+	}
+
+	public void saveShowcase(UUID userId, String badgesJson, int badgesTotal, String statsJson) {
+		jdbc.sql("""
+				insert into public.profile_showcase (user_id, badges, badges_total, stats, updated_at)
+				values (:user, cast(:badges as jsonb), :total, cast(:stats as jsonb), now())
+				on conflict (user_id) do update
+				   set badges = excluded.badges, badges_total = excluded.badges_total,
+				       stats = excluded.stats, updated_at = now()
+				""").param("user", userId).param("badges", badgesJson).param("total", badgesTotal).param("stats", statsJson).update();
+	}
+
+	public void saveShowReading(UUID userId, boolean show) {
+		jdbc.sql("""
+				insert into public.profile_showcase (user_id, show_reading) values (:user, :show)
+				on conflict (user_id) do update set show_reading = excluded.show_reading, updated_at = now()
+				""").param("user", userId).param("show", show).update();
+	}
 }

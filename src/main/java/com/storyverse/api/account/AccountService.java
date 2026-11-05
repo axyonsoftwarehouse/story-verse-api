@@ -85,6 +85,10 @@ public class AccountService {
 				select follower_id as user_id, created_at from public.user_follows
 				 where followee_id = :uid order by created_at
 				""", Map.of("uid", userId)));
+		out.put("profileShowcase", DbRows.one(jdbc, """
+				select show_reading, badges::text as badges, badges_total, stats::text as stats, updated_at
+				  from public.profile_showcase where user_id = :uid
+				""", Map.of("uid", userId)).orElse(null));
 		return out;
 	}
 

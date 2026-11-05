@@ -339,6 +339,11 @@ public class GroupRepository {
 				""").param("viewer", viewer).query(Integer.class).single();
 	}
 
+	/** "Limpar tudo" no sininho. */
+	public int clearNotifications(UUID viewer) {
+		return jdbc.sql("delete from public.user_notifications where user_id = :viewer").param("viewer", viewer).update();
+	}
+
 	public void markNotificationsRead(UUID viewer) {
 		jdbc.sql("update public.user_notifications set read_at = now() where user_id = :viewer and read_at is null")
 				.param("viewer", viewer).update();

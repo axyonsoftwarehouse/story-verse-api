@@ -338,6 +338,13 @@ public class GroupService {
 	}
 
 	@Transactional
+	public void clearNotifications(String token) {
+		UUID userId = auth.authenticate(token);
+		DbSession.setUser(jdbc, userId);
+		repository.clearNotifications(userId);
+	}
+
+	@Transactional
 	public void readNotifications(String token) {
 		UUID userId = auth.authenticate(token);
 		DbSession.setUser(jdbc, userId);

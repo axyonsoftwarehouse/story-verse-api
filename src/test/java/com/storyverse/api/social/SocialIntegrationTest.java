@@ -236,4 +236,86 @@ class SocialIntegrationTest {
 		assertEquals(1, ((List<?>) data.get("following")).size());
 		assertEquals(1, ((List<?>) data.get("followers")).size());
 	}
+	void shelf(UUID user, String key, String source, String status, String title) {
+		jdbc.sql("insert into public.library_entries (user_id, book_key, source, status, title, author, finished_on) values (:u, :k, :s, :st, :t, 'Autor', case when :st = 'finished' then current_date end)")
+				.param("u", user).param("k", key).param("s", source).param("st", status).param("t", title).update();
+	}
+
+	@Test
+	@SuppressWarnings("unchecked")
+	void profileShowsReadingBadgesAndGiftsUnlessHidden() {
+		String ana = person("Ana Vitrine"), bia = person("Bia Visita");
+		UUID anaId = idOf(ana), biaId = idOf(bia);
+		shelf(anaId, "gb:1342", "gutenberg", "finished", "Orgulho e Preconceito");
+		shelf(anaId, "gb:84", "gutenberg", "reading", "Frankenstein");
+		shelf(anaId, "gb:11", "gutenberg", "want_to_read", "Alice");
+		shelf(anaId, "local:-5", "local", "finished", "Arquivo particular");
+		jdbc.sql("insert into public.user_gifts (from_user, to_user, gift_id, week_start, ref) values (:f, :t, 'flor', current_date, :r)")
+				.param("f", biaId).param("t", anaId).param("r", UUID.randomUUID().toString()).update();
+
+		Map<String, Object> body = new HashMap<>();
+		body.put("badges", List.of(Map.of("id", "first-page", "emoji", "📖", "title", "Primeira página"), Map.of("id", "x"), "lixo"));
+		body.put("total", 17);
+		body.put("stats", Map.of("totalMinutes", 125, "bestStreak", 4, "hack", 9));
+		social.saveShowcase(ana, body);
+
+		Map<String, Object> seen = social.profile(bia, anaId);
+		assertEquals(Boolean.FALSE, seen.get("reading_hidden"));
+		List<Map<String, Object>> books = (List<Map<String, Object>>) seen.get("books");
+		assertEquals(List.of("Frankenstein", "Orgulho e Preconceito"), books.stream().map(b -> b.get("title")).toList(),
+				"lendo primeiro; sem 'quero ler' nem livro importado do aparelho");
+		Map<String, Object> counts = (Map<String, Object>) seen.get("reading_counts");
+		assertEquals(1, ((Number) counts.get("finished")).intValue());
+		List<Map<String, Object>> badges = (List<Map<String, Object>>) seen.get("badges");
+		assertEquals(1, badges.size(), "item fora do formato é descartado");
+		assertEquals("Primeira página", badges.get(0).get("title"));
+		assertEquals(17, ((Number) seen.get("badges_total")).intValue());
+		Map<String, Object> stats = (Map<String, Object>) seen.get("stats");
+		assertEquals(125, ((Number) stats.get("totalMinutes")).intValue());
+		assertFalse(stats.containsKey("hack"));
+		List<Map<String, Object>> gifts = (List<Map<String, Object>>) seen.get("gifts");
+		assertEquals("flor", gifts.get(0).get("gift_id"));
+		assertEquals(1, ((Number) gifts.get(0).get("total")).intValue());
+		assertEquals(2, social.books(bia, anaId, null, null).size());
+
+		social.savePrivacy(ana, Map.of("showReading", false));
+		Map<String, Object> hidden = social.profile(bia, anaId);
+		assertEquals(Boolean.TRUE, hidden.get("reading_hidden"));
+		assertEquals(List.of(), hidden.get("books"));
+		assertEquals(List.of(), hidden.get("badges"));
+		assertEquals(List.of(), hidden.get("gifts"));
+		assertEquals(List.of(), social.books(bia, anaId, null, null));
+		// A própria pessoa continua vendo tudo (e sabe que está escondido).
+		Map<String, Object> own = social.profile(ana, anaId);
+		assertEquals(Boolean.FALSE, own.get("reading_hidden"));
+		assertEquals(Boolean.FALSE, own.get("show_reading"));
+		assertEquals(2, ((List<?>) own.get("books")).size());
+	}
+
+	@Test
+	void runtimeCannotReadOthersShelfDirectlyOrWriteOthersShowcase() {
+		String ana = person("Ana Privada"), bia = person("Bia Curiosa");
+		UUID anaId = idOf(ana), biaId = idOf(bia);
+		shelf(anaId, "gb:2701", "gutenberg", "finished", "Moby Dick");
+		int direct = asRuntime(() -> {
+			DbSession.setUser(jdbc, biaId);
+			return jdbc.sql("select count(*) from public.library_entries where user_id = :u").param("u", anaId).query(Integer.class).single();
+		});
+		assertEquals(0, direct, "a estante continua só do dono; o perfil passa pela função");
+		assertThrows(RuntimeException.class, () -> asRuntime(() -> {
+			DbSession.setUser(jdbc, biaId);
+			return jdbc.sql("insert into public.profile_showcase (user_id, show_reading) values (:u, false)").param("u", anaId).update();
+		}));
+	}
+
+	@Test
+	void clearNotificationsEmptiesTheBell() {
+		String ana = person("Ana Limpa"), bia = person("Bia Segue");
+		social.follow(bia, idOf(ana));
+		assertEquals(1, ((Number) groups.notifications(ana).get("unread")).intValue());
+		groups.clearNotifications(ana);
+		Map<String, Object> bell = groups.notifications(ana);
+		assertEquals(List.of(), bell.get("items"));
+		assertEquals(0, ((Number) bell.get("unread")).intValue());
+	}
 }

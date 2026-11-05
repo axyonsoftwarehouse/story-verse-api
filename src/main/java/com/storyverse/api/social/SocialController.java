@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -88,5 +89,32 @@ public class SocialController {
 			@PathVariable UUID id,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		service.removeFollower(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Livros do perfil (lendo e terminados), para o "Ver todos". */
+	@GetMapping("/people/{id}/books")
+	public List<Map<String, Object>> books(
+			@PathVariable UUID id,
+			@RequestParam(required = false) Integer limit,
+			@RequestParam(required = false) Integer offset,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.books(AuthTokens.bearer(authorization), id, limit, offset);
+	}
+
+	/** O app publica as conquistas desbloqueadas da conta. */
+	@PutMapping("/me/showcase")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void showcase(
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.saveShowcase(AuthTokens.bearer(authorization), body);
+	}
+
+	/** {@code { "showReading": bool }}: mostrar ou esconder leituras, conquistas e presentes. */
+	@PutMapping("/me/privacy")
+	public Map<String, Object> privacy(
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.savePrivacy(AuthTokens.bearer(authorization), body);
 	}
 }
