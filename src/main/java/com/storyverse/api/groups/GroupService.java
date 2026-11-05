@@ -403,7 +403,8 @@ public class GroupService {
 		push.notifyGroup(id, repository.groupName(id), String.valueOf(message.get("author_name")),
 				spoiler != null ? "🙈 mensagem com spoiler" : preview(text));
 		if (replyTo != null) notifyReply(replyTo, id, messageId);
-		narrator.afterPlayerMessage(id, userId);
+		if (callsNarrator(userId, id, text)) narrator.called(id, userId);
+		else narrator.afterPlayerMessage(id, userId);
 		return message;
 	}
 
@@ -477,6 +478,14 @@ public class GroupService {
 			throw new AuthException(400, "Conte a premissa do roleplay (de 10 a 1500 caracteres).");
 		}
 		return text;
+	}
+
+	/** Roleplay: quem administra (dono ou moderador) escreveu "narrador" na mensagem. */
+	private boolean callsNarrator(UUID userId, UUID groupId, String text) {
+		if (!NarratorService.mentionsNarrator(text)) return false;
+		Map<String, Object> group = visibleGroup(userId, groupId);
+		Object role = group.get("my_role");
+		return "roleplay".equals(group.get("mode")) && ("owner".equals(role) || "moderator".equals(role));
 	}
 
 	/** "Narrar": quem administra o grupo chama o narrador (respeita o intervalo e o teto do dia). */
