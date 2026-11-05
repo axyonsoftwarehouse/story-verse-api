@@ -731,6 +731,58 @@ class GroupIntegrationTest {
 	}
 
 	@Test
+	void adminCallingTheNarratorByNameGetsAnAnswerRightAway() throws Exception {
+		java.util.concurrent.atomic.AtomicReference<List<com.storyverse.api.ai.AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
+		narrator.useWriter((system, history) -> {
+			lastHistory.set(history);
+			return "*Um trovão ilumina a janela.* Atrás da porta há uma escada que desce.";
+		});
+		try {
+			String owner = member(), ana = member();
+			Map<String, Object> body = new HashMap<>();
+			body.put("name", "Chamado");
+			body.put("visibility", "private");
+			body.put("mode", "roleplay");
+			body.put("rpPremise", "Uma taverna numa noite de tempestade.");
+			Map<String, Object> created = groups.create(owner, body);
+			UUID groupId = id(created);
+			groups.joinByInvite(ana, String.valueOf(created.get("invite_code")));
+			assertEquals(1, waitNarrations(owner, groupId, 1).size(), "abertura");
+			jdbc.sql("update public.chat_groups set rp_last_narration_at = now() - interval '1 hour' where id = :id").param("id", groupId).update();
+
+			// Jogador comum citando o narrador não chama (só conta para a vez normal).
+			send(ana, groupId, "Narrador, o que tem atrás da porta?");
+			Thread.sleep(400);
+			assertEquals(1, narrations(owner, groupId).size(), "jogador comum não chama o narrador pelo nome");
+
+			// "narradora" não é o chamado.
+			send(owner, groupId, "A narradora do livro é ótima.");
+			Thread.sleep(400);
+			assertEquals(1, narrations(owner, groupId).size());
+
+			// Quem administra chama: a resposta vem logo, mesmo longe da 6ª mensagem.
+			send(owner, groupId, "NARRADOR, o que tem atrás da porta?");
+			assertEquals(2, waitNarrations(owner, groupId, 2).size());
+			String told = lastHistory.get().get(lastHistory.get().size() - 1).content();
+			assertTrue(told.contains("o que tem atrás da porta?"), told);
+			assertTrue(told.contains("falou com você"), told);
+		} finally {
+			narrator.useWriter(null);
+		}
+	}
+
+	@Test
+	void narratorCallIsAWholeWord() {
+		assertTrue(NarratorService.mentionsNarrator("narrador"));
+		assertTrue(NarratorService.mentionsNarrator("Ei, Narrador! Descreve a sala."));
+		assertTrue(NarratorService.mentionsNarrator("*olha para cima* NARRADOR?"));
+		assertFalse(NarratorService.mentionsNarrator("a narradora"));
+		assertFalse(NarratorService.mentionsNarrator("narradores"));
+		assertFalse(NarratorService.mentionsNarrator("sem chamado"));
+		assertFalse(NarratorService.mentionsNarrator(null));
+	}
+
+	@Test
 	void roleplayNeedsAPremiseAndNarrateOnlyInRoleplayGroups() {
 		String owner = member();
 		Map<String, Object> body = new HashMap<>();

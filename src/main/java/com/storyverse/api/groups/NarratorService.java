@@ -28,7 +28,7 @@ import com.storyverse.api.common.DbSession;
 /**
  * Narrador dos grupos de roleplay: a IA descreve o ambiente e as consequências das ações, sem
  * falar pelos personagens das pessoas. Entra a cada {@link #EVERY} mensagens, quando quem
- * administra o grupo toca em "Narrar" e na abertura. Usa a cota de IA de quem criou o grupo, com teto diário.
+ * administra o grupo toca em "Narrar" ou escreve "narrador" numa mensagem, e na abertura. Usa a cota de IA de quem criou o grupo, com teto diário.
  */
 @Service
 public class NarratorService {
@@ -45,7 +45,16 @@ public class NarratorService {
 	static final int MAX_TOKENS = 380;
 	static final int MAX_CHARS = 1800;
 
-	enum Trigger { AUTO, MANUAL, OPENING }
+	/** CALLED: quem administra escreveu "narrador" na mensagem; o narrador responde a ela. */
+	enum Trigger { AUTO, MANUAL, OPENING, CALLED }
+
+	/** "narrador" como palavra solta, em qualquer caixa ("Narrador,", "NARRADOR?"), não "narradora". */
+	private static final java.util.regex.Pattern CALL = java.util.regex.Pattern.compile("(?iu)(?<![\\p{L}\\p{N}_])narrador(?![\\p{L}\\p{N}_])");
+
+	/** A mensagem chama o narrador pelo nome? */
+	public static boolean mentionsNarrator(String text) {
+		return text != null && CALL.matcher(text).find();
+	}
 
 	private final GroupRepository repository;
 	private final GroupStream stream;
@@ -80,6 +89,11 @@ public class NarratorService {
 	/** Alguém tocou em "Narrar". */
 	public void requestNow(UUID groupId, UUID member) {
 		later(() -> run(groupId, member, Trigger.MANUAL));
+	}
+
+	/** Quem administra escreveu "narrador": responde logo, sem esperar a vez (respeita intervalo e teto). */
+	public void called(UUID groupId, UUID admin) {
+		later(() -> run(groupId, admin, Trigger.CALLED));
 	}
 
 	/** Grupo de roleplay recém-criado: a cena de abertura. */
@@ -133,7 +147,7 @@ public class NarratorService {
 				return repository.claimNarration(groupId, COOLDOWN_SECONDS, DAILY_CAP);
 			});
 			if (!Boolean.TRUE.equals(claimed)) {
-				if (trigger == Trigger.MANUAL) notice(groupId, owner, "cooldown");
+				if (trigger == Trigger.MANUAL || trigger == Trigger.CALLED) notice(groupId, owner, "cooldown");
 				return null;
 			}
 			List<Map<String, Object>> story = transactions.execute(status -> {
@@ -238,6 +252,8 @@ public class NarratorService {
 			case OPENING -> "Abra a história: apresente o cenário da premissa e convide os personagens a agir.";
 			case MANUAL -> "Narre o que acontece agora, a partir das últimas ações.";
 			case AUTO -> "Continue a narração a partir das últimas ações.";
+			case CALLED -> "Quem conduz a história falou com você, o narrador, na última mensagem. Atenda ao que foi "
+					+ "pedido ou perguntado, como narrador e dentro da história (sem sair do personagem nem falar pelos jogadores).";
 		};
 		pending.append('\n').append("(").append(ask).append(")");
 		out.add(new AiMessage("user", pending.toString().trim()));
