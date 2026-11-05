@@ -3,6 +3,7 @@ package com.storyverse.api.groups;
 import java.util.Map;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -32,5 +33,12 @@ public class NotificationController {
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void read(@RequestHeader(value = "Authorization", required = false) String authorization) {
 		service.readNotifications(AuthTokens.bearer(authorization));
+	}
+
+	/** "Limpar tudo": apaga os avisos da conta. */
+	@DeleteMapping
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void clear(@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.clearNotifications(AuthTokens.bearer(authorization));
 	}
 }
