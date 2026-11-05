@@ -300,6 +300,7 @@ public class GroupRepository {
 	}
 
 	/* ------------------------------ Sininho ------------------------------ */
+	// Avisos de "começou a seguir você" (rede social) não têm grupo: entram com group_id nulo.
 
 	/** Aviso para outra pessoa do grupo (a função do banco confere que as duas estão nele). */
 	public boolean notify(UUID user, String kind, UUID groupId, Long messageId, String emoji) {
@@ -319,10 +320,11 @@ public class GroupRepository {
 				       case when x.deleted_at is null and x.spoiler_chapter is null then left(x.body, 100) end as message_body,
 				       x.media_kind as message_media_kind
 				  from public.user_notifications n
-				  join public.chat_groups g on g.id = n.group_id and g.deleted_at is null
+				  left join public.chat_groups g on g.id = n.group_id
 				  join auth.users u on u.id = n.actor_id
 				  left join public.chat_messages x on x.id = n.message_id
 				 where n.user_id = :viewer
+				   and (n.group_id is null or (g.id is not null and g.deleted_at is null))
 				 order by n.id desc
 				 limit :limit
 				""", Map.of("viewer", viewer, "limit", limit, "media", media));
@@ -331,8 +333,9 @@ public class GroupRepository {
 	public int unreadNotifications(UUID viewer) {
 		return jdbc.sql("""
 				select count(*) from public.user_notifications n
-				  join public.chat_groups g on g.id = n.group_id and g.deleted_at is null
+				  left join public.chat_groups g on g.id = n.group_id
 				 where n.user_id = :viewer and n.read_at is null
+				   and (n.group_id is null or (g.id is not null and g.deleted_at is null))
 				""").param("viewer", viewer).query(Integer.class).single();
 	}
 
