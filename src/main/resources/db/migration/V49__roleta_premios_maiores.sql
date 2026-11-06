@@ -1,3 +1,4 @@
+-- (Era V48 no main; virou V49 porque o develop já tinha uma V48 — teto de leitura de 4 h.)
 -- Roleta diária com prêmios maiores: de 5 a 100 diamantes (antes 1 a 20). O app desenha as fatias
 -- com estes mesmos valores (SPIN_SEGMENTS no story-verse-web). Média por giro: ~14 (antes ~2,7).
 --   5 → 34% · 10 → 30% · 15 → 17% · 25 → 12% · 50 → 6% · 100 → 1%
