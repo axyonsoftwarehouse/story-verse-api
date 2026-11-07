@@ -67,7 +67,12 @@ public class GroupStream {
 		mine.addLast(emitter);
 		leaving.remove(userId);
 		emitter.onCompletion(() -> leave(userId, emitter));
-		emitter.onTimeout(() -> leave(userId, emitter));
+		// Completar no timeout encerra a conexão sem erro; sem isso o Spring lança
+		// AsyncRequestTimeoutException (que ia para o Sentry como 500).
+		emitter.onTimeout(() -> {
+			leave(userId, emitter);
+			emitter.complete();
+		});
 		emitter.onError(ignored -> leave(userId, emitter));
 		send(emitter, "ready", Map.of("ok", true));
 		return emitter;
