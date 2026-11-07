@@ -59,7 +59,7 @@ public class StorageController {
 				.map(file -> {
 					Resource resource = new FileSystemResource(file);
 					return ResponseEntity.ok()
-							.contentType(typeFor(path))
+							.contentType(typeFor(file, path))
 							.cacheControl(CacheControl.noStore())
 							.body(resource);
 				})
@@ -89,11 +89,37 @@ public class StorageController {
 				.map(file -> {
 					Resource resource = new FileSystemResource(file);
 					return ResponseEntity.ok()
-							.contentType(typeFor(path))
+							.contentType(typeFor(file, path))
 							.cacheControl(CacheControl.maxAge(java.time.Duration.ofDays(365)).cachePublic())
 							.body(resource);
 				})
 				.orElseGet(() -> ResponseEntity.<Resource>notFound().build());
+	}
+
+	private static MediaType typeFor(java.nio.file.Path file, String path) {
+		MediaType byName = typeFor(path);
+		return MediaType.APPLICATION_OCTET_STREAM.equals(byName) ? typeForBytes(file) : byName;
+	}
+
+	/** Foto de perfil e capa são gravadas sem extensão (`<uuid>/avatar`): o tipo sai dos primeiros bytes. */
+	static MediaType typeForBytes(java.nio.file.Path file) {
+		byte[] head = new byte[12];
+		int n;
+		try (java.io.InputStream input = java.nio.file.Files.newInputStream(file)) {
+			n = input.readNBytes(head, 0, head.length);
+		} catch (java.io.IOException error) {
+			return MediaType.APPLICATION_OCTET_STREAM;
+		}
+		if (n >= 3 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xFF) == 0xD8 && (head[2] & 0xFF) == 0xFF)
+			return MediaType.IMAGE_JPEG;
+		if (n >= 8 && (head[0] & 0xFF) == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G')
+			return MediaType.IMAGE_PNG;
+		if (n >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F' && head[3] == 'F'
+				&& head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P')
+			return MediaType.parseMediaType("image/webp");
+		if (n >= 2 && (head[0] & 0xFF) == 0x1F && (head[1] & 0xFF) == 0x8B)
+			return MediaType.parseMediaType("application/gzip");
+		return MediaType.APPLICATION_OCTET_STREAM;
 	}
 
 	private static MediaType typeFor(String path) {
