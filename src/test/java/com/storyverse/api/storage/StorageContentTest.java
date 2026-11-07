@@ -59,4 +59,28 @@ class StorageContentTest {
 				() -> StorageService.validateContent(binary, "text/plain"));
 		assertEquals(415, error.status());
 	}
+
+	@Test
+	void servesAvatarWithoutExtensionWithTheRealType() throws Exception {
+		// Foto de perfil é gravada como <uuid>/avatar, sem extensão: o nome não diz o tipo.
+		Path avatar = temp.resolve("avatar");
+		Files.write(avatar, new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0x00, 0x10});
+		assertEquals("image/jpeg", StorageController.typeForBytes(avatar).toString());
+
+		Path capa = temp.resolve("cover");
+		Files.write(capa, new byte[]{(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00});
+		assertEquals("image/png", StorageController.typeForBytes(capa).toString());
+
+		Path webp = temp.resolve("wallpaper");
+		Files.write(webp, "RIFFxxxxWEBPVP8 ".getBytes(StandardCharsets.US_ASCII));
+		assertEquals("image/webp", StorageController.typeForBytes(webp).toString());
+
+		Path pacote = temp.resolve("livro");
+		Files.write(pacote, new byte[]{0x1F, (byte) 0x8B, 0x08, 0x00});
+		assertEquals("application/gzip", StorageController.typeForBytes(pacote).toString());
+
+		Path desconhecido = temp.resolve("sem-assinatura");
+		Files.write(desconhecido, new byte[]{'o', 'i'});
+		assertEquals("application/octet-stream", StorageController.typeForBytes(desconhecido).toString());
+	}
 }
