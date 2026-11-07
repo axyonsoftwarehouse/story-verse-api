@@ -31,7 +31,11 @@ public class PresenceService {
 				.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet())
 				.add(emitter);
 		emitter.onCompletion(() -> leave(room, key, emitter));
-		emitter.onTimeout(() -> leave(room, key, emitter));
+		// Completar no timeout encerra a conexão sem erro (sem AsyncRequestTimeoutException no Sentry).
+		emitter.onTimeout(() -> {
+			leave(room, key, emitter);
+			emitter.complete();
+		});
 		emitter.onError(ignored -> leave(room, key, emitter));
 		broadcast(room);
 		return emitter;
