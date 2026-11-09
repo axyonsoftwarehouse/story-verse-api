@@ -119,13 +119,20 @@ public class CatalogAudioService {
 				|| !"published".equals(existingString(edition, "status"))) {
 			throw new AuthException(404, "Audiolivro não encontrado.");
 		}
-		if (chapterIndex > 1) {
+		Map<String, Object> chapter = null;
+		if (chapterIndex == 1) {
+			chapter = repository.findChapter(audioId, chapterIndex)
+					.orElseThrow(() -> new AuthException(404, "Capítulo não encontrado."));
+		}
+		if (chapter == null || !freeSample(chapterIndex, edition.get("chapter_count"), chapter.get("duration_seconds"))) {
 			UUID user = auth.authenticate(token);
 			billing.requireAccess(user);
 			DbSession.setUser(jdbc, user);
 		}
-		Map<String, Object> chapter = repository.findChapter(audioId, chapterIndex)
-				.orElseThrow(() -> new AuthException(404, "Capítulo não encontrado."));
+		if (chapter == null) {
+			chapter = repository.findChapter(audioId, chapterIndex)
+					.orElseThrow(() -> new AuthException(404, "Capítulo não encontrado."));
+		}
 		String url = r2.presignGet(String.valueOf(chapter.get("audio_path")), Duration.ofHours(1));
 		Map<String, Object> out = new LinkedHashMap<>();
 		out.put("url", url);
@@ -446,7 +453,7 @@ public class CatalogAudioService {
 					out.put("endSeconds", chapter.get("end_seconds"));
 					out.put("textChapterIndex", chapter.get("text_chapter_index"));
 					out.put("textChapterEndIndex", chapter.get("text_chapter_end_index"));
-					out.put("free", index == 1);
+					out.put("free", freeSample(index, edition.get("chapter_count"), chapter.get("duration_seconds")));
 					return out;
 				})
 				.toList();
@@ -461,7 +468,9 @@ public class CatalogAudioService {
 		out.put("totalDurationSeconds", edition.get("total_duration_seconds"));
 		out.put("chapterCount", edition.get("chapter_count"));
 		out.put("coverUrl", edition.get("cover_url") != null ? edition.get("cover_url") : bookCover);
-		out.put("freeChapterIndex", 1);
+		// Sem amostra aberta (capítulo único ou primeiro capítulo longo): null.
+		boolean hasSample = chapters.stream().anyMatch(chapter -> Boolean.TRUE.equals(chapter.get("free")));
+		out.put("freeChapterIndex", hasSample ? 1 : null);
 		out.put("requiresSubscription", true);
 		out.put("chapters", chapters);
 		return out;
@@ -603,6 +612,19 @@ public class CatalogAudioService {
 	private static UUID uuid(Object value) {
 		if (value instanceof UUID uuid) return uuid;
 		return UUID.fromString(String.valueOf(value));
+	}
+
+	/** Duração máxima da amostra pública (capítulo 1 sem login). */
+	static final int SAMPLE_MAX_SECONDS = 45 * 60;
+
+	/**
+	 * O capítulo é amostra aberta (sem login nem assinatura)? Só o capítulo 1, só quando a edição tem
+	 * mais de um capítulo e só se ele tiver duração conhecida de até {@link #SAMPLE_MAX_SECONDS}.
+	 * Com um capítulo só, ele é o livro inteiro (S4 da revisão de 09/11/2026: 7 h abertas).
+	 */
+	static boolean freeSample(int chapterIndex, Object chapterCount, Object durationSeconds) {
+		int duration = number(durationSeconds);
+		return chapterIndex == 1 && number(chapterCount) > 1 && duration > 0 && duration <= SAMPLE_MAX_SECONDS;
 	}
 
 	private static int number(Object value) {

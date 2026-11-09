@@ -13,6 +13,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.common.RequestPaths;
 
 class BillingAccessFilterTest {
 
@@ -43,6 +44,53 @@ class BillingAccessFilterTest {
 		assertFalse(BillingAccessFilter.exempt("GET", "/api/v1/me/library"));
 		assertFalse(BillingAccessFilter.exempt("POST", "/api/v1/community/submissions"));
 		assertFalse(BillingAccessFilter.exempt("GET", "/api/v1/ai/status/extra"));
+	}
+
+	/** S1: o filtro decide sobre o caminho normalizado, o mesmo que o MVC usa para casar a rota. */
+	private static boolean exemptCru(String method, String rawPath) {
+		return BillingAccessFilter.exempt(method, RequestPaths.normalized(new MockHttpServletRequest(method, rawPath)));
+	}
+
+	@Test
+	void variacoesCodificadasDoTextoNaoFicamIsentas() {
+		assertFalse(exemptCru("GET", "/api/v1/catalog/books/cat:1/text;x"));
+		assertFalse(exemptCru("GET", "/api/v1/catalog/books/cat:1/text;x=1"));
+		assertFalse(exemptCru("GET", "/api/v1/catalog/books/cat:1/tex%74"));
+		assertFalse(exemptCru("GET", "/api/v1/catalog/books/cat%3A1/text"));
+		assertFalse(exemptCru("GET", "/api/v1/catalog/books/cat:1/text/"));
+		assertFalse(exemptCru("GET", "/api/v1//catalog/books/cat:1/text"));
+		assertFalse(exemptCru("GET", "/%61pi/v1/catalog/books/cat:1/text"));
+	}
+
+	@Test
+	void prefixoCodificadoNaoEscapaDoPaywall() {
+		assertFalse(exemptCru("GET", "/%61pi/v1/groups"));
+		assertFalse(exemptCru("GET", "/api;x/v1/groups"));
+		assertFalse(exemptCru("GET", "//api/v1/groups"));
+	}
+
+	@Test
+	void caminhoForaDeApiTambemEProtegido() {
+		assertFalse(BillingAccessFilter.exempt("GET", "/"));
+		assertFalse(BillingAccessFilter.exempt("GET", "/qualquer"));
+	}
+
+	@Test
+	void rotasIsentasCodificadasContinuamIsentas() {
+		assertTrue(exemptCru("GET", "/api/v1/catalog/books/cat%3A1"));
+		assertTrue(exemptCru("POST", "/%61pi/v1/auth/login"));
+	}
+
+	@Test
+	void filtroBloqueiaPrefixoCodificadoSemToken() throws Exception {
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/%61pi/v1/groups");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		AtomicBoolean seguiu = new AtomicBoolean(false);
+
+		filtroLigado().doFilter(request, response, (req, res) -> seguiu.set(true));
+
+		assertEquals(401, response.getStatus());
+		assertFalse(seguiu.get(), "/%61pi/ é /api/ para o MVC e não pode pular o paywall");
 	}
 
 	/**
