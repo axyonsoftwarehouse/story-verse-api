@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
+import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.storage.StorageBucket;
@@ -34,15 +35,17 @@ public class CatalogService {
 	private final JdbcClient jdbc;
 	private final StorageService storage;
 	private final CatalogTextExtractor extractor;
+	private final BillingService billing;
 
 	public CatalogService(CatalogRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc,
-			StorageService storage, CatalogTextExtractor extractor) {
+			StorageService storage, CatalogTextExtractor extractor, BillingService billing) {
 		this.repository = repository;
 		this.auth = auth;
 		this.authz = authz;
 		this.jdbc = jdbc;
 		this.storage = storage;
 		this.extractor = extractor;
+		this.billing = billing;
 	}
 
 	@Transactional(readOnly = true)
@@ -63,7 +66,8 @@ public class CatalogService {
 
 	@Transactional(readOnly = true)
 	public String text(String bookKey, String accessToken) {
-		auth.authenticate(accessToken);
+		// O texto integral é conteúdo pago: a regra não pode depender só do BillingAccessFilter.
+		billing.requireAccess(auth.authenticate(accessToken));
 		Map<String, Object> row = repository.findTextByKey(bookKey)
 				.orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
 		StorageBucket bucket = StorageBucket.from(String.valueOf(row.get("storage_bucket")));

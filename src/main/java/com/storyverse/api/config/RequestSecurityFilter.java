@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.common.RateLimitGate;
+import com.storyverse.api.common.RequestPaths;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -22,9 +23,12 @@ public class RequestSecurityFilter extends OncePerRequestFilter {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("X-Frame-Options", "DENY");
     response.setHeader("Cache-Control", "no-store");
-    String path = request.getRequestURI();
+    // Caminho decodificado e normalizado, o mesmo que o MVC usa para escolher a rota.
+    String path = RequestPaths.normalized(request);
     try {
-      if (!"OPTIONS".equals(request.getMethod()) && path.startsWith("/api/")) {
+      // O limite geral vale para todo caminho (não só /api/): se algum truque de URL escapar da
+      // normalização, a requisição continua contando.
+      if (!"OPTIONS".equals(request.getMethod())) {
         limits.check("ip:" + request.getRemoteAddr(), 300, Duration.ofMinutes(1));
         if (path.startsWith("/api/v1/auth/") && "POST".equals(request.getMethod()))
           limits.check("auth:" + request.getRemoteAddr(), 30, Duration.ofMinutes(1));
