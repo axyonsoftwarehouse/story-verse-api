@@ -107,6 +107,36 @@ public class BillingService {
 		}
 	}
 
+	/** Status que ainda podem gerar cobrança e precisam ser cancelados antes de apagar a conta. */
+	private static final java.util.Set<String> BILLABLE = java.util.Set.of("active", "trialing", "past_due");
+
+	static boolean needsCancellation(Map<String, Object> subscription) {
+		if (subscription == null) return false;
+		if (subscription.get("ended_at") != null) return false;
+		return BILLABLE.contains(String.valueOf(subscription.get("status")));
+	}
+
+	/**
+	 * Antes de excluir a conta: cancela no Stripe a assinatura que ainda cobraria. Se o Stripe
+	 * falhar, o erro sobe e a exclusão aborta — melhor recusar do que deixar cobrança órfã.
+	 */
+	public void cancelForAccountDeletion(UUID userId) {
+		asUser(userId);
+		Map<String, Object> subscription = repository.latestSubscription(userId).orElse(null);
+		if (!needsCancellation(subscription)) return;
+		String subscriptionId = String.valueOf(subscription.get("stripe_subscription_id"));
+		if (subscriptionId.isBlank() || "null".equals(subscriptionId)) return;
+		if (!stripe.configured()) {
+			throw new AuthException(503, "Não é possível cancelar a assinatura agora; a conta não foi excluída.");
+		}
+		try {
+			stripe.cancelSubscription(subscriptionId);
+		} catch (RuntimeException exception) {
+			log.error("Falha ao cancelar a assinatura {} na exclusão da conta", subscriptionId, exception);
+			throw new AuthException(502, "Não foi possível cancelar a assinatura; a conta não foi excluída.");
+		}
+	}
+
 	@Transactional(readOnly = true)
 	public Map<String, Object> status(UUID userId) {
 		asUser(userId);
