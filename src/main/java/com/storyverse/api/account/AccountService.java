@@ -35,9 +35,11 @@ public class AccountService {
 	private final StorageService storage;
 	private final RateLimitGate limits;
 	private final SecurityEvents security;
+	private final com.storyverse.api.billing.BillingService billing;
 
 	public AccountService(AuthService auth, UserRepository users, JdbcClient jdbc,
-			PasswordEncoder passwordEncoder, StorageService storage, RateLimitGate limits, SecurityEvents security) {
+			PasswordEncoder passwordEncoder, StorageService storage, RateLimitGate limits, SecurityEvents security,
+			com.storyverse.api.billing.BillingService billing) {
 		this.auth = auth;
 		this.users = users;
 		this.jdbc = jdbc;
@@ -45,6 +47,7 @@ public class AccountService {
 		this.storage = storage;
 		this.limits = limits;
 		this.security = security;
+		this.billing = billing;
 	}
 
 	@Transactional(readOnly = true)
@@ -107,6 +110,8 @@ public class AccountService {
 				|| !passwordEncoder.matches(password, user.encryptedPassword())) {
 			throw new AuthException(400, "Senha atual incorreta.");
 		}
+		// Sem cancelar aqui, a Stripe continuaria cobrando uma conta que não existe mais.
+		billing.cancelForAccountDeletion(userId);
 		// Arquivos são dados pessoais: remove antes de apagar a conta.
 		storage.deleteAllForUser(userId);
 		jdbc.sql("select public.delete_my_account()").query((rs, rowNum) -> null).optional();

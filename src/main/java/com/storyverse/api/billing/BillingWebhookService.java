@@ -218,10 +218,18 @@ public class BillingWebhookService {
 		sync(subscriptionId, invoiceStatus);
 	}
 
-	private void sync(String subscriptionId, String invoiceStatus) {
+	/**
+	 * Traz o estado atual da assinatura. Cliente sem conta vinculada é evento ignorado (200), não
+	 * erro: acontece quando a conta foi excluída e o Stripe ainda reenvia eventos dela — antes
+	 * isso virava 500 e o Stripe ficava tentando para sempre.
+	 */
+	void sync(String subscriptionId, String invoiceStatus) {
 		StripeGateway.SubscriptionState state = gateway.subscription(subscriptionId);
-		Map<String, Object> link = repository.userByCustomer(state.customerId())
-				.orElseThrow(() -> new AuthException(500, "Cliente do Stripe sem conta vinculada."));
+		Map<String, Object> link = repository.userByCustomer(state.customerId()).orElse(null);
+		if (link == null) {
+			log.info("Evento do Stripe ignorado: cliente {} sem conta vinculada.", state.customerId());
+			return;
+		}
 		Map<String, Object> params = new LinkedHashMap<>();
 		params.put("user_id", link.get("user_id"));
 		params.put("stripe_subscription_id", state.id());
