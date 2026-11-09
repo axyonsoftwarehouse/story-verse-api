@@ -468,7 +468,9 @@ public class CatalogAudioService {
 		out.put("totalDurationSeconds", edition.get("total_duration_seconds"));
 		out.put("chapterCount", edition.get("chapter_count"));
 		out.put("coverUrl", edition.get("cover_url") != null ? edition.get("cover_url") : bookCover);
-		out.put("freeChapterIndex", 1);
+		// Sem amostra aberta (capítulo único ou primeiro capítulo longo): null.
+		boolean hasSample = chapters.stream().anyMatch(chapter -> Boolean.TRUE.equals(chapter.get("free")));
+		out.put("freeChapterIndex", hasSample ? 1 : null);
 		out.put("requiresSubscription", true);
 		out.put("chapters", chapters);
 		return out;

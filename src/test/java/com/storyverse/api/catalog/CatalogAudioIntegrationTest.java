@@ -432,7 +432,8 @@ class CatalogAudioIntegrationTest {
 
 		mvc.perform(get("/api/v1/catalog/books/{bookKey}/audio", bookKey(bookId)))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.editions[0].chapters[0].free").value(false));
+				.andExpect(jsonPath("$.editions[0].chapters[0].free").value(false))
+				.andExpect(jsonPath("$.editions[0].freeChapterIndex").value(org.hamcrest.Matchers.nullValue()));
 		mvc.perform(get("/api/v1/catalog/books/{bookKey}/audio/{audioId}/chapters/1/stream",
 						bookKey(bookId), audioId))
 				.andExpect(status().isUnauthorized());
