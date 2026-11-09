@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.net.URI;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -24,6 +26,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.billing.BillingService;
+import com.storyverse.api.catalog.CatalogCollectionService;
 import com.storyverse.api.catalog.CatalogService;
 
 /**
@@ -52,13 +55,17 @@ class EncodedPathBypassTest {
 	@MockitoBean
 	private CatalogService catalog;
 
+	@MockitoBean
+	private CatalogCollectionService collections;
+
 	@BeforeEach
 	void contaSemAssinatura() {
 		when(auth.authenticate("token-sem-plano")).thenReturn(SEM_PLANO);
 		doThrow(new AuthException(402, "Assinatura necessária.", "SUBSCRIPTION_REQUIRED"))
 				.when(billing).requireAccess(SEM_PLANO);
 		when(catalog.text(anyString(), anyString())).thenReturn("texto integral");
-		when(catalog.get(anyString())).thenReturn(Map.of("book_key", "cat:1"));
+		when(catalog.get(anyString())).thenReturn(new HashMap<>(Map.of("book_key", "cat:1")));
+		when(collections.collectionsForBookKey(anyString())).thenReturn(List.of());
 	}
 
 	private static MockHttpServletRequestBuilder cru(String rawPath) {
