@@ -12,6 +12,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthTokens;
+import com.storyverse.api.common.RequestPaths;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -19,9 +20,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Paywall total no servidor. Roda depois do rate limit/segurança; rotas públicas e de conta ficam
- * de fora. Staff passa direto pela regra do {@link BillingService}. Com `BILLING_ENABLED=false`
- * o filtro não faz nada (fase de beta).
+ * Paywall total no servidor. Roda depois do rate limit/segurança. Todo caminho é protegido, exceto
+ * a lista de {@link #exempt}; a decisão usa o caminho normalizado ({@link RequestPaths}), o mesmo
+ * que o MVC usa para casar a rota, para que `/%61pi/...` ou `/text;x=1` não escapem. Staff passa
+ * direto pela regra do {@link BillingService}. Com `BILLING_ENABLED=false` o filtro não faz nada
+ * (fase de beta).
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
@@ -44,8 +47,8 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 	@Override
 	protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
 			throws ServletException, IOException {
-		String path = request.getRequestURI();
-		if (!enabled || !path.startsWith("/api/") || "OPTIONS".equals(request.getMethod()) || exempt(request.getMethod(), path)) {
+		String path = RequestPaths.normalized(request);
+		if (!enabled || "OPTIONS".equals(request.getMethod()) || exempt(request.getMethod(), path)) {
 			chain.doFilter(request, response);
 			return;
 		}
@@ -85,6 +88,7 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 		}
 	}
 
+	/** Recebe o caminho já normalizado. O que não está aqui exige conta com assinatura. */
 	static boolean exempt(String method, String path) {
 		if (path.startsWith("/api/v1/auth/") || path.startsWith("/api/v1/billing/")
 				|| path.startsWith("/api/v1/account") || path.startsWith("/api/v1/health")
@@ -98,7 +102,8 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 		if ("GET".equals(method) && path.startsWith("/api/v1/community/submissions")) {
 			return true;
 		}
-		if ("GET".equals(method) && path.startsWith("/api/v1/catalog/") && !path.endsWith("/text")) {
+		if ("GET".equals(method) && path.startsWith("/api/v1/catalog/") && !path.endsWith("/text")
+				&& !path.endsWith("/text/")) {
 			return true;
 		}
 		return false;
