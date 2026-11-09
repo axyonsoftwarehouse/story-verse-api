@@ -390,4 +390,67 @@ class CatalogAudioIntegrationTest {
 		assertThrows(DataAccessException.class,
 				() -> asRuntime(null, "anon", () -> chapterCount(audioId)));
 	}
+
+	/** Edição publicada direto no banco, com os capítulos e durações dados (S4). */
+	private UUID publishedEdition(UUID bookId, int... durations) {
+		UUID audioId = UUID.randomUUID();
+		int total = java.util.Arrays.stream(durations).sum();
+		jdbc.sql("""
+				insert into public.catalog_book_audio
+					(id, book_id, status, published_at, chapter_count, total_duration_seconds, text_mapping)
+				values (:id, :book, 'published', now(), :count, :total, 'none')
+				""")
+				.param("id", audioId)
+				.param("book", bookId)
+				.param("count", durations.length)
+				.param("total", total)
+				.update();
+		for (int i = 0; i < durations.length; i++) {
+			jdbc.sql("""
+					insert into public.catalog_audio_chapters
+						(audio_id, chapter_index, audio_path, duration_seconds)
+					values (:audio, :index, :path, :duration)
+					""")
+					.param("audio", audioId)
+					.param("index", i + 1)
+					.param("path", "books/s4/" + audioId + "/" + (i + 1) + ".mp3")
+					.param("duration", durations[i])
+					.update();
+		}
+		return audioId;
+	}
+
+	private String bookKey(UUID bookId) {
+		return "it:audio:" + bookId;
+	}
+
+	/** S4: com um capítulo só, o capítulo 1 é o livro inteiro e não pode sair sem login. */
+	@Test
+	void edicaoDeCapituloUnicoNaoTemAmostraAberta() throws Exception {
+		UUID bookId = book();
+		UUID audioId = publishedEdition(bookId, 25_916);
+
+		mvc.perform(get("/api/v1/catalog/books/{bookKey}/audio", bookKey(bookId)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.editions[0].chapters[0].free").value(false))
+				.andExpect(jsonPath("$.editions[0].freeChapterIndex").value(org.hamcrest.Matchers.nullValue()));
+		mvc.perform(get("/api/v1/catalog/books/{bookKey}/audio/{audioId}/chapters/1/stream",
+						bookKey(bookId), audioId))
+				.andExpect(status().isUnauthorized());
+	}
+
+	/** S4: primeiro capítulo longo demais também não é amostra. */
+	@Test
+	void primeiroCapituloLongoNaoEAmostraAberta() throws Exception {
+		UUID bookId = book();
+		UUID audioId = publishedEdition(bookId, 3_600, 600);
+
+		mvc.perform(get("/api/v1/catalog/books/{bookKey}/audio", bookKey(bookId)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.editions[0].chapters[0].free").value(false))
+				.andExpect(jsonPath("$.editions[0].chapters[1].free").value(false));
+		mvc.perform(get("/api/v1/catalog/books/{bookKey}/audio/{audioId}/chapters/1/stream",
+						bookKey(bookId), audioId))
+				.andExpect(status().isUnauthorized());
+	}
 }
