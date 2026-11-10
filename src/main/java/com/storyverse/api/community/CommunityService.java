@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
+import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.catalog.CatalogRepository;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
@@ -40,9 +41,11 @@ public class CommunityService {
 	private final StorageAccess access;
 	private final CoverUrlPolicy covers;
 	private final CatalogRepository catalog;
+	private final BillingService billing;
 
 	public CommunityService(CommunityRepository repository, AuthService auth, AuthzService authz, JdbcClient jdbc,
-			StorageService storage, StorageAccess access, CoverUrlPolicy covers, CatalogRepository catalog) {
+			StorageService storage, StorageAccess access, CoverUrlPolicy covers, CatalogRepository catalog,
+			BillingService billing) {
 		this.repository = repository;
 		this.auth = auth;
 		this.authz = authz;
@@ -51,6 +54,25 @@ public class CommunityService {
 		this.access = access;
 		this.covers = covers;
 		this.catalog = catalog;
+		this.billing = billing;
+	}
+
+	/**
+	 * Texto de um envio, pedido por id: o caminho no armazenamento fica no servidor (S9). Exige
+	 * conta e assinatura (é conteúdo do produto); a regra de quem lê é a mesma do armazenamento
+	 * (aprovado, ou dono, ou moderação).
+	 */
+	@Transactional(readOnly = true)
+	public String text(String accessToken, UUID id) {
+		UUID user = requireUser(accessToken);
+		billing.requireAccess(user);
+		DbSession.setUser(jdbc, user);
+		Map<String, Object> row = repository.find(id)
+				.orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
+		String path = String.valueOf(row.get("text_path"));
+		byte[] bytes = storage.readFor(user, StorageBucket.COMMUNITY_BOOKS, path)
+				.orElseThrow(() -> new AuthException(404, "Texto do livro indisponível."));
+		return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
 	}
 
 	@Transactional(readOnly = true)

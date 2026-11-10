@@ -21,10 +21,11 @@ public class CommunityRepository {
 
 	public List<Map<String, Object>> listApproved() {
 		// A estante é pública: não devolva review_note/reviewed_by (notas internas e identidade
-		// do moderador). Esses campos só aparecem em "mine" e na fila de moderação.
+		// do moderador), user_id nem text_path (S9). O texto é pedido por id em /{id}/text, com o
+		// caminho resolvido no servidor. Os campos internos só aparecem em "mine" e na moderação.
 		return DbRows.list(jdbc, """
-				select id, user_id, submitter_name, title, author, language, rights, rights_note,
-				       characters, text_path, char_count, status, reviewed_at, cover_url, created_at
+				select id, submitter_name, title, author, language, rights, rights_note,
+				       characters, char_count, status, reviewed_at, cover_url, created_at
 				  from public.book_submissions
 				 where status = 'approved'
 				 order by reviewed_at desc nulls last
