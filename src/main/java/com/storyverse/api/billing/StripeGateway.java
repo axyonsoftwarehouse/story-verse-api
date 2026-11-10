@@ -183,6 +183,19 @@ public class StripeGateway {
 		}
 	}
 
+	/**
+	 * Cancela a assinatura agora, sem esperar o fim do período. Usado quando a conta é excluída:
+	 * sem isso a Stripe continuaria cobrando uma conta que não existe mais.
+	 */
+	public void cancelSubscription(String subscriptionId) {
+		requireConfigured();
+		try {
+			Subscription.retrieve(subscriptionId).cancel();
+		} catch (StripeException exception) {
+			throw new IllegalStateException("Não foi possível cancelar a assinatura.", exception);
+		}
+	}
+
 	public SubscriptionState subscription(String subscriptionId) {
 		requireConfigured();
 		try {
