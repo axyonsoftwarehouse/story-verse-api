@@ -62,10 +62,25 @@ class SecurityIntegrationTest {
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
   @Autowired RateLimitGate rateLimits;
   @Autowired AccountService account;
+  @Autowired SessionRepository sessions;
   @Autowired FeatureAccessService features;
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
 
+  /** S10: a poda apaga sessões vencidas e revogadas antigas, e mantém as ativas e as revogadas recentes. */
+  @Test void pruneRemovesExpiredAndOldRevokedSessionsOnly() {
+    AuthResponse alive=user(), expired=user(), oldRevoked=user(), newRevoked=user();
+    jdbc.sql("update auth.sessions set refresh_expires_at=now()-interval '1 day' where user_id=:u").param("u",id(expired)).update();
+    jdbc.sql("update auth.sessions set revoked_at=now()-interval '8 days' where user_id=:u").param("u",id(oldRevoked)).update();
+    jdbc.sql("update auth.sessions set revoked_at=now()-interval '1 day' where user_id=:u").param("u",id(newRevoked)).update();
+    assertTrue(sessions.pruneDead(7)>=2);
+    java.util.function.Function<AuthResponse,Integer> count=s->jdbc.sql("select count(*) from auth.sessions where user_id=:u").param("u",id(s)).query(Integer.class).single();
+    assertEquals(1,count.apply(alive));
+    assertEquals(0,count.apply(expired));
+    assertEquals(0,count.apply(oldRevoked));
+    assertEquals(1,count.apply(newRevoked));
+    assertNotNull(auth.me(alive.accessToken()));
+  }
   @Test void refreshIsSingleUseUnderConcurrency() throws Exception {
     AuthResponse first = user();
     CountDownLatch start = new CountDownLatch(1);
