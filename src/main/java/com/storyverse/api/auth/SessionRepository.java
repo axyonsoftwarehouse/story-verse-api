@@ -20,6 +20,21 @@ public class SessionRepository {
 		this.jdbc = jdbc;
 	}
 
+	/**
+	 * Apaga sessões que não servem mais: refresh vencido, ou revogadas há mais de
+	 * {@code keepRevokedDays} dias (o prazo deixa a reutilização de token ainda detectável por um
+	 * tempo). O histórico de tokens sai junto (on delete cascade). Devolve quantas apagou.
+	 */
+	public int pruneDead(int keepRevokedDays) {
+		return jdbc.sql("""
+				delete from auth.sessions
+				 where refresh_expires_at < now()
+				    or (revoked_at is not null and revoked_at < now() - make_interval(days => :days))
+				""")
+				.param("days", keepRevokedDays)
+				.update();
+	}
+
 	public void create(UUID userId, String accessHash, Instant accessExpiresAt, String refreshHash, Instant refreshExpiresAt) {
 		jdbc.sql("""
 				insert into auth.sessions (user_id, access_hash, access_expires_at, refresh_hash, refresh_expires_at)

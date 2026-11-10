@@ -43,6 +43,8 @@ class BillingAccessFilterTest {
 		assertFalse(BillingAccessFilter.exempt("GET", "/api/v1/catalog/books/cat:1/text"));
 		assertFalse(BillingAccessFilter.exempt("GET", "/api/v1/me/library"));
 		assertFalse(BillingAccessFilter.exempt("POST", "/api/v1/community/submissions"));
+		assertFalse(BillingAccessFilter.exempt("GET", "/api/v1/community/submissions/7f1c0e9a-0000-4000-8000-000000000001/text"));
+		assertFalse(exemptCru("GET", "/api/v1/community/submissions/7f1c0e9a-0000-4000-8000-000000000001/tex%74"));
 		assertFalse(BillingAccessFilter.exempt("GET", "/api/v1/ai/status/extra"));
 	}
 

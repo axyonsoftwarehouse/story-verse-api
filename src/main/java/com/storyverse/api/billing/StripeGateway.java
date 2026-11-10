@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.stripe.Stripe;
+import com.stripe.exception.InvalidRequestException;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Customer;
@@ -190,10 +191,24 @@ public class StripeGateway {
 	public void cancelSubscription(String subscriptionId) {
 		requireConfigured();
 		try {
-			Subscription.retrieve(subscriptionId).cancel();
+			Subscription subscription = Subscription.retrieve(subscriptionId);
+			// Já encerrada no Stripe (o webhook ainda não chegou ao banco): nada a cobrar, segue.
+			if (alreadyEnded(subscription.getStatus())) return;
+			subscription.cancel();
 		} catch (StripeException exception) {
+			if (missing(exception)) return;
 			throw new IllegalStateException("Não foi possível cancelar a assinatura.", exception);
 		}
+	}
+
+	/** Status do Stripe em que a assinatura não cobra mais. */
+	static boolean alreadyEnded(String status) {
+		return "canceled".equals(status) || "incomplete_expired".equals(status);
+	}
+
+	/** A assinatura não existe mais no Stripe: para a exclusão da conta, é o mesmo que cancelada. */
+	static boolean missing(StripeException exception) {
+		return exception instanceof InvalidRequestException && "resource_missing".equals(exception.getCode());
 	}
 
 	public SubscriptionState subscription(String subscriptionId) {

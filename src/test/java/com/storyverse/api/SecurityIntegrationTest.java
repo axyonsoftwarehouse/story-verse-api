@@ -62,10 +62,25 @@ class SecurityIntegrationTest {
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
   @Autowired RateLimitGate rateLimits;
   @Autowired AccountService account;
+  @Autowired SessionRepository sessions;
   @Autowired FeatureAccessService features;
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
 
+  /** S10: a poda apaga sessões vencidas e revogadas antigas, e mantém as ativas e as revogadas recentes. */
+  @Test void pruneRemovesExpiredAndOldRevokedSessionsOnly() {
+    AuthResponse alive=user(), expired=user(), oldRevoked=user(), newRevoked=user();
+    jdbc.sql("update auth.sessions set refresh_expires_at=now()-interval '1 day' where user_id=:u").param("u",id(expired)).update();
+    jdbc.sql("update auth.sessions set revoked_at=now()-interval '8 days' where user_id=:u").param("u",id(oldRevoked)).update();
+    jdbc.sql("update auth.sessions set revoked_at=now()-interval '1 day' where user_id=:u").param("u",id(newRevoked)).update();
+    assertTrue(sessions.pruneDead(7)>=2);
+    java.util.function.Function<AuthResponse,Integer> count=s->jdbc.sql("select count(*) from auth.sessions where user_id=:u").param("u",id(s)).query(Integer.class).single();
+    assertEquals(1,count.apply(alive));
+    assertEquals(0,count.apply(expired));
+    assertEquals(0,count.apply(oldRevoked));
+    assertEquals(1,count.apply(newRevoked));
+    assertNotNull(auth.me(alive.accessToken()));
+  }
   @Test void refreshIsSingleUseUnderConcurrency() throws Exception {
     AuthResponse first = user();
     CountDownLatch start = new CountDownLatch(1);
@@ -201,6 +216,24 @@ class SecurityIntegrationTest {
       release.countDown();
     }
     storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/c.txt","text/plain","c".getBytes());
+  }
+  /** S9: a estante pública não expõe user_id nem text_path; o texto sai por id, com a regra do armazenamento. */
+  @Test void approvedListingHidesInternalFieldsAndTextIsServedById() {
+    AuthResponse owner=user(), reader=user(), admin=user();
+    String path=id(owner)+"/s9.txt";
+    storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","texto do envio".getBytes());
+    var row=community.create(owner.accessToken(),Map.of("title","S9","text_path",path,"rights","own_work"));
+    UUID submission=UUID.fromString(row.get("id").toString());
+    assertThrows(AuthException.class,()->community.text(reader.accessToken(),submission),"pendente: só dono e moderação");
+    assertEquals("texto do envio",community.text(owner.accessToken(),submission));
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
+    community.review(admin.accessToken(),submission,Map.of("status","approved"));
+    var listed=community.list(null,"approved").stream().filter(r->submission.toString().equals(String.valueOf(r.get("id")))).findFirst().orElseThrow();
+    assertFalse(listed.containsKey("user_id"));
+    assertFalse(listed.containsKey("text_path"));
+    assertEquals("S9",listed.get("title"));
+    assertEquals("texto do envio",community.text(reader.accessToken(),submission));
+    assertThrows(AuthException.class,()->community.text(null,submission));
   }
   @Test void quotaIsAtomicAcrossConcurrentUploads() throws Exception {
     AuthResponse user=user();
