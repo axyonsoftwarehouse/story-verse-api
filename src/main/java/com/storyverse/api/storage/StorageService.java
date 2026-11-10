@@ -10,6 +10,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -17,9 +19,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.storyverse.api.auth.AuthException;
 
@@ -36,23 +40,37 @@ public class StorageService {
 	private final StorageAccess access;
 	private final long quotaBytes;
 	private final int quotaObjects;
+	private final TransactionTemplate transactions;
+
+	/** Envios simultâneos por conta (S7). */
+	static final int MAX_CONCURRENT_UPLOADS_PER_ACCOUNT = 2;
+	private final ConcurrentHashMap<UUID, AtomicInteger> uploadsInFlight = new ConcurrentHashMap<>();
 
 	public StorageService(@Value("${app.storage.dir:/data/media}") String directory, StorageAccess access,
 			@Value("${app.storage.quota-bytes:268435456}") long quotaBytes,
-			@Value("${app.storage.quota-objects:1000}") int quotaObjects) {
+			@Value("${app.storage.quota-objects:1000}") int quotaObjects,
+			PlatformTransactionManager transactionManager) {
 		this.baseDir = Path.of(directory).toAbsolutePath().normalize();
 		this.access = access;
 		this.quotaBytes = quotaBytes;
 		this.quotaObjects = quotaObjects;
+		this.transactions = new TransactionTemplate(transactionManager);
 	}
 
-	@Transactional
 	public void write(UUID userId, StorageBucket bucket, String path, String contentType, byte[] bytes) {
 		write(userId, bucket, path, contentType, new java.io.ByteArrayInputStream(bytes), bytes.length);
 	}
 
-	/** Grava em streaming: o corpo não é materializado inteiro em memória. */
-	@Transactional
+	/**
+	 * Grava em streaming: o corpo não é materializado inteiro em memória.
+	 *
+	 * <p>S7 da revisão de 09/11/2026: o corpo é recebido para um temporário <b>fora</b> de qualquer
+	 * transação. Antes, a transação, a conexão do pool e o lock global `storage-capacity` ficavam
+	 * presos enquanto o cliente enviava até 50 MB: um envio lento travava todos os outros e uns vinte
+	 * esgotavam o pool. Agora só a etapa final (locks, cota com o tamanho real, imutabilidade e
+	 * `ATOMIC_MOVE`) roda numa transação curta. Cada conta tem no máximo
+	 * {@link #MAX_CONCURRENT_UPLOADS_PER_ACCOUNT} envios ao mesmo tempo.
+	 */
 	public void write(UUID userId, StorageBucket bucket, String path, String contentType,
 			java.io.InputStream input, long declaredLength) {
 		String own = requireOwn(userId, path);
@@ -67,39 +85,57 @@ public class StorageService {
 			throw new AuthException(413, "Arquivo grande demais.");
 		}
 		Path target = resolve(bucket, own);
-		access.lock("storage-capacity");
-		access.lock("storage-owner:" + userId);
-		access.setUser(userId);
-		if (bucket == StorageBucket.COMMUNITY_BOOKS) access.lockCommunity(own);
-		access.assertWritable(bucket, own);
+		AtomicInteger running = uploadsInFlight.computeIfAbsent(userId, key -> new AtomicInteger());
+		if (running.incrementAndGet() > MAX_CONCURRENT_UPLOADS_PER_ACCOUNT) {
+			running.decrementAndGet();
+			throw new AuthException(429, "Muitos envios ao mesmo tempo. Espere terminar e tente de novo.");
+		}
 		Path temporary = null;
 		try {
 			Files.createDirectories(baseDir);
 			long expected = declaredLength > 0 ? declaredLength : bucket.maxBytes();
 			if (Files.getFileStore(baseDir).getUsableSpace() - expected < 2L * 1024 * 1024 * 1024)
 				throw new AuthException(507, "Armazenamento temporariamente indisponível.");
-			ensureQuota(userId, target, expected);
-			Files.createDirectories(target.getParent());
+			// Conferência prévia, só no disco e sem lock: recusa logo quem já estourou a cota, sem
+			// receber o arquivo. A conferência que vale é a da etapa final, com o tamanho real.
+			if (declaredLength > 0) ensureQuota(userId, target, declaredLength);
 			Path temporaryDir = baseDir.resolve(".tmp");
 			Files.createDirectories(temporaryDir);
 			temporary = Files.createTempFile(temporaryDir, ".upload-", ".tmp");
+			// Recebimento sem transação, sem conexão do pool e sem lock.
 			long written = copyBounded(input, temporary, bucket.maxBytes());
 			if (written == 0) {
 				throw new AuthException(400, "Arquivo vazio.");
 			}
 			// O Content-Type é declarado pelo cliente: confere os bytes reais antes de publicar.
 			validateContent(temporary, type);
-			// O Content-Length pode mentir: reconfere a quota com o tamanho realmente recebido.
-			ensureQuota(userId, target, written);
-			Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-					java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			Path received = temporary;
+			transactions.executeWithoutResult(status -> publish(userId, bucket, own, target, received, written));
 			temporary = null;
 		} catch (IOException exception) {
 			throw new UncheckedIOException("Falha ao gravar o arquivo", exception);
 		} finally {
+			if (running.decrementAndGet() <= 0) uploadsInFlight.remove(userId, running);
 			if (temporary != null) {
 				try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
 			}
+		}
+	}
+
+	/** Etapa curta, dentro da transação: locks, regras, cota com o tamanho real e troca atômica. */
+	private void publish(UUID userId, StorageBucket bucket, String own, Path target, Path received, long written) {
+		access.lock("storage-capacity");
+		access.lock("storage-owner:" + userId);
+		access.setUser(userId);
+		if (bucket == StorageBucket.COMMUNITY_BOOKS) access.lockCommunity(own);
+		access.assertWritable(bucket, own);
+		try {
+			ensureQuota(userId, target, written);
+			Files.createDirectories(target.getParent());
+			Files.move(received, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+					java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+		} catch (IOException exception) {
+			throw new UncheckedIOException("Falha ao gravar o arquivo", exception);
 		}
 	}
 
