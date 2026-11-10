@@ -58,6 +58,9 @@ app:
     # cross-site (localhost -> API remota) use None (exige Secure). Nunca use None sem HTTPS.
     refresh-cookie-secure: ${APP_AUTH_REFRESH_COOKIE_SECURE:true}
     refresh-cookie-same-site: ${APP_AUTH_REFRESH_COOKIE_SAME_SITE:Lax}
+    # Até esta data (UTC) o cookie do nome antigo (sem __Host-) ainda é aceito no refresh. Depois,
+    # só o nome novo: um cookie plantado por outro host *.sslip.io deixa de valer (S2).
+    legacy-refresh-cookie-until: ${APP_AUTH_LEGACY_REFRESH_COOKIE_UNTIL:2026-12-15}
   storage:
     # Pasta dos arquivos (fotos, livros importados, acervo). Na VPS é o volume do stack.
     dir: ${STORAGE_DIR:/data/media}
