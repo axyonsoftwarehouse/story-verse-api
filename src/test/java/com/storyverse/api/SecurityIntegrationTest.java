@@ -166,6 +166,57 @@ class SecurityIntegrationTest {
     assertThrows(AuthException.class,()->storage.delete(id(owner),StorageBucket.COMMUNITY_BOOKS,path));
     assertThrows(AuthException.class,()->community.delete(owner.accessToken(),UUID.fromString(row.get("id").toString())));
   }
+  /** Corpo que entrega o primeiro bloco e espera o sinal para terminar: um cliente enviando devagar. */
+  static java.io.InputStream slowBody(byte[] content, CountDownLatch started, CountDownLatch release) {
+    return new java.io.InputStream() {
+      int position;
+      @Override public int read() throws java.io.IOException {
+        if (position == 1) {
+          started.countDown();
+          try { if (!release.await(30, TimeUnit.SECONDS)) throw new java.io.IOException("timeout"); }
+          catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException(e); }
+        }
+        return position < content.length ? content[position++] & 0xFF : -1;
+      }
+    };
+  }
+  /** S7: um envio em andamento (cliente lento) não segura lock nem conexão de quem envia depois. */
+  @Test void slowUploadDoesNotBlockAnotherAccount() throws Exception {
+    AuthResponse slow=user(), fast=user();
+    byte[] content="texto enviado devagar".getBytes();
+    CountDownLatch started=new CountDownLatch(1), release=new CountDownLatch(1);
+    try (ExecutorService executor=Executors.newFixedThreadPool(2)) {
+      Future<?> pending=executor.submit(()->storage.write(id(slow),StorageBucket.COMMUNITY_BOOKS,id(slow)+"/lento.txt","text/plain",
+          slowBody(content,started,release),content.length));
+      assertTrue(started.await(10,TimeUnit.SECONDS),"o envio lento começou");
+      Future<?> other=executor.submit(()->storage.write(id(fast),StorageBucket.COMMUNITY_BOOKS,id(fast)+"/rapido.txt","text/plain","ok".getBytes()));
+      other.get(5,TimeUnit.SECONDS);
+      release.countDown();
+      pending.get(10,TimeUnit.SECONDS);
+    } finally {
+      release.countDown();
+    }
+    assertEquals("ok",new String(storage.read(StorageBucket.COMMUNITY_BOOKS,id(fast)+"/rapido.txt").orElseThrow()));
+    assertEquals("texto enviado devagar",new String(storage.read(StorageBucket.COMMUNITY_BOOKS,id(slow)+"/lento.txt").orElseThrow()));
+  }
+  /** S7: no máximo dois envios simultâneos por conta. */
+  @Test void concurrentUploadsPerAccountAreCapped() throws Exception {
+    AuthResponse user=user();
+    byte[] content="abc".getBytes();
+    CountDownLatch first=new CountDownLatch(1), second=new CountDownLatch(1), release=new CountDownLatch(1);
+    try (ExecutorService executor=Executors.newFixedThreadPool(2)) {
+      Future<?> a=executor.submit(()->storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/a.txt","text/plain",slowBody(content,first,release),content.length));
+      Future<?> b=executor.submit(()->storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/b.txt","text/plain",slowBody(content,second,release),content.length));
+      assertTrue(first.await(10,TimeUnit.SECONDS)&&second.await(10,TimeUnit.SECONDS));
+      AuthException error=assertThrows(AuthException.class,()->storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/c.txt","text/plain","c".getBytes()));
+      assertEquals(429,error.status());
+      release.countDown();
+      a.get(10,TimeUnit.SECONDS); b.get(10,TimeUnit.SECONDS);
+    } finally {
+      release.countDown();
+    }
+    storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/c.txt","text/plain","c".getBytes());
+  }
   /** S9: a estante pública não expõe user_id nem text_path; o texto sai por id, com a regra do armazenamento. */
   @Test void approvedListingHidesInternalFieldsAndTextIsServedById() {
     AuthResponse owner=user(), reader=user(), admin=user();
