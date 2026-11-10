@@ -151,6 +151,24 @@ class SecurityIntegrationTest {
     assertThrows(AuthException.class,()->storage.delete(id(owner),StorageBucket.COMMUNITY_BOOKS,path));
     assertThrows(AuthException.class,()->community.delete(owner.accessToken(),UUID.fromString(row.get("id").toString())));
   }
+  /** S9: a estante pública não expõe user_id nem text_path; o texto sai por id, com a regra do armazenamento. */
+  @Test void approvedListingHidesInternalFieldsAndTextIsServedById() {
+    AuthResponse owner=user(), reader=user(), admin=user();
+    String path=id(owner)+"/s9.txt";
+    storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","texto do envio".getBytes());
+    var row=community.create(owner.accessToken(),Map.of("title","S9","text_path",path,"rights","own_work"));
+    UUID submission=UUID.fromString(row.get("id").toString());
+    assertThrows(AuthException.class,()->community.text(reader.accessToken(),submission),"pendente: só dono e moderação");
+    assertEquals("texto do envio",community.text(owner.accessToken(),submission));
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
+    community.review(admin.accessToken(),submission,Map.of("status","approved"));
+    var listed=community.list(null,"approved").stream().filter(r->submission.toString().equals(String.valueOf(r.get("id")))).findFirst().orElseThrow();
+    assertFalse(listed.containsKey("user_id"));
+    assertFalse(listed.containsKey("text_path"));
+    assertEquals("S9",listed.get("title"));
+    assertEquals("texto do envio",community.text(reader.accessToken(),submission));
+    assertThrows(AuthException.class,()->community.text(null,submission));
+  }
   @Test void quotaIsAtomicAcrossConcurrentUploads() throws Exception {
     AuthResponse user=user();
     try (ExecutorService executor=Executors.newFixedThreadPool(2)) {
