@@ -5,6 +5,8 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -35,6 +37,15 @@ public class CommunityController {
 			@RequestParam(defaultValue = "approved") String scope,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		return service.list(AuthTokens.bearer(authorization), scope);
+	}
+
+	@GetMapping(value = "/{id}/text", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> text(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return ResponseEntity.ok()
+				.contentType(new MediaType(MediaType.TEXT_PLAIN, java.nio.charset.StandardCharsets.UTF_8))
+				.body(service.text(AuthTokens.bearer(authorization), id));
 	}
 
 	@PostMapping

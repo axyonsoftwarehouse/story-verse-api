@@ -99,7 +99,9 @@ public class BillingAccessFilter extends OncePerRequestFilter {
 				|| path.startsWith("/api/v1/push/")) {
 			return true;
 		}
-		if ("GET".equals(method) && path.startsWith("/api/v1/community/submissions")) {
+		// A listagem é pública; o texto de um envio (/{id}/text) é conteúdo pago (S9).
+		if ("GET".equals(method) && path.startsWith("/api/v1/community/submissions")
+				&& !path.endsWith("/text") && !path.endsWith("/text/")) {
 			return true;
 		}
 		if ("GET".equals(method) && path.startsWith("/api/v1/catalog/") && !path.endsWith("/text")

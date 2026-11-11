@@ -119,7 +119,10 @@ public class BillingService {
 	/**
 	 * Antes de excluir a conta: cancela no Stripe a assinatura que ainda cobraria. Se o Stripe
 	 * falhar, o erro sobe e a exclusão aborta — melhor recusar do que deixar cobrança órfã.
+	 * Transacional por conta própria: o ajuste do RLS (`asUser`) só vale dentro de uma transação;
+	 * sem ela a assinatura ficaria invisível e nada seria cancelado.
 	 */
+	@Transactional(readOnly = true)
 	public void cancelForAccountDeletion(UUID userId) {
 		asUser(userId);
 		Map<String, Object> subscription = repository.latestSubscription(userId).orElse(null);

@@ -86,6 +86,7 @@ public class AuthController {
 	@PostMapping("/refresh")
 	public AuthView refresh(@RequestBody(required = false) RefreshRequest request,
 			HttpServletRequest httpRequest, HttpServletResponse response) {
+		cookies.requireAllowedOrigin(httpRequest);
 		String token = refreshToken(request, httpRequest);
 		if (token == null || token.isBlank()) {
 			throw new AuthException(401, "Não autenticado.");
@@ -104,6 +105,7 @@ public class AuthController {
 	public void logout(@RequestBody(required = false) RefreshRequest request,
 			@RequestHeader(value = "Authorization", required = false) String authorization,
 			HttpServletRequest httpRequest, HttpServletResponse response) {
+		cookies.requireAllowedOrigin(httpRequest);
 		try {
 			service.logout(refreshToken(request, httpRequest), AuthTokens.bearer(authorization));
 		} finally {

@@ -62,10 +62,25 @@ class SecurityIntegrationTest {
   @Autowired com.storyverse.api.reading.ReadingStateService readingState;
   @Autowired RateLimitGate rateLimits;
   @Autowired AccountService account;
+  @Autowired SessionRepository sessions;
   @Autowired FeatureAccessService features;
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Audit")); }
   UUID id(AuthResponse session) { return UUID.fromString(session.user().id().toString()); }
 
+  /** S10: a poda apaga sessões vencidas e revogadas antigas, e mantém as ativas e as revogadas recentes. */
+  @Test void pruneRemovesExpiredAndOldRevokedSessionsOnly() {
+    AuthResponse alive=user(), expired=user(), oldRevoked=user(), newRevoked=user();
+    jdbc.sql("update auth.sessions set refresh_expires_at=now()-interval '1 day' where user_id=:u").param("u",id(expired)).update();
+    jdbc.sql("update auth.sessions set revoked_at=now()-interval '8 days' where user_id=:u").param("u",id(oldRevoked)).update();
+    jdbc.sql("update auth.sessions set revoked_at=now()-interval '1 day' where user_id=:u").param("u",id(newRevoked)).update();
+    assertTrue(sessions.pruneDead(7)>=2);
+    java.util.function.Function<AuthResponse,Integer> count=s->jdbc.sql("select count(*) from auth.sessions where user_id=:u").param("u",id(s)).query(Integer.class).single();
+    assertEquals(1,count.apply(alive));
+    assertEquals(0,count.apply(expired));
+    assertEquals(0,count.apply(oldRevoked));
+    assertEquals(1,count.apply(newRevoked));
+    assertNotNull(auth.me(alive.accessToken()));
+  }
   @Test void refreshIsSingleUseUnderConcurrency() throws Exception {
     AuthResponse first = user();
     CountDownLatch start = new CountDownLatch(1);
@@ -150,6 +165,75 @@ class SecurityIntegrationTest {
     assertEquals("reviewed",new String(storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path).orElseThrow()));
     assertThrows(AuthException.class,()->storage.delete(id(owner),StorageBucket.COMMUNITY_BOOKS,path));
     assertThrows(AuthException.class,()->community.delete(owner.accessToken(),UUID.fromString(row.get("id").toString())));
+  }
+  /** Corpo que entrega o primeiro bloco e espera o sinal para terminar: um cliente enviando devagar. */
+  static java.io.InputStream slowBody(byte[] content, CountDownLatch started, CountDownLatch release) {
+    return new java.io.InputStream() {
+      int position;
+      @Override public int read() throws java.io.IOException {
+        if (position == 1) {
+          started.countDown();
+          try { if (!release.await(30, TimeUnit.SECONDS)) throw new java.io.IOException("timeout"); }
+          catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException(e); }
+        }
+        return position < content.length ? content[position++] & 0xFF : -1;
+      }
+    };
+  }
+  /** S7: um envio em andamento (cliente lento) não segura lock nem conexão de quem envia depois. */
+  @Test void slowUploadDoesNotBlockAnotherAccount() throws Exception {
+    AuthResponse slow=user(), fast=user();
+    byte[] content="texto enviado devagar".getBytes();
+    CountDownLatch started=new CountDownLatch(1), release=new CountDownLatch(1);
+    try (ExecutorService executor=Executors.newFixedThreadPool(2)) {
+      Future<?> pending=executor.submit(()->storage.write(id(slow),StorageBucket.COMMUNITY_BOOKS,id(slow)+"/lento.txt","text/plain",
+          slowBody(content,started,release),content.length));
+      assertTrue(started.await(10,TimeUnit.SECONDS),"o envio lento começou");
+      Future<?> other=executor.submit(()->storage.write(id(fast),StorageBucket.COMMUNITY_BOOKS,id(fast)+"/rapido.txt","text/plain","ok".getBytes()));
+      other.get(5,TimeUnit.SECONDS);
+      release.countDown();
+      pending.get(10,TimeUnit.SECONDS);
+    } finally {
+      release.countDown();
+    }
+    assertEquals("ok",new String(storage.read(StorageBucket.COMMUNITY_BOOKS,id(fast)+"/rapido.txt").orElseThrow()));
+    assertEquals("texto enviado devagar",new String(storage.read(StorageBucket.COMMUNITY_BOOKS,id(slow)+"/lento.txt").orElseThrow()));
+  }
+  /** S7: no máximo dois envios simultâneos por conta. */
+  @Test void concurrentUploadsPerAccountAreCapped() throws Exception {
+    AuthResponse user=user();
+    byte[] content="abc".getBytes();
+    CountDownLatch first=new CountDownLatch(1), second=new CountDownLatch(1), release=new CountDownLatch(1);
+    try (ExecutorService executor=Executors.newFixedThreadPool(2)) {
+      Future<?> a=executor.submit(()->storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/a.txt","text/plain",slowBody(content,first,release),content.length));
+      Future<?> b=executor.submit(()->storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/b.txt","text/plain",slowBody(content,second,release),content.length));
+      assertTrue(first.await(10,TimeUnit.SECONDS)&&second.await(10,TimeUnit.SECONDS));
+      AuthException error=assertThrows(AuthException.class,()->storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/c.txt","text/plain","c".getBytes()));
+      assertEquals(429,error.status());
+      release.countDown();
+      a.get(10,TimeUnit.SECONDS); b.get(10,TimeUnit.SECONDS);
+    } finally {
+      release.countDown();
+    }
+    storage.write(id(user),StorageBucket.COMMUNITY_BOOKS,id(user)+"/c.txt","text/plain","c".getBytes());
+  }
+  /** S9: a estante pública não expõe user_id nem text_path; o texto sai por id, com a regra do armazenamento. */
+  @Test void approvedListingHidesInternalFieldsAndTextIsServedById() {
+    AuthResponse owner=user(), reader=user(), admin=user();
+    String path=id(owner)+"/s9.txt";
+    storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","texto do envio".getBytes());
+    var row=community.create(owner.accessToken(),Map.of("title","S9","text_path",path,"rights","own_work"));
+    UUID submission=UUID.fromString(row.get("id").toString());
+    assertThrows(AuthException.class,()->community.text(reader.accessToken(),submission),"pendente: só dono e moderação");
+    assertEquals("texto do envio",community.text(owner.accessToken(),submission));
+    jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
+    community.review(admin.accessToken(),submission,Map.of("status","approved"));
+    var listed=community.list(null,"approved").stream().filter(r->submission.toString().equals(String.valueOf(r.get("id")))).findFirst().orElseThrow();
+    assertFalse(listed.containsKey("user_id"));
+    assertFalse(listed.containsKey("text_path"));
+    assertEquals("S9",listed.get("title"));
+    assertEquals("texto do envio",community.text(reader.accessToken(),submission));
+    assertThrows(AuthException.class,()->community.text(null,submission));
   }
   @Test void quotaIsAtomicAcrossConcurrentUploads() throws Exception {
     AuthResponse user=user();
