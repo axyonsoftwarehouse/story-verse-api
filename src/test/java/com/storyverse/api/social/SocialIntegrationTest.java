@@ -24,6 +24,7 @@ import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthResponse;
 import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.auth.ProfileUpdateRequest;
 import com.storyverse.api.auth.SignupRequest;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.groups.GroupService;
@@ -127,6 +128,15 @@ class SocialIntegrationTest {
 		assertEquals(Boolean.FALSE, afterUnfollow.get("is_following"));
 		assertEquals(0L, number(afterUnfollow, "followers"));
 		assertEquals(0L, number(afterUnfollow, "connections"));
+	}
+
+	@Test
+	void profileShowsTheBio() {
+		String ana = person("Ana Bio"), bia = person("Bia Bio");
+		UUID anaId = idOf(ana);
+		assertNull(social.profile(bia, anaId).get("bio"));
+		auth.updateProfile(ana, new ProfileUpdateRequest("Ana Bio", null, null, null, "Leio de tudo um pouco"));
+		assertEquals("Leio de tudo um pouco", social.profile(bia, anaId).get("bio"));
 	}
 
 	@Test
