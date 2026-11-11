@@ -349,6 +349,9 @@ class SocialIntegrationTest {
 		assertEquals(Boolean.FALSE, asked.get("is_following"));
 		assertEquals(Boolean.TRUE, asked.get("requested"));
 		assertEquals(1L, number(asked, "followers"), "o pedido não conta como seguidor");
+		Map<String, Object> found = social.search(bia, "Ana Privada").get(0);
+		assertEquals(Boolean.TRUE, found.get("is_private"), "as listas já dizem que o perfil é privado");
+		assertEquals(Boolean.TRUE, found.get("requested"));
 		// Pedir de novo não duplica nem repete o aviso.
 		social.follow(bia, anaId);
 
