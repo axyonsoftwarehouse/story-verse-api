@@ -134,19 +134,38 @@ public class SocialService {
 		repository.saveShowcase(viewer, JSON.writeValueAsString(badges), total, JSON.writeValueAsString(stats));
 	}
 
-	/** Mostrar ou esconder leituras, conquistas e presentes no perfil. */
+	/**
+	 * {@code showReading}: mostrar ou esconder leituras, conquistas e presentes. {@code private}:
+	 * perfil privado (seguir vira pedido). Voltar a público aceita os pedidos que estavam esperando.
+	 */
 	@Transactional
 	public Map<String, Object> savePrivacy(String token, Map<String, Object> body) {
 		UUID viewer = requireUser(token);
-		if (!(body.get("showReading") instanceof Boolean show)) throw new AuthException(400, "Informe showReading.");
-		repository.saveShowReading(viewer, show);
-		return Map.of("show_reading", show);
+		Object show = body.get("showReading"), priv = body.get("private");
+		if (show != null && !(show instanceof Boolean)) throw new AuthException(400, "showReading deve ser verdadeiro ou falso.");
+		if (priv != null && !(priv instanceof Boolean)) throw new AuthException(400, "private deve ser verdadeiro ou falso.");
+		if (show == null && priv == null) throw new AuthException(400, "Informe showReading ou private.");
+		if (show instanceof Boolean value) repository.saveShowReading(viewer, value);
+		int accepted = 0;
+		if (priv instanceof Boolean value) {
+			boolean wasPrivate = repository.isPrivate(viewer);
+			repository.savePrivate(viewer, value);
+			if (wasPrivate && !value) accepted = repository.acceptAllRequests();
+		}
+		Map<String, Object> showcase = repository.showcase(viewer).orElse(Map.of());
+		Map<String, Object> out = new LinkedHashMap<>();
+		out.put("show_reading", !Boolean.FALSE.equals(showcase.get("show_reading")));
+		out.put("is_private", repository.isPrivate(viewer));
+		out.put("accepted_requests", accepted);
+		return out;
 	}
 
 	@Transactional(readOnly = true)
 	public List<Map<String, Object>> followers(String token, UUID userId, Integer limit, Integer offset) {
 		UUID viewer = requireUser(token);
 		requireExists(userId);
+		// Perfil privado: as listas ficam para quem segue.
+		if (!repository.contentVisible(userId)) return List.of();
 		return repository.followers(viewer, userId, limit(limit), offset(offset));
 	}
 
@@ -154,6 +173,7 @@ public class SocialService {
 	public List<Map<String, Object>> following(String token, UUID userId, Integer limit, Integer offset) {
 		UUID viewer = requireUser(token);
 		requireExists(userId);
+		if (!repository.contentVisible(userId)) return List.of();
 		return repository.following(viewer, userId, limit(limit), offset(offset));
 	}
 
@@ -173,7 +193,7 @@ public class SocialService {
 		return repository.suggestions(viewer, 12);
 	}
 
-	/** Seguir (idempotente). Devolve o perfil atualizado. */
+	/** Seguir (idempotente); perfil privado vira pedido. Devolve o perfil atualizado. */
 	@Transactional
 	public Map<String, Object> follow(String token, UUID userId) {
 		UUID viewer = requireUser(token);
@@ -183,7 +203,12 @@ public class SocialService {
 		if (repository.followingCount(viewer) >= MAX_FOLLOWING) {
 			throw new AuthException(400, "Você chegou ao limite de " + MAX_FOLLOWING + " perfis seguidos.");
 		}
-		if (repository.follow(viewer, userId)) notifyFollow(userId);
+		if (repository.isFollowing(viewer, userId)) return profile(viewer, userId);
+		if (repository.isPrivate(userId)) {
+			if (repository.request(viewer, userId)) notify(userId, "follow_request", () -> repository.notifyFollowRequest(userId));
+		} else if (repository.follow(viewer, userId)) {
+			notify(userId, "follow", () -> repository.notifyFollow(userId));
+		}
 		return profile(viewer, userId);
 	}
 
@@ -192,7 +217,31 @@ public class SocialService {
 		UUID viewer = requireUser(token);
 		requireExists(userId);
 		repository.unfollow(viewer, userId);
+		// Deixar de seguir também cancela o pedido que estava esperando.
+		repository.deleteRequest(viewer, userId);
 		return profile(viewer, userId);
+	}
+
+	/** Pedidos para seguir que a conta recebeu. */
+	@Transactional(readOnly = true)
+	public List<Map<String, Object>> requests(String token, Integer limit, Integer offset) {
+		UUID viewer = requireUser(token);
+		return repository.requests(viewer, limit(limit), offset(offset));
+	}
+
+	/** Aceitar: a pessoa passa a seguir a conta e recebe o aviso. */
+	@Transactional
+	public void acceptRequest(String token, UUID requesterId) {
+		requireUser(token);
+		if (!repository.acceptRequest(requesterId)) throw new AuthException(404, "Pedido não encontrado.");
+		notify(requesterId, "follow_accepted", () -> repository.notifyFollowAccepted(requesterId));
+	}
+
+	/** Recusar (a pessoa não é avisada; pode pedir de novo). */
+	@Transactional
+	public void declineRequest(String token, UUID requesterId) {
+		UUID viewer = requireUser(token);
+		repository.deleteRequest(requesterId, viewer);
 	}
 
 	/** Tira alguém dos próprios seguidores (a pessoa não é avisada). */
@@ -210,9 +259,9 @@ public class SocialService {
 	}
 
 	/** Aviso no sininho e cutucada no app da pessoa, só depois do commit. */
-	private void notifyFollow(UUID userId) {
+	private void notify(UUID userId, String kind, java.util.function.BooleanSupplier create) {
 		try {
-			if (!repository.notifyFollow(userId)) return;
+			if (!create.getAsBoolean()) return;
 		} catch (RuntimeException exception) {
 			// Aviso é extra: nunca impede seguir.
 			return;
@@ -221,11 +270,11 @@ public class SocialService {
 			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
 				@Override
 				public void afterCommit() {
-					stream.publish(List.of(userId), "notification", Map.of("kind", "follow"));
+					stream.publish(List.of(userId), "notification", Map.of("kind", kind));
 				}
 			});
 		} else {
-			stream.publish(List.of(userId), "notification", Map.of("kind", "follow"));
+			stream.publish(List.of(userId), "notification", Map.of("kind", kind));
 		}
 	}
 
