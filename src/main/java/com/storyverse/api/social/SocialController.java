@@ -91,6 +91,33 @@ public class SocialController {
 		service.removeFollower(AuthTokens.bearer(authorization), id);
 	}
 
+	/** Pedidos para seguir que a conta recebeu (perfil privado). */
+	@GetMapping("/me/follow-requests")
+	public List<Map<String, Object>> requests(
+			@RequestParam(required = false) Integer limit,
+			@RequestParam(required = false) Integer offset,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.requests(AuthTokens.bearer(authorization), limit, offset);
+	}
+
+	/** Aceitar o pedido de {@code id}. */
+	@PutMapping("/me/follow-requests/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void acceptRequest(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.acceptRequest(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Recusar o pedido de {@code id}. */
+	@DeleteMapping("/me/follow-requests/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void declineRequest(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.declineRequest(AuthTokens.bearer(authorization), id);
+	}
+
 	/** Livros do perfil (lendo e terminados), para o "Ver todos". */
 	@GetMapping("/people/{id}/books")
 	public List<Map<String, Object>> books(
@@ -110,7 +137,10 @@ public class SocialController {
 		service.saveShowcase(AuthTokens.bearer(authorization), body);
 	}
 
-	/** {@code { "showReading": bool }}: mostrar ou esconder leituras, conquistas e presentes. */
+	/**
+	 * {@code { "showReading"?: bool, "private"?: bool }}: mostrar ou esconder leituras, conquistas e
+	 * presentes; perfil privado (seguir vira pedido).
+	 */
 	@PutMapping("/me/privacy")
 	public Map<String, Object> privacy(
 			@RequestBody Map<String, Object> body,
