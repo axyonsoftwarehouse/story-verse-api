@@ -353,7 +353,7 @@ class SecurityIntegrationTest {
       assertTrue(giftCounts.stream().noneMatch(giftRow -> uid.toString().equals(String.valueOf(giftRow.get("user_id")))));
       assertEquals(3,((List<?>)rpc.call(uid,"ai_pack_catalog",Map.of())).size());
       assertEquals(0,((Number)((List<Map<String,Object>>)rpc.call(uid,"my_ai_quota",Map.of("p_daily_limit",50))).get(0).get("credits")).intValue());
-      auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null));
+      auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });
     assertThrows(AuthException.class,()->auth.authenticate(user.accessToken()));
@@ -547,12 +547,24 @@ class SecurityIntegrationTest {
   @Test void profileUpdateKeepsUnchangedFieldsAndClearsRemovedOnes() {
     AuthResponse session=user();
     UserResponse updated=auth.updateProfile(session.accessToken(),
-        new ProfileUpdateRequest("Novo nome","avatar-1","https://example.test/photo","https://example.test/cover"));
+        new ProfileUpdateRequest("Novo nome","avatar-1","https://example.test/photo","https://example.test/cover",null));
     assertEquals("Novo nome",updated.user_metadata().get("name"));
     assertEquals("avatar-1",updated.user_metadata().get("avatar"));
-    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null));
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null,null));
     assertFalse(updated.user_metadata().containsKey("photo"));
     assertFalse(updated.user_metadata().containsKey("cover"));
+  }
+  @Test void profileBioIsKeptWhenOmittedAndClearedWhenEmpty() {
+    AuthResponse session=user();
+    UserResponse updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Nome",null,null,null,"  Leitora  de fantasia  "));
+    assertEquals("Leitora de fantasia",updated.user_metadata().get("bio"));
+    // App antigo não manda a biografia: fica a que estava.
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Nome",null,null,null,null));
+    assertEquals("Leitora de fantasia",updated.user_metadata().get("bio"));
+    assertEquals(400,assertThrows(AuthException.class,()->auth.updateProfile(session.accessToken(),
+        new ProfileUpdateRequest("Nome",null,null,null,"a".repeat(161)))).status());
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Nome",null,null,null," "));
+    assertFalse(updated.user_metadata().containsKey("bio"));
   }
   @Test void rolesDriveCapabilitiesAndAdminAudit() {
     AuthResponse user=user(); UUID userId=id(user);

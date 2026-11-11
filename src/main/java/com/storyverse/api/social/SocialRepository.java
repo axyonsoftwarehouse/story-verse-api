@@ -47,6 +47,7 @@ public class SocialRepository {
 	public Optional<Map<String, Object>> profile(UUID viewer, UUID userId) {
 		return DbRows.one(jdbc, PERSON + """
 				       , u.created_at as member_since,
+				       nullif(btrim(u.raw_user_meta_data->>'bio'), '') as bio,
 				       (select count(*) from public.user_follows f where f.followee_id = u.id) as followers,
 				       (select count(*) from public.user_follows f where f.follower_id = u.id) as following,
 				       (select count(*) from public.user_follows a
