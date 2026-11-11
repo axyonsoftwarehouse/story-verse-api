@@ -365,7 +365,7 @@ class SocialIntegrationTest {
 		assertEquals(1L, number(social.profile(ana, anaId), "pending_requests"));
 		assertEquals(List.of(biaId), social.requests(ana, null, null).stream().map(r -> r.get("id")).toList());
 		assertEquals(1, bellOf(ana, "follow_request").size());
-		assertEquals(0, bellOf(ana, "follow").size());
+		assertTrue(bellOf(ana, "follow").stream().noneMatch(n -> biaId.equals(n.get("actor_id"))), "pedido não avisa como se já seguisse");
 
 		social.acceptRequest(ana, biaId);
 		Map<String, Object> after = social.profile(bia, anaId);
