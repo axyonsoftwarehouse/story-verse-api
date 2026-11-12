@@ -16,6 +16,11 @@ spring:
     url: ${SPRING_FLYWAY_URL:}
     user: ${SPRING_FLYWAY_USER:}
     password: ${SPRING_FLYWAY_PASSWORD:}
+  servlet:
+    multipart:
+      # Único envio multipart: imagens da loja (até 3 MB a moldura animada).
+      max-file-size: 3MB
+      max-request-size: 4MB
   mail:
     host: ${SMTP_HOST:}
     port: ${SMTP_PORT:587}

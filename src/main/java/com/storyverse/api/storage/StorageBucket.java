@@ -4,7 +4,7 @@ import java.util.Set;
 
 import com.storyverse.api.auth.AuthException;
 
-/** Os quatro "armários" do Storyverse (ver supabase/*.sql). */
+/** Os "armários" do Storyverse (ver supabase/*.sql). */
 public enum StorageBucket {
 	/** Fotos de perfil e capas de livro: leitura pública, escrita só na pasta da pessoa. */
 	PROFILE_MEDIA("profile-media", true, 2L * 1024 * 1024, Set.of("image/webp", "image/jpeg", "image/png")),
@@ -16,7 +16,12 @@ public enum StorageBucket {
 	CATALOG_BOOKS("catalog-books", false, 50L * 1024 * 1024,
 			Set.of("text/plain", "application/pdf", "application/epub+zip")),
 	/** Pacote ZIP de uma importação em lote do catálogo; privado, lido só pela equipe. */
-	CATALOG_IMPORTS("catalog-imports", false, 200L * 1024 * 1024, Set.of("application/zip"));
+	CATALOG_IMPORTS("catalog-imports", false, 200L * 1024 * 1024, Set.of("application/zip")),
+	/**
+	 * Imagens dos itens da loja: leitura pública; escrita só pelo admin da loja
+	 * ({@code POST /api/v1/admin/shop/images}), nunca pelo storage genérico.
+	 */
+	SHOP_ITEMS("shop-items", true, 3L * 1024 * 1024, Set.of("image/webp", "image/png", "image/jpeg"));
 
 	private final String id;
 	private final boolean publiclyReadable;

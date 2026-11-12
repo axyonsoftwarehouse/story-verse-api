@@ -335,8 +335,12 @@ class ShopIntegrationTest {
 		UUID user = newUser();
 		giveDiamonds(user, 200);
 		UUID item = newItem(uniqueName(), 120);
-		jdbc.sql("update public.shop_items set colors = array['#ff0000', '#00ff00'] where id = :id")
-				.param("id", item).update();
+		// Nome colorido, para o catálogo devolver as cores (V55: só esse tipo leva cores).
+		UUID colored = jdbc.sql("""
+				insert into public.shop_items (category, tier, name, price, status, colors)
+				values ('name_color', 'common', :name, 50, 'on_sale', array['#ff0000', '#00ff00'])
+				returning id
+				""").param("name", uniqueName()).query(UUID.class).single();
 
 		@SuppressWarnings("unchecked")
 		List<Map<String, Object>> bought = (List<Map<String, Object>>) rpc.call(user, "buy_shop_item",
@@ -345,12 +349,14 @@ class ShopIntegrationTest {
 
 		@SuppressWarnings("unchecked")
 		List<Map<String, Object>> catalog = (List<Map<String, Object>>) rpc.call(user, "shop_catalog", Map.of());
-		Map<String, Object> listed = catalog.stream().filter(row -> item.equals(row.get("id"))).findFirst().orElseThrow();
+		Map<String, Object> listed = catalog.stream().filter(row -> colored.equals(row.get("id"))).findFirst().orElseThrow();
 		assertEquals(List.of("#ff0000", "#00ff00"), listed.get("colors"));
 
+		rpc.call(user, "buy_shop_item", Map.of("item", colored.toString(), "ref", ref()));
 		@SuppressWarnings("unchecked")
 		List<Map<String, Object>> mine = (List<Map<String, Object>>) rpc.call(user, "my_shop_items", Map.of());
-		assertEquals(List.of("#ff0000", "#00ff00"), mine.get(0).get("colors"));
+		Map<String, Object> mineColored = mine.stream().filter(row -> colored.equals(row.get("item_id"))).findFirst().orElseThrow();
+		assertEquals(List.of("#ff0000", "#00ff00"), mineColored.get("colors"));
 
 		JsonNode cosmetics = (JsonNode) rpc.call(user, "equip_shop_item", Map.of("category", "frame", "item", item.toString()));
 		assertEquals("https://img.invalid/f.png", cosmetics.get("frame").get("image").asString());
