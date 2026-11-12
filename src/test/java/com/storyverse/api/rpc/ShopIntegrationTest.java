@@ -30,6 +30,7 @@ import com.storyverse.api.common.DbRows;
 import com.storyverse.api.common.DbSession;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Loja de itens de perfil (V54): catálogo, compra com diamantes, posse e equipar. */
 @SpringBootTest
@@ -49,6 +50,8 @@ class ShopIntegrationTest {
 	@Autowired JdbcClient jdbc;
 	@Autowired PlatformTransactionManager transactions;
 	@Autowired RpcService rpc;
+
+	static final JsonMapper JSON = JsonMapper.builder().build();
 
 	UUID newUser() {
 		return jdbc.sql("insert into auth.users (email) values (:e) returning id")
@@ -96,7 +99,7 @@ class ShopIntegrationTest {
 		return asUser(user, () -> DbRows.list(jdbc, "select * from public.my_shop_items()", Map.of()));
 	}
 
-	String equip(UUID user, String category, UUID item) {
+	JsonNode equip(UUID user, String category, UUID item) {
 		Map<String, Object> params = new HashMap<>();
 		params.put("category", category);
 		params.put("item", item);
@@ -105,7 +108,7 @@ class ShopIntegrationTest {
 			for (var entry : params.entrySet()) {
 				spec = spec.param(entry.getKey(), entry.getValue());
 			}
-			return spec.query(String.class).single();
+			return JSON.readTree(spec.query(String.class).single());
 		});
 	}
 
@@ -244,13 +247,14 @@ class ShopIntegrationTest {
 		assertThrows(DataAccessException.class, () -> equip(user, "frame", item));
 
 		buy(user, item, ref());
-		String equipped = equip(user, "frame", item);
-		assertTrue(equipped.contains("https://img.invalid/f.png"), equipped);
-		assertFalse(equipped.contains("\"frame\": null"), equipped);
+		JsonNode equipped = equip(user, "frame", item);
+		assertEquals("https://img.invalid/f.png", equipped.get("frame").get("image").asString());
+		assertEquals("common", equipped.get("frame").get("tier").asString());
+		assertTrue(equipped.get("badge").isNull());
 		assertEquals(Boolean.TRUE, myItems(user).get(0).get("equipped"));
 
-		String cleared = equip(user, "frame", null);
-		assertTrue(cleared.contains("\"frame\": null"), cleared);
+		JsonNode cleared = equip(user, "frame", null);
+		assertTrue(cleared.has("frame") && cleared.get("frame").isNull(), cleared.toString());
 		assertEquals(Boolean.FALSE, myItems(user).get(0).get("equipped"));
 	}
 
@@ -360,5 +364,69 @@ class ShopIntegrationTest {
 		AuthException refused = assertThrows(AuthException.class,
 				() -> rpc.call(user, "buy_shop_item", Map.of("item", item.toString(), "ref", ref())));
 		assertTrue(refused.getMessage().contains("já tem este item"), refused.getMessage());
+	}
+
+	/** Insere direto como postgres (o caminho do admin), para provar as checks da tabela. */
+	void insertItem(String category, String tier, String imageUrl, String animatedUrl, String colors) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("category", category);
+		params.put("tier", tier);
+		params.put("image", imageUrl);
+		params.put("animated", animatedUrl);
+		params.put("colors", colors);
+		var spec = jdbc.sql("""
+				insert into public.shop_items (category, tier, name, price, image_url, animated_url, colors)
+				values (:category, :tier, 'Item de check', 10, :image, :animated, cast(:colors as text[]))
+				""");
+		for (var entry : params.entrySet()) {
+			spec = spec.param(entry.getKey(), entry.getValue());
+		}
+		spec.update();
+	}
+
+	void assertRejected(String constraint, Runnable insert) {
+		DataAccessException error = assertThrows(DataAccessException.class, insert::run);
+		assertTrue(rootMessage(error).contains(constraint), rootMessage(error));
+	}
+
+	@Test
+	void colorsCheckAcceptsOneToThreeHexColorsOnly() {
+		insertItem("name_color", "common", null, null, "{#ff0000}");
+		insertItem("name_color", "rare", null, null, "{#ff0000,#00FF00,#0000ff}");
+		insertItem("badge", "common", "https://img.invalid/b.png", null, null);
+
+		for (String bad : List.of("{}", "{#ff0000,#00ff00,#0000ff,#ffffff}", "{red}", "{#fff}",
+				"{\"#ff0000;background:url(x)\"}", "{#ff0000,NULL}", "{{#ff0000},{#00ff00}}")) {
+			assertRejected("shop_items_colors_check", () -> insertItem("name_color", "common", null, null, bad));
+		}
+	}
+
+	@Test
+	void nameColorNeedsColors() {
+		assertRejected("shop_items_name_color_needs_colors", () -> insertItem("name_color", "common", null, null, null));
+		insertItem("name_color", "common", null, null, "{#123abc}");
+	}
+
+	@Test
+	void epicFrameNeedsBothImages() {
+		assertRejected("shop_items_epic_frame_images",
+				() -> insertItem("frame", "epic", "https://img.invalid/f.png", null, null));
+		assertRejected("shop_items_epic_frame_images",
+				() -> insertItem("frame", "epic", null, "https://img.invalid/f.webp", null));
+		insertItem("frame", "epic", "https://img.invalid/f.png", "https://img.invalid/f.webp", null);
+		// Rascunho comum ainda pode ser salvo sem imagem.
+		insertItem("frame", "common", null, null, null);
+	}
+
+	@Test
+	void equippedCategoryIsRestricted() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		buy(user, item, ref());
+
+		assertRejected("shop_equipped_category_check", () -> jdbc.sql(
+				"insert into public.shop_equipped (user_id, category, item_id) values (:u, 'hat', :i)")
+				.param("u", user).param("i", item).update());
 	}
 }

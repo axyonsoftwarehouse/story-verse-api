@@ -20,7 +20,21 @@ create table if not exists public.shop_items (
   stock integer check (stock is null or stock >= 0),
   sold integer not null default 0 check (sold >= 0),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- Cores vão parar em CSS: de 1 a 3, só no formato #rrggbb, sem nulos.
+  constraint shop_items_colors_check check (
+    colors is null or (
+      array_ndims(colors) = 1
+      and cardinality(colors) between 1 and 3
+      and array_position(colors, null) is null
+      and array_to_string(colors, ',') ~ '^#[0-9a-fA-F]{6}(,#[0-9a-fA-F]{6}){0,2}$'
+    )
+  ),
+  constraint shop_items_name_color_needs_colors check (category <> 'name_color' or colors is not null),
+  -- Moldura épica é animada: as duas imagens sobem antes de salvar.
+  constraint shop_items_epic_frame_images check (
+    not (category = 'frame' and tier = 'epic') or (image_url is not null and animated_url is not null)
+  )
 );
 
 create index if not exists shop_items_on_sale
@@ -38,7 +52,7 @@ create table if not exists public.shop_ownership (
 
 create table if not exists public.shop_equipped (
   user_id uuid not null,
-  category text not null,
+  category text not null check (category in ('frame', 'badge', 'cover', 'name_color')),
   item_id uuid not null,
   primary key (user_id, category),
   foreign key (user_id, item_id) references public.shop_ownership (user_id, item_id) on delete cascade
