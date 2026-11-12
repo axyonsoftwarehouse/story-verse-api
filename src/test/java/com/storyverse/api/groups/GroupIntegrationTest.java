@@ -250,11 +250,34 @@ class GroupIntegrationTest {
 		for (int i = 1; i <= 3; i++) groups.report(readers[i], msg, Map.of("reasonCode", "abuso"));
 		assertThrows(AuthException.class, () -> groups.report(readers[1], msg, Map.of("reasonCode", "abuso")));
 
-		Map<String, Object> seenByOther = groups.messages(owner, groupId, null, null, null).get(0);
+		// Lido como em produção (papel da API + RLS): cada leitor só enxerga a própria denúncia em
+		// chat_reports, e mesmo assim a mensagem com 3 denúncias some para os outros membros.
+		Map<String, Object> seenByOther = asRuntimeUser(idOf(owner), () -> groups.messages(owner, groupId, null, null, null).get(0));
 		assertEquals(Boolean.TRUE, seenByOther.get("hidden"));
 		assertNull(seenByOther.get("body"));
-		Map<String, Object> seenByAuthor = groups.messages(author, groupId, null, null, null).get(0);
+		Map<String, Object> seenByReporter = asRuntimeUser(idOf(readers[1]), () -> groups.messages(readers[1], groupId, null, null, null).get(0));
+		assertEquals(Boolean.TRUE, seenByReporter.get("hidden"));
+		Map<String, Object> listed = asRuntimeUser(idOf(owner), () -> groups.myGroups(owner)).stream()
+				.filter(g -> groupId.equals(g.get("id"))).findFirst().orElseThrow();
+		assertNull(listed.get("last_body"), "a prévia da lista também esconde");
+		Map<String, Object> seenByAuthor = asRuntimeUser(idOf(author), () -> groups.messages(author, groupId, null, null, null).get(0));
+		assertEquals(Boolean.FALSE, seenByAuthor.get("hidden"));
 		assertEquals("mensagem ofensiva", seenByAuthor.get("body"));
+		// Quem não é do grupo não usa a contagem para descobrir denúncias.
+		String outsider = member();
+		int outsiderCount = asRuntimeUser(idOf(outsider), () -> jdbc.sql("select public.chat_message_report_count(:m)")
+				.param("m", msg).query(Integer.class).single());
+		assertEquals(0, outsiderCount);
+
+		// Foto oculta: o arquivo também deixa de abrir para os outros; quem enviou ainda abre.
+		long photo = messageId(sendMedia(author, groupId, "image", "image/webp", webp(), Map.of("width", "10", "height", "10")));
+		for (int i = 1; i <= 3; i++) groups.report(readers[i], photo, Map.of("reasonCode", "abuso"));
+		Map<String, Object> photoSeen = asRuntimeUser(idOf(owner), () -> groups.messages(owner, groupId, null, null, null)).stream()
+				.filter(m -> messageId(m) == photo).findFirst().orElseThrow();
+		assertEquals(Boolean.FALSE, photoSeen.get("media_available"));
+		assertTrue(asRuntimeUser(idOf(owner), () -> groups.mediaFile(owner, photo)).isEmpty());
+		assertTrue(asRuntimeUser(idOf(author), () -> groups.mediaFile(author, photo)).isPresent());
+		groups.deleteMessage(owner, photo);
 
 		// Membro comum não apaga a mensagem dos outros; o dono apaga.
 		assertThrows(AuthException.class, () -> groups.deleteMessage(readers[2], msg));

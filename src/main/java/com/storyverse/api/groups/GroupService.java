@@ -467,6 +467,11 @@ public class GroupService {
 		Map<String, Object> row = repository.mediaFile(messageId).orElse(null);
 		if (row == null) return Optional.empty();
 		activeMembership(UUID.fromString(String.valueOf(row.get("group_id"))), userId);
+		// Oculta por denúncias: só quem enviou ainda abre o arquivo (como no texto da mensagem).
+		if (!userId.toString().equals(String.valueOf(row.get("author_id")))
+				&& ((Number) row.get("reports")).intValue() >= GroupRepository.AUTO_HIDE_REPORTS) {
+			return Optional.empty();
+		}
 		return media.file(String.valueOf(row.get("media_path"))).map(path -> Map.entry(path, String.valueOf(row.get("media_mime"))));
 	}
 

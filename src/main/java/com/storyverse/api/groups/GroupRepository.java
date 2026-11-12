@@ -39,18 +39,19 @@ public class GroupRepository {
 			       else 0 end as unread,
 			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_code end as invite_code,
 			       lm.id as last_message_id, lm.author_name as last_author_name, lm.media_kind as last_media_kind, lm.kind as last_kind,
-			       case when lm.spoiler_chapter is not null then null else left(lm.body, 120) end as last_body
+			       case when lm.spoiler_chapter is not null or lm.hidden then null else left(lm.body, 120) end as last_body
 			  from public.chat_groups g
 			  left join public.chat_members m on m.group_id = g.id and m.user_id = :viewer
 			  left join lateral (
-			    select x.id, x.body, x.spoiler_chapter, x.media_kind, x.kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name
+			    select x.id, x.body, x.spoiler_chapter, x.media_kind, x.kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name,
+			           (x.author_id <> :viewer and public.chat_message_report_count(x.id) >= %d) as hidden
 			      from public.chat_messages x
 			      join auth.users u on u.id = x.author_id
 			     where x.group_id = g.id and x.deleted_at is null
 			     order by x.id desc
 			     limit 1
 			  ) lm on m.user_id is not null and m.banned_at is null
-			""";
+			""".formatted(AUTO_HIDE_REPORTS);
 
 	private static final String MESSAGE_ROW = """
 			select x.id, x.group_id, x.author_id,
@@ -70,10 +71,7 @@ public class GroupRepository {
 			       (x.deleted_at is null and x.author_id <> :viewer and hidden.n >= %d) as hidden
 			  from public.chat_messages x
 			  join auth.users u on u.id = x.author_id
-			  cross join lateral (
-			    select count(distinct r.reporter_id) as n from public.chat_reports r
-			     where r.message_id = x.id and r.status = 'pending'
-			  ) hidden
+			  cross join lateral (select public.chat_message_report_count(x.id) as n) hidden
 			""".formatted(AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS);
 
 	private final JdbcClient jdbc;
@@ -670,7 +668,9 @@ public class GroupRepository {
 	/** Arquivo da foto/áudio de uma mensagem (vazio: sem mídia, apagada ou vencida). */
 	public Optional<Map<String, Object>> mediaFile(long id) {
 		return DbRows.one(jdbc, """
-				select group_id, author_id, media_path, media_mime, deleted_at from public.chat_messages
+				select group_id, author_id, media_path, media_mime, deleted_at,
+				       public.chat_message_report_count(id) as reports
+				  from public.chat_messages
 				 where id = :id and media_path is not null and deleted_at is null
 				""", Map.of("id", id));
 	}
