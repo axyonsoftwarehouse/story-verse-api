@@ -694,6 +694,38 @@ public class GroupService {
 		stream.publish(repository.activeMemberIds(groupId), "message_deleted", Map.of("groupId", groupId, "id", messageId));
 	}
 
+	/**
+	 * Roleplay: quem escreveu corrige a própria mensagem de texto (até 24 h, antes de virar livro e
+	 * se ninguém denunciou). Todos veem a mensagem nova com "editada".
+	 */
+	@Transactional
+	public Map<String, Object> editMessage(String token, long messageId, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		Map<String, Object> state = repository.messageState(messageId)
+				.filter(m -> m.get("deleted_at") == null)
+				.orElseThrow(() -> new AuthException(404, "Mensagem não encontrada."));
+		UUID groupId = UUID.fromString(String.valueOf(state.get("group_id")));
+		if (!userId.equals(state.get("author_id")) || !"user".equals(state.get("kind"))) {
+			throw new AuthException(403, "Só quem escreveu a mensagem pode editar.");
+		}
+		activeMembership(groupId, userId);
+		if (!"roleplay".equals(visibleGroup(userId, groupId).get("mode"))) {
+			throw new AuthException(400, "Só dá para editar mensagens no roleplay.");
+		}
+		if (state.get("media_kind") != null) throw new AuthException(400, "Fotos e áudios não podem ser editados.");
+		if (Boolean.TRUE.equals(state.get("edit_expired"))) throw new AuthException(409, "Só dá para editar até 24 horas depois de enviar.");
+		if (books.book(groupId).isPresent()) throw new AuthException(409, "A história já virou livro: as mensagens não mudam mais.");
+		if (Boolean.TRUE.equals(state.get("reported"))) throw new AuthException(409, "Esta mensagem foi denunciada e não pode mais ser editada.");
+		String text = text(body.get("body"));
+		if (text == null || text.length() > 2000) throw new AuthException(400, "A mensagem precisa ter entre 1 e 2000 caracteres.");
+		limits.check("group-edit:" + userId, 30, Duration.ofMinutes(1));
+		if (!repository.editMessage(messageId, text)) throw new AuthException(409, "Não foi possível editar esta mensagem.");
+		Map<String, Object> message = repository.message(userId, messageId)
+				.orElseThrow(() -> new AuthException(500, "Mensagem não encontrada."));
+		stream.publish(repository.activeMemberIds(groupId), "message_edited", publicView(message));
+		return message;
+	}
+
 	@Transactional
 	public List<Map<String, Object>> react(String token, long messageId, String emoji, boolean add) {
 		UUID userId = requireUser(token);

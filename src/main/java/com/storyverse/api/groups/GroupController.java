@@ -317,6 +317,15 @@ public class GroupController {
 				.body(new FileSystemResource(file.getKey()));
 	}
 
+	/** Roleplay: quem escreveu corrige o texto da própria mensagem. */
+	@PatchMapping("/messages/{messageId}")
+	public Map<String, Object> editMessage(
+			@PathVariable long messageId,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.editMessage(AuthTokens.bearer(authorization), messageId, body);
+	}
+
 	@DeleteMapping("/messages/{messageId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void deleteMessage(

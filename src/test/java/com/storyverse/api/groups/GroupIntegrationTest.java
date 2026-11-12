@@ -1003,4 +1003,88 @@ class GroupIntegrationTest {
 		// Export da conta (LGPD) traz o convite recebido.
 		assertEquals(1, ((List<?>) account.export(friend).get("groupInvitesReceived")).size());
 	}
+
+	/* ------------------------------ Editar mensagem no roleplay (V52) ------------------------------ */
+
+	UUID roleplayGroup(String owner) {
+		Map<String, Object> body = new HashMap<>();
+		body.put("name", "Noite no Castelo");
+		body.put("visibility", "public");
+		body.put("mode", "roleplay");
+		body.put("rpPremise", "Viajantes presos num castelo nos Cárpatos.");
+		return id(groups.create(owner, body));
+	}
+
+	Map<String, Object> messageAs(String viewer, UUID groupId, long messageId) {
+		return groups.messages(viewer, groupId, null, null, null).stream()
+				.filter(m -> ((Number) m.get("id")).longValue() == messageId).findFirst().orElseThrow();
+	}
+
+	@Test
+	void authorEditsOwnRoleplayMessageAndEveryoneSeesItEdited() throws Exception {
+		narrator.useWriter((system, history) -> "*O vento uiva.*");
+		try {
+			String owner = member(), ana = member();
+			UUID groupId = roleplayGroup(owner);
+			groups.join(ana, groupId);
+			long mine = messageId(send(ana, groupId, "*Mina abre a prota.*"));
+			assertNull(messageAs(owner, groupId, mine).get("edited_at"));
+
+			// Pelo papel de runtime (RLS valendo): o texto muda e aparece como editado para todos.
+			Map<String, Object> edited = asRuntimeUser(idOf(ana), () -> groups.editMessage(ana, mine, Map.of("body", "*Mina abre a porta.*")));
+			assertEquals("*Mina abre a porta.*", edited.get("body"));
+			assertNotNull(edited.get("edited_at"));
+			assertEquals("*Mina abre a porta.*", messageAs(owner, groupId, mine).get("body"));
+			assertNotNull(messageAs(owner, groupId, mine).get("edited_at"));
+
+			// Só quem escreveu edita; a fala do narrador não se edita; texto vazio ou longo demais não.
+			AuthException other = assertThrows(AuthException.class, () -> groups.editMessage(owner, mine, Map.of("body", "outra coisa")));
+			assertEquals(403, other.status());
+			long narration = messageId(waitNarrations(owner, groupId, 1).get(0));
+			assertEquals(403, assertThrows(AuthException.class,
+					() -> groups.editMessage(owner, narration, Map.of("body", "Narrador mudado"))).status());
+			assertEquals(400, assertThrows(AuthException.class, () -> groups.editMessage(ana, mine, Map.of("body", "  "))).status());
+			assertEquals(400, assertThrows(AuthException.class, () -> groups.editMessage(ana, mine, Map.of("body", "x".repeat(2001)))).status());
+
+			// Denunciada: não muda mais (a moderação vê o texto denunciado), nem pela conta restrita.
+			long reported = messageId(send(ana, groupId, "Mensagem que vai ser denunciada"));
+			groups.report(owner, reported, Map.of("reasonCode", "spam"));
+			AuthException blocked = assertThrows(AuthException.class,
+					() -> asRuntimeUser(idOf(ana), () -> groups.editMessage(ana, reported, Map.of("body", "Trocada"))));
+			assertEquals(409, blocked.status());
+
+			// Mais de 24 horas: não edita.
+			jdbc.sql("update public.chat_messages set created_at = now() - interval '25 hours' where id = :id").param("id", mine).update();
+			assertEquals(409, assertThrows(AuthException.class, () -> groups.editMessage(ana, mine, Map.of("body", "tarde"))).status());
+
+			// A função do banco é a garantia: a conta não edita a mensagem de outra pessoa direto por ela.
+			long ownerMessage = messageId(send(owner, groupId, "*O conde sorri.*"));
+			boolean changed = asRuntimeUser(idOf(ana), () -> jdbc.sql("select public.chat_edit_message(:id, 'invadido')")
+					.param("id", ownerMessage).query(Boolean.class).single());
+			assertFalse(changed);
+			assertEquals("*O conde sorri.*", messageAs(owner, groupId, ownerMessage).get("body"));
+		} finally {
+			narrator.useWriter(null);
+		}
+	}
+
+	@Test
+	void editingIsOnlyForRoleplayAndStopsWhenTheStoryBecomesABook() {
+		narrator.useWriter((system, history) -> "*Silêncio.*");
+		try {
+			String owner = member();
+			UUID chat = id(newGroup(owner, "public"));
+			long inChat = messageId(send(owner, chat, "Oi, pessoal"));
+			assertEquals(400, assertThrows(AuthException.class, () -> groups.editMessage(owner, inChat, Map.of("body", "Olá"))).status());
+
+			UUID roleplay = roleplayGroup(owner);
+			long line = messageId(send(owner, roleplay, "*O conde acende a lareira.*"));
+			jdbc.sql("insert into public.chat_books (group_id, title, created_by) values (:g, 'Noite no Castelo', :u)")
+					.param("g", roleplay).param("u", idOf(owner)).update();
+			assertEquals(409, assertThrows(AuthException.class,
+					() -> groups.editMessage(owner, line, Map.of("body", "*O conde apaga a lareira.*"))).status());
+		} finally {
+			narrator.useWriter(null);
+		}
+	}
 }
