@@ -59,6 +59,9 @@ public class GroupRepository {
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as author_avatar,
 			       case when starts_with(u.raw_user_meta_data->>'photo', :media || x.author_id::text || '/')
 			            then u.raw_user_meta_data->>'photo' end as author_photo,
+			       case when x.kind = 'user'
+			             and not exists (select 1 from public.chat_groups rp where rp.id = x.group_id and rp.mode = 'roleplay')
+			            then public.user_cosmetics(x.author_id) end as author_cosmetics,
 			       case when x.deleted_at is not null then null
 			            when x.author_id <> :viewer and hidden.n >= %d then null
 			            else x.body end as body,
@@ -255,7 +258,8 @@ public class GroupRepository {
 			       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 			       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
-			            then u.raw_user_meta_data->>'photo' end as photo
+			            then u.raw_user_meta_data->>'photo' end as photo,
+			       public.user_cosmetics(u.id) as cosmetics
 			""";
 
 	/**
@@ -326,7 +330,8 @@ public class GroupRepository {
 				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as invited_by_name,
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as invited_by_avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
-				            then u.raw_user_meta_data->>'photo' end as invited_by_photo
+				            then u.raw_user_meta_data->>'photo' end as invited_by_photo,
+				       public.user_cosmetics(u.id) as invited_by_cosmetics
 				  from public.chat_invites i
 				  join public.chat_groups g on g.id = i.group_id and g.deleted_at is null
 				  join auth.users u on u.id = i.invited_by
@@ -403,6 +408,7 @@ public class GroupRepository {
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as actor_avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || n.actor_id::text || '/')
 				            then u.raw_user_meta_data->>'photo' end as actor_photo,
+				       public.user_cosmetics(n.actor_id) as actor_cosmetics,
 				       case when x.deleted_at is null and x.spoiler_chapter is null then left(x.body, 100) end as message_body,
 				       x.media_kind as message_media_kind
 				  from public.user_notifications n
@@ -455,6 +461,7 @@ public class GroupRepository {
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || m.user_id::text || '/')
 				            then u.raw_user_meta_data->>'photo' end as photo,
+				       public.user_cosmetics(m.user_id) as cosmetics,
 				       e.progress_percent, e.status as book_status
 				  from public.chat_members m
 				  join auth.users u on u.id = m.user_id

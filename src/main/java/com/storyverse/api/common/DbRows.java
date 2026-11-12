@@ -2,6 +2,7 @@ package com.storyverse.api.common;
 
 import java.sql.Array;
 import java.sql.Date;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -14,10 +15,27 @@ import java.util.Optional;
 import org.springframework.jdbc.core.ColumnMapRowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-/** Ajuda a ler linhas como mapas (colunas em snake_case) com datas viram texto ISO. */
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * Ajuda a ler linhas como mapas (colunas em snake_case) com datas viram texto ISO. Colunas json/jsonb
+ * (ex.: {@code cosmetics}) viram mapas e listas comuns, para sair na resposta como objeto JSON.
+ */
 public final class DbRows {
 
-	private static final ColumnMapRowMapper MAPPER = new ColumnMapRowMapper();
+	private static final JsonMapper JSON = JsonMapper.builder().build();
+
+	private static final ColumnMapRowMapper MAPPER = new ColumnMapRowMapper() {
+		@Override
+		protected Object getColumnValue(ResultSet rs, int index) throws SQLException {
+			String type = rs.getMetaData().getColumnTypeName(index);
+			if ("jsonb".equals(type) || "json".equals(type)) {
+				String text = rs.getString(index);
+				return text == null ? null : JSON.readValue(text, Object.class);
+			}
+			return super.getColumnValue(rs, index);
+		}
+	};
 
 	private DbRows() {
 	}
