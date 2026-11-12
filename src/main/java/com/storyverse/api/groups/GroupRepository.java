@@ -264,7 +264,7 @@ public class GroupRepository {
 	 * e quem já tem convite esperando.
 	 */
 	public List<Map<String, Object>> inviteCandidates(UUID viewer, UUID groupId, String query, int limit) {
-		String pattern = "%" + query.replace("\\", "\\\\").replace("%", "\%").replace("_", "\_") + "%";
+		String pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
 		return DbRows.list(jdbc, "select u.id,\n" + FACE + """
 				       , exists (select 1 from public.chat_members m
 				                  where m.group_id = :group and m.user_id = u.id and m.banned_at is null) as is_member,
