@@ -79,6 +79,10 @@ public class AccountService {
 				  left join public.chat_groups g on g.id = x.group_id
 				 where x.author_id = :uid order by x.id
 				""", Map.of("uid", userId)));
+		out.put("groupInvitesReceived", DbRows.list(jdbc, """
+				select group_id, invited_by, created_at from public.chat_invites
+				 where user_id = :uid order by created_at
+				""", Map.of("uid", userId)));
 		// Rede social: quem a conta segue e quem segue a conta.
 		out.put("following", DbRows.list(jdbc, """
 				select followee_id as user_id, created_at from public.user_follows

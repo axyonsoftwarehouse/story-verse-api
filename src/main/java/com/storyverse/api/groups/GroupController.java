@@ -144,7 +144,61 @@ public class GroupController {
 		service.typing(AuthTokens.bearer(authorization), id);
 	}
 
-	/** Quem administra adiciona uma pessoa pelo e-mail da conta dela. */
+	/** Convites que a conta recebeu e ainda não respondeu. */
+	@GetMapping("/invites")
+	public List<Map<String, Object>> myInvites(@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.myInvites(AuthTokens.bearer(authorization));
+	}
+
+	@PostMapping("/invites/{id}/accept")
+	public Map<String, Object> acceptInvite(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.acceptInvite(AuthTokens.bearer(authorization), id);
+	}
+
+	@DeleteMapping("/invites/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void declineInvite(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.declineInvite(AuthTokens.bearer(authorization), id);
+	}
+
+	/** Quem administra procura pelo nome quem convidar. */
+	@GetMapping("/{id}/invite-candidates")
+	public List<Map<String, Object>> inviteCandidates(
+			@PathVariable UUID id,
+			@RequestParam(required = false) String q,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.inviteCandidates(AuthTokens.bearer(authorization), id, q);
+	}
+
+	@GetMapping("/{id}/invites")
+	public List<Map<String, Object>> groupInvites(
+			@PathVariable UUID id,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.groupInvites(AuthTokens.bearer(authorization), id);
+	}
+
+	@PostMapping("/{id}/invites")
+	public List<Map<String, Object>> invite(
+			@PathVariable UUID id,
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.invite(AuthTokens.bearer(authorization), id, body);
+	}
+
+	@DeleteMapping("/{id}/invites/{userId}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void cancelInvite(
+			@PathVariable UUID id,
+			@PathVariable UUID userId,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		service.cancelInvite(AuthTokens.bearer(authorization), id, userId);
+	}
+
+	/** Versão antiga do site: pelo e-mail da conta; agora vira convite. */
 	@PostMapping("/{id}/members")
 	public Map<String, Object> addMember(
 			@PathVariable UUID id,
