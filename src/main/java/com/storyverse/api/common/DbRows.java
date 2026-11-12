@@ -1,8 +1,11 @@
 package com.storyverse.api.common;
 
+import java.sql.Array;
 import java.sql.Date;
+import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +52,16 @@ public final class DbRows {
 		if (value instanceof Timestamp timestamp) return timestamp.toInstant().toString();
 		if (value instanceof Date date) return date.toLocalDate().toString();
 		if (value instanceof Time time) return time.toLocalTime().toString();
+		if (value instanceof Array array) return arrayToList(array);
 		return value;
+	}
+
+	/** Arrays do Postgres (ex.: text[]) viram listas, para o JSON sair como array. */
+	private static List<Object> arrayToList(Array array) {
+		try {
+			return Arrays.asList((Object[]) array.getArray());
+		} catch (SQLException exception) {
+			throw new IllegalStateException("Não foi possível ler um array do banco.", exception);
+		}
 	}
 }
