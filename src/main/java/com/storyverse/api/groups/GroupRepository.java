@@ -250,6 +250,93 @@ public class GroupRepository {
 				.param("group", groupId).param("user", userId).update();
 	}
 
+	/* ------------------------------ Convites (V51) ------------------------------ */
+
+	private static final String FACE = """
+			       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
+			       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
+			       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
+			            then u.raw_user_meta_data->>'photo' end as photo
+			""";
+
+	/**
+	 * Pessoas para convidar: parte do nome ou o e-mail exato da conta. Diz quem já está no grupo
+	 * e quem já tem convite esperando.
+	 */
+	public List<Map<String, Object>> inviteCandidates(UUID viewer, UUID groupId, String query, int limit) {
+		String pattern = "%" + query.replace("\\", "\\\\").replace("%", "\%").replace("_", "\_") + "%";
+		return DbRows.list(jdbc, "select u.id,\n" + FACE + """
+				       , exists (select 1 from public.chat_members m
+				                  where m.group_id = :group and m.user_id = u.id and m.banned_at is null) as is_member,
+				         exists (select 1 from public.chat_invites i where i.group_id = :group and i.user_id = u.id) as invited
+				  from auth.users u
+				 where u.id <> :viewer
+				   and (coalesce(u.raw_user_meta_data->>'name', '') ilike :pattern or lower(u.email) = lower(:query))
+				 order by lower(u.email) = lower(:query) desc,
+				          (select count(*) from public.user_follows f where f.followee_id = u.id) desc,
+				          u.raw_user_meta_data->>'name', u.id
+				 limit :limit
+				""", Map.of("viewer", viewer, "group", groupId, "pattern", pattern, "query", query, "media", media, "limit", limit));
+	}
+
+	/** Cria o convite (a RLS confere quem convida). false se já havia convite esperando. */
+	public boolean insertInvite(UUID groupId, UUID userId, UUID invitedBy) {
+		return jdbc.sql("""
+				insert into public.chat_invites (group_id, user_id, invited_by)
+				values (:group, :user, :by)
+				on conflict (group_id, user_id) do nothing
+				""").param("group", groupId).param("user", userId).param("by", invitedBy).update() > 0;
+	}
+
+	public boolean deleteInvite(UUID groupId, UUID userId) {
+		return jdbc.sql("delete from public.chat_invites where group_id = :group and user_id = :user")
+				.param("group", groupId).param("user", userId).update() > 0;
+	}
+
+	/** Aceita o convite da conta da sessão; devolve quem convidou (vazio se não havia convite). */
+	public Optional<UUID> acceptInvite(UUID groupId) {
+		return jdbc.sql("select public.chat_accept_invite(:group)")
+				.param("group", groupId).query(UUID.class).optional();
+	}
+
+	public boolean notifyInvite(UUID userId, UUID groupId) {
+		return jdbc.sql("select public.chat_notify_invite(:user, :group)")
+				.param("user", userId).param("group", groupId)
+				.query((rs, rowNum) -> rs.getObject(1)).optional().filter(java.util.Objects::nonNull).isPresent();
+	}
+
+	/** Convites esperando resposta num grupo (para quem administra). */
+	public List<Map<String, Object>> groupInvites(UUID groupId) {
+		return DbRows.list(jdbc, "select u.id as user_id, i.created_at,\n" + FACE + """
+				       , coalesce(b.raw_user_meta_data->>'name', 'Leitor') as invited_by_name
+				  from public.chat_invites i
+				  join auth.users u on u.id = i.user_id
+				  join auth.users b on b.id = i.invited_by
+				 where i.group_id = :group
+				 order by i.created_at desc
+				 limit 200
+				""", Map.of("group", groupId, "media", media));
+	}
+
+	/** Convites que a conta recebeu, com o grupo e quem convidou. */
+	public List<Map<String, Object>> myInvites(UUID viewer) {
+		return DbRows.list(jdbc, """
+				select g.id as group_id, g.name as group_name, g.photo_url as group_photo, g.visibility, g.mode,
+				       g.book_title, i.created_at, i.invited_by,
+				       public.chat_member_count(g.id) as member_count,
+				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as invited_by_name,
+				       coalesce(u.raw_user_meta_data->>'avatar', '') as invited_by_avatar,
+				       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
+				            then u.raw_user_meta_data->>'photo' end as invited_by_photo
+				  from public.chat_invites i
+				  join public.chat_groups g on g.id = i.group_id and g.deleted_at is null
+				  join auth.users u on u.id = i.invited_by
+				 where i.user_id = :viewer
+				 order by i.created_at desc
+				 limit 50
+				""", Map.of("viewer", viewer, "media", media));
+	}
+
 	public void banMember(UUID groupId, UUID userId) {
 		jdbc.sql("""
 				update public.chat_members set banned_at = now(), role = 'member'

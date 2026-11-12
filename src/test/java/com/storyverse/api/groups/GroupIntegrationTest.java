@@ -858,30 +858,149 @@ class GroupIntegrationTest {
 		assertEquals("Parte 3", RoleplayBookService.chapter("", 3).title());
 	}
 
-	/* ------------------------------ Adicionar pessoa (V45) ------------------------------ */
+	/* ------------------------------ Convites (V51) ------------------------------ */
 
 	String emailOf(String token) {
 		return jdbc.sql("select email from auth.users where id = :id").param("id", idOf(token)).query(String.class).single();
 	}
 
+	/** Nome único para achar a conta na busca. */
+	String rename(String token, String prefix) {
+		String name = prefix + " " + UUID.randomUUID().toString().substring(0, 8);
+		jdbc.sql("""
+				update auth.users
+				   set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('name', cast(:name as text))
+				 where id = :id
+				""").param("name", name).param("id", idOf(token)).update();
+		return name;
+	}
+
+	/** Grupo privado com mais gente (pelo link de convite). */
+	UUID privateGroupWith(String owner, String... others) {
+		Map<String, Object> group = newGroup(owner, "private");
+		String code = String.valueOf(groups.group(owner, id(group)).get("invite_code"));
+		for (String other : others) groups.joinByInvite(other, code);
+		return id(group);
+	}
+
+	List<String> kinds(String token) {
+		return items(token).stream().map(n -> String.valueOf(n.get("kind"))).toList();
+	}
+
+	boolean isMember(String viewer, UUID groupId, String token) {
+		return ((List<?>) groups.group(viewer, groupId).get("members")).stream()
+				.anyMatch(m -> idOf(token).equals(((Map<?, ?>) m).get("user_id")));
+	}
+
 	@Test
-	void managersAddPeopleByEmailAndThePersonIsNotified() {
-		String owner = member(), mod = member(), plain = member(), friend = member(), other = member();
-		UUID groupId = id(newGroup(owner, "public"));
-		groups.join(mod, groupId);
-		groups.join(plain, groupId);
+	void managersInviteByNameAndThePersonAcceptsUnderTheRuntimeRole() {
+		String owner = member(), mod = member(), plain = member(), friend = member();
+		UUID groupId = privateGroupWith(owner, mod, plain);
 		groups.setRole(owner, groupId, idOf(mod), Map.of("role", "moderator"));
+		String name = rename(friend, "Bia Convite");
 
-		// Pela conta restrita (RLS valendo): o dono adiciona pelo e-mail, em maiúsculas inclusive.
-		Map<String, Object> after = asRuntimeUser(idOf(owner), () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend).toUpperCase())));
-		assertTrue(((List<?>) after.get("members")).size() >= 4);
-		assertEquals(Boolean.TRUE, groups.group(friend, groupId).get("is_member"));
-		assertEquals("member_added", items(friend).get(0).get("kind"));
+		// Busca pelo pedaço do nome: a pessoa aparece sem convite e fora do grupo.
+		List<Map<String, Object>> found = asRuntimeUser(idOf(owner), () -> groups.inviteCandidates(owner, groupId, name.substring(4)));
+		assertEquals(1, found.size());
+		assertEquals(idOf(friend), found.get(0).get("id"));
+		assertEquals(Boolean.FALSE, found.get(0).get("is_member"));
+		assertEquals(Boolean.FALSE, found.get(0).get("invited"));
+		assertEquals(List.of(), groups.inviteCandidates(owner, groupId, "B"), "uma letra não busca");
 
-		// Moderador também adiciona; membro comum não; e-mail desconhecido e quem já está dão erro.
-		groups.addByEmail(mod, groupId, Map.of("email", emailOf(other)));
-		assertThrows(AuthException.class, () -> groups.addByEmail(plain, groupId, Map.of("email", emailOf(member()))));
+		// O moderador convida (RLS valendo); convidar de novo não duplica.
+		List<Map<String, Object>> pending = asRuntimeUser(idOf(mod), () -> groups.invite(mod, groupId, Map.of("userId", idOf(friend).toString())));
+		assertEquals(List.of(idOf(friend)), pending.stream().map(p -> p.get("user_id")).toList());
+		asRuntimeUser(idOf(mod), () -> groups.invite(mod, groupId, Map.of("userId", idOf(friend).toString())));
+		assertEquals(1, groups.groupInvites(owner, groupId).size());
+		assertEquals(Boolean.TRUE, groups.inviteCandidates(owner, groupId, name).get(0).get("invited"));
+
+		// Ainda não entrou: só o convite, com o nome do grupo privado no sininho e na lista.
+		assertEquals(List.of(), groups.myGroups(friend));
+		List<Map<String, Object>> bell = asRuntimeUser(idOf(friend), () -> items(friend));
+		assertEquals("group_invite", bell.get(0).get("kind"));
+		assertNotNull(bell.get(0).get("group_name"));
+		List<Map<String, Object>> mine = asRuntimeUser(idOf(friend), () -> groups.myInvites(friend));
+		assertEquals(1, mine.size());
+		assertEquals(groupId, mine.get(0).get("group_id"));
+		assertEquals(3, ((Number) mine.get(0).get("member_count")).intValue());
+
+		// Aceitou: entra no grupo, o aviso do convite some e quem convidou e o dono são avisados.
+		Map<String, Object> joined = asRuntimeUser(idOf(friend), () -> groups.acceptInvite(friend, groupId));
+		assertEquals(Boolean.TRUE, joined.get("is_member"));
+		assertEquals(4, ((List<?>) joined.get("members")).size());
+		assertFalse(kinds(friend).contains("group_invite"));
+		assertEquals(List.of(), groups.myInvites(friend));
+		assertEquals(List.of(), groups.groupInvites(owner, groupId));
+		assertEquals("member_joined", items(mod).get(0).get("kind"));
+		assertEquals(idOf(friend), items(mod).get(0).get("actor_id"));
+		assertEquals("member_joined", items(owner).get(0).get("kind"));
+
+		// Membro comum não convida; quem já está no grupo não recebe convite.
+		AuthException plainDenied = assertThrows(AuthException.class,
+				() -> groups.invite(plain, groupId, Map.of("userId", idOf(member()).toString())));
+		assertEquals(403, plainDenied.status());
+		AuthException already = assertThrows(AuthException.class,
+				() -> groups.invite(owner, groupId, Map.of("userId", idOf(friend).toString())));
+		assertEquals(409, already.status());
+	}
+
+	@Test
+	void invitesCanBeDeclinedOrCancelledAndOnlyTheTwoSidesSeeThem() {
+		String owner = member(), plain = member(), ana = member(), caio = member(), outsider = member();
+		UUID groupId = privateGroupWith(owner, plain);
+
+		// Recusou: o convite e o aviso somem e não dá mais para aceitar.
+		groups.invite(owner, groupId, Map.of("userId", idOf(ana).toString()));
+		assertTrue(kinds(ana).contains("group_invite"));
+		asRuntimeUser(idOf(ana), () -> {
+			groups.declineInvite(ana, groupId);
+			return null;
+		});
+		assertEquals(List.of(), groups.myInvites(ana));
+		assertFalse(kinds(ana).contains("group_invite"));
+		AuthException gone = assertThrows(AuthException.class, () -> groups.acceptInvite(ana, groupId));
+		assertEquals(404, gone.status());
+		assertFalse(isMember(owner, groupId, ana));
+
+		// Quem administra cancela o convite.
+		groups.invite(owner, groupId, Map.of("userId", idOf(caio).toString()));
+		asRuntimeUser(idOf(owner), () -> {
+			groups.cancelInvite(owner, groupId, idOf(caio));
+			return null;
+		});
+		assertEquals(List.of(), groups.myInvites(caio));
+
+		// RLS: membro comum não lista convites; quem é de fora não vê nem convida direto no banco.
+		groups.invite(owner, groupId, Map.of("userId", idOf(caio).toString()));
+		assertThrows(AuthException.class, () -> groups.groupInvites(plain, groupId));
+		int seen = asRuntimeUser(idOf(outsider), () -> jdbc.sql("select count(*) from public.chat_invites where group_id = :g")
+				.param("g", groupId).query(Integer.class).single());
+		assertEquals(0, seen);
+		assertThrows(RuntimeException.class, () -> asRuntimeUser(idOf(plain), () -> jdbc.sql("""
+				insert into public.chat_invites (group_id, user_id, invited_by) values (:g, :u, :me)
+				""").param("g", groupId).param("u", idOf(outsider)).param("me", idOf(plain)).update()));
+		// Quem tem convite vê o grupo privado; quem não tem, não.
+		int visible = asRuntimeUser(idOf(caio), () -> jdbc.sql("select count(*) from public.chat_groups where id = :g")
+				.param("g", groupId).query(Integer.class).single());
+		assertEquals(1, visible);
+		int hidden = asRuntimeUser(idOf(outsider), () -> jdbc.sql("select count(*) from public.chat_groups where id = :g")
+				.param("g", groupId).query(Integer.class).single());
+		assertEquals(0, hidden);
+	}
+
+	@Test
+	void oldAddByEmailRouteNowSendsAnInvite() {
+		String owner = member(), friend = member();
+		UUID groupId = id(newGroup(owner, "public"));
+		asRuntimeUser(idOf(owner), () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend).toUpperCase())));
+		assertFalse(isMember(owner, groupId, friend));
+		assertEquals(1, groups.myInvites(friend).size());
 		assertThrows(AuthException.class, () -> groups.addByEmail(owner, groupId, Map.of("email", "ninguem@example.invalid")));
-		assertThrows(AuthException.class, () -> groups.addByEmail(owner, groupId, Map.of("email", emailOf(friend))));
+
+		// O e-mail exato também acha a pessoa na busca de convite.
+		assertEquals(idOf(friend), groups.inviteCandidates(owner, groupId, emailOf(friend)).get(0).get("id"));
+
+		// Export da conta (LGPD) traz o convite recebido.
+		assertEquals(1, ((List<?>) account.export(friend).get("groupInvitesReceived")).size());
 	}
 }
