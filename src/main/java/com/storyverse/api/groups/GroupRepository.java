@@ -66,6 +66,7 @@ public class GroupRepository {
 			       (x.media_path is not null and x.deleted_at is null
 			        and not (x.author_id <> :viewer and hidden.n >= %d)) as media_available,
 			       x.deleted_at is not null as deleted,
+			       case when x.deleted_at is null then x.edited_at end as edited_at,
 			       (x.deleted_at is null and x.author_id <> :viewer and hidden.n >= %d) as hidden
 			  from public.chat_messages x
 			  join auth.users u on u.id = x.author_id
@@ -607,7 +608,10 @@ public class GroupRepository {
 
 	public Optional<Map<String, Object>> messageState(long id) {
 		return DbRows.one(jdbc, """
-				select id, group_id, author_id, deleted_at from public.chat_messages where id = :id
+				select id, group_id, author_id, deleted_at, kind, media_kind,
+				       created_at < now() - interval '24 hours' as edit_expired,
+				       public.chat_message_reported(id) as reported
+				  from public.chat_messages where id = :id
 				""", Map.of("id", id));
 	}
 
@@ -648,6 +652,12 @@ public class GroupRepository {
 		jdbc.sql("update public.chat_members set last_read_id = :id where group_id = :group and user_id = :author")
 				.param("id", id).param("group", groupId).param("author", author).update();
 		return id;
+	}
+
+	/** Troca o texto da mensagem da conta da sessão; a função do banco confere as regras (V52). */
+	public boolean editMessage(long id, String body) {
+		return Boolean.TRUE.equals(jdbc.sql("select public.chat_edit_message(:id, :body)")
+				.param("id", id).param("body", body).query(Boolean.class).single());
 	}
 
 	public void softDeleteMessage(long id, UUID by) {
