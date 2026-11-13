@@ -372,6 +372,54 @@ class ShopIntegrationTest {
 		assertTrue(refused.getMessage().contains("já tem este item"), refused.getMessage());
 	}
 
+	/** Primeiro lote (V57): só os itens semeados, que apontam para /shop/ no site. */
+	@Test
+	void firstBatchIsOnSale() {
+		UUID user = newUser();
+		List<Map<String, Object>> batch = asUser(user, () -> DbRows.list(jdbc, "select * from public.shop_catalog()", Map.of()))
+				.stream().filter(row -> row.get("image_url") == null
+						? row.get("category").equals("name_color") && row.get("name").toString().startsWith("Nome ")
+						: row.get("image_url").toString().startsWith("/shop/"))
+				.toList();
+		java.util.function.Function<String, List<Map<String, Object>>> of = category ->
+				batch.stream().filter(row -> category.equals(row.get("category"))).toList();
+
+		List<Map<String, Object>> frames = of.apply("frame");
+		assertTrue(frames.size() >= 6, "molduras: " + frames.size());
+		List<Map<String, Object>> epics = frames.stream().filter(row -> "epic".equals(row.get("tier"))).toList();
+		assertEquals(1, epics.size());
+		assertNotNull(epics.get(0).get("animated_url"));
+		assertTrue(of.apply("badge").size() >= 6);
+		assertEquals(3, of.apply("cover").size());
+		List<Map<String, Object>> names = of.apply("name_color");
+		assertEquals(3, names.size());
+		for (Map<String, Object> row : names) {
+			@SuppressWarnings("unchecked")
+			List<String> colors = (List<String>) row.get("colors");
+			for (String color : colors) {
+				for (String background : List.of("#14110e", "#0e1612")) {
+					assertTrue(contrast(color, background) >= 4.5, row.get("name") + " " + color + " sobre " + background);
+				}
+			}
+		}
+	}
+
+	static double contrast(String a, String b) {
+		double la = luminance(a);
+		double lb = luminance(b);
+		return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+	}
+
+	static double luminance(String hex) {
+		int rgb = Integer.parseInt(hex.substring(1), 16);
+		return 0.2126 * channel((rgb >> 16) & 0xFF) + 0.7152 * channel((rgb >> 8) & 0xFF) + 0.0722 * channel(rgb & 0xFF);
+	}
+
+	static double channel(int value) {
+		double c = value / 255.0;
+		return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+	}
+
 	/** Insere direto como postgres (o caminho do admin), para provar as checks da tabela. */
 	void insertItem(String category, String tier, String imageUrl, String animatedUrl, String colors) {
 		Map<String, Object> params = new HashMap<>();
