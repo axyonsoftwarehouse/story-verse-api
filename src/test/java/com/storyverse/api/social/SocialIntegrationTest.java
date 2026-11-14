@@ -189,6 +189,46 @@ class SocialIntegrationTest {
 	}
 
 	@Test
+	void listsBringTheProfileCover() {
+		String tag = UUID.randomUUID().toString().substring(0, 8);
+		String ana = person("Ana Capa " + tag);
+		String bia = person("Bia Segue " + tag);
+		String caio = person("Caio Olha " + tag);
+		UUID anaId = idOf(ana);
+		String capa = "https://api.example.test/api/v1/storage/public/profile-media/" + anaId + "/cover.png";
+		setCover(anaId, capa);
+
+		assertEquals(capa, social.search(caio, tag).get(0).get("cover"), "a busca devolve a capa para o card");
+		assertNull(social.search(caio, tag).get(0).get("shop_cover"), "sem item da loja, nenhuma capa comprada");
+
+		social.follow(bia, anaId);
+		List<Map<String, Object>> seguindo = social.following(bia, idOf(bia), null, null);
+		assertEquals(capa, seguindo.get(0).get("cover"), "a lista de quem a pessoa segue também traz a capa");
+
+		// Arquivo fora da pasta da pessoa não vale: a capa tem de ser mídia dela.
+		setCover(anaId, "https://outro.example/qualquer.png");
+		assertNull(social.search(caio, tag).get(0).get("cover"), "capa de outro host é ignorada");
+
+		// Perfil privado: quem não segue não vê a capa; quem segue e a própria pessoa continuam vendo.
+		setCover(anaId, capa);
+		social.savePrivacy(ana, Map.of("private", true));
+		assertEquals(Boolean.TRUE, social.search(caio, tag).get(0).get("is_private"));
+		assertNull(social.search(caio, tag).get(0).get("cover"), "perfil privado esconde a capa de quem não segue");
+		assertEquals(capa, social.search(bia, tag).get(0).get("cover"), "quem segue continua vendo a capa");
+		assertEquals(capa, social.profile(ana, anaId).get("cover"), "o dono vê a própria capa no perfil");
+	}
+
+	/** Grava a capa enviada no metadado da conta, como o site faz pelo "Editar perfil". */
+	private void setCover(UUID userId, String url) {
+		jdbc.sql("""
+				update auth.users
+				   set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('cover', :url)
+				 where id = :id
+				""").param("url", url).param("id", userId).update();
+	}
+
+
+	@Test
 	void suggestionsComeFromSharedGroupsAndFollowers() {
 		String ana = person("Ana Sugere"), bia = person("Bia Grupo"), caio = person("Caio Segue");
 		UUID biaId = idOf(bia), caioId = idOf(caio);

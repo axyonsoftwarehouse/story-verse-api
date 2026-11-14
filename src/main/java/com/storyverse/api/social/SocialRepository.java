@@ -18,7 +18,10 @@ import com.storyverse.api.common.DbRows;
 @Repository
 public class SocialRepository {
 
-	/** Pessoa vista por {@code :viewer}: nome, rosto, como as duas se relacionam e se o perfil é privado. */
+	/**
+	 * Pessoa vista por {@code :viewer}: nome, rosto, como as duas se relacionam, se o perfil é privado,
+	 * a capa (que as listas desenham como faixa no card) e o equipado da loja.
+	 */
 	private static final String PERSON = """
 			select u.id,
 			       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
@@ -29,8 +32,13 @@ public class SocialRepository {
 			       exists (select 1 from public.user_follows f where f.follower_id = u.id and f.followee_id = :viewer) as follows_me,
 			       public.social_is_private(u.id) as is_private,
 			       exists (select 1 from public.follow_requests r where r.requester_id = :viewer and r.target_id = u.id) as requested,
+			       public.user_cover(u.id) as shop_cover,
+			       case when public.social_content_visible(u.id)
+			             and starts_with(u.raw_user_meta_data->>'cover', :media || u.id::text || '/')
+			            then u.raw_user_meta_data->>'cover' end as cover,
 			       public.user_cosmetics(u.id) as cosmetics
 			""";
+
 
 	private final JdbcClient jdbc;
 	private final String media;
