@@ -28,7 +28,8 @@ public class SocialRepository {
 			       exists (select 1 from public.user_follows f where f.follower_id = :viewer and f.followee_id = u.id) as is_following,
 			       exists (select 1 from public.user_follows f where f.follower_id = u.id and f.followee_id = :viewer) as follows_me,
 			       public.social_is_private(u.id) as is_private,
-			       exists (select 1 from public.follow_requests r where r.requester_id = :viewer and r.target_id = u.id) as requested
+			       exists (select 1 from public.follow_requests r where r.requester_id = :viewer and r.target_id = u.id) as requested,
+			       public.user_cosmetics(u.id) as cosmetics
 			""";
 
 	private final JdbcClient jdbc;
@@ -45,12 +46,21 @@ public class SocialRepository {
 				.param("id", userId).query(Boolean.class).single();
 	}
 
-	/** Perfil com contadores; grupos em comum só conta os que a conta enxerga (os dela). */
+	/**
+	 * Perfil com contadores; grupos em comum só conta os que a conta enxerga (os dela). Capa (a da
+	 * loja e a enviada, o site mostra {@code shop_cover ?? cover}) e estante de insígnias só para quem
+	 * pode ver o conteúdo do perfil; a capa enviada só vale se for arquivo da pasta da própria pessoa.
+	 */
 	public Optional<Map<String, Object>> profile(UUID viewer, UUID userId) {
 		return DbRows.one(jdbc, PERSON + """
 				       , u.created_at as member_since,
 				       nullif(btrim(u.raw_user_meta_data->>'bio'), '') as bio,
 				       public.social_content_visible(u.id) as content_visible,
+				       extras.x->>'shop_cover' as shop_cover,
+				       coalesce(extras.x->'badge_shelf', '[]'::jsonb) as badge_shelf,
+				       case when public.social_content_visible(u.id)
+				             and starts_with(u.raw_user_meta_data->>'cover', :media || u.id::text || '/')
+				            then u.raw_user_meta_data->>'cover' end as cover,
 				       case when u.id = :viewer
 				            then (select count(*) from public.follow_requests r where r.target_id = u.id) else 0 end as pending_requests,
 				       (select count(*) from public.user_follows f where f.followee_id = u.id) as followers,
@@ -65,6 +75,7 @@ public class SocialRepository {
 				           and theirs.user_id = u.id and theirs.banned_at is null
 				           and u.id <> :viewer) as groups_in_common
 				  from auth.users u
+				  cross join lateral (select public.user_profile_extras(u.id) as x) extras
 				 where u.id = :user
 				""", Map.of("viewer", viewer, "user", userId, "media", media));
 	}

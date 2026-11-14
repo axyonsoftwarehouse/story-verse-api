@@ -1,0 +1,486 @@
+package com.storyverse.api.rpc;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.function.Supplier;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import com.storyverse.api.auth.AuthException;
+import com.storyverse.api.common.DbRows;
+import com.storyverse.api.common.DbSession;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/** Loja de itens de perfil (V54): catálogo, compra com diamantes, posse e equipar. */
+@SpringBootTest
+@EnabledIfEnvironmentVariable(named = "STORYVERSE_TEST_DB_URL", matches = ".+")
+class ShopIntegrationTest {
+
+	@DynamicPropertySource
+	static void configure(DynamicPropertyRegistry properties) {
+		properties.add("spring.datasource.url", () -> System.getenv("STORYVERSE_TEST_DB_URL"));
+		properties.add("spring.datasource.username", () -> "postgres");
+		properties.add("spring.datasource.password", () -> "local-audit-test-only");
+		properties.add("spring.flyway.enabled", () -> "true");
+		properties.add("app.auth.require-email-confirmation", () -> "false");
+		properties.add("app.security.require-runtime-role", () -> "false");
+	}
+
+	@Autowired JdbcClient jdbc;
+	@Autowired PlatformTransactionManager transactions;
+	@Autowired RpcService rpc;
+
+	static final JsonMapper JSON = JsonMapper.builder().build();
+
+	UUID newUser() {
+		return jdbc.sql("insert into auth.users (email) values (:e) returning id")
+				.param("e", UUID.randomUUID() + "@example.invalid").query(UUID.class).single();
+	}
+
+	void giveDiamonds(UUID user, int amount) {
+		jdbc.sql("select public.apply_diamonds(:u, :n, 'adjustment', :ref)")
+				.param("u", user).param("n", amount).param("ref", UUID.randomUUID().toString())
+				.query(Integer.class).single();
+	}
+
+	UUID newItem(String name, int price) {
+		return jdbc.sql("""
+				insert into public.shop_items (category, tier, name, description, price, status, image_url)
+				values ('frame', 'common', :name, 'Moldura de teste', :price, 'on_sale', 'https://img.invalid/f.png')
+				returning id
+				""").param("name", name).param("price", price).query(UUID.class).single();
+	}
+
+	String uniqueName() {
+		return "Moldura " + UUID.randomUUID().toString().substring(0, 8);
+	}
+
+	int balance(UUID user) {
+		return jdbc.sql("select coalesce((select balance from public.diamond_wallets where user_id = :u), 0)")
+				.param("u", user).query(Integer.class).single();
+	}
+
+	/** Roda como a conta, pelo papel de runtime da VPS (a RLS vale). */
+	<T> T asUser(UUID user, Supplier<T> work) {
+		return new TransactionTemplate(transactions).execute(status -> {
+			jdbc.sql("set local role storyverse_api").update();
+			DbSession.setUser(jdbc, user);
+			return work.get();
+		});
+	}
+
+	Map<String, Object> buy(UUID user, UUID item, String ref) {
+		return asUser(user, () -> DbRows.one(jdbc, "select * from public.buy_shop_item(:item, :ref)",
+				Map.of("item", item, "ref", ref)).orElseThrow());
+	}
+
+	List<Map<String, Object>> myItems(UUID user) {
+		return asUser(user, () -> DbRows.list(jdbc, "select * from public.my_shop_items()", Map.of()));
+	}
+
+	JsonNode equip(UUID user, String category, UUID item) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("category", category);
+		params.put("item", item);
+		return asUser(user, () -> {
+			var spec = jdbc.sql("select public.equip_shop_item(:category, cast(:item as uuid))::text");
+			for (var entry : params.entrySet()) {
+				spec = spec.param(entry.getKey(), entry.getValue());
+			}
+			return JSON.readTree(spec.query(String.class).single());
+		});
+	}
+
+	static String rootMessage(Throwable error) {
+		Throwable cause = error;
+		while (cause.getCause() != null) {
+			cause = cause.getCause();
+		}
+		return cause.getMessage();
+	}
+
+	static String ref() {
+		return UUID.randomUUID().toString();
+	}
+
+	@Test
+	void buyDebitsAndOwns() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+
+		Map<String, Object> result = buy(user, item, ref());
+		assertEquals(80, ((Number) result.get("balance")).intValue());
+		assertEquals(item, result.get("item_id"));
+		assertEquals(Boolean.FALSE, result.get("duplicate"));
+
+		List<Map<String, Object>> owned = myItems(user);
+		assertEquals(1, owned.size());
+		assertEquals(item, owned.get(0).get("item_id"));
+		assertEquals(120, ((Number) owned.get(0).get("price_paid")).intValue());
+		assertEquals(Boolean.FALSE, owned.get(0).get("equipped"));
+	}
+
+	@Test
+	void sameRefIsDuplicateAndChargesOnce() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		String ref = ref();
+
+		buy(user, item, ref);
+		Map<String, Object> again = buy(user, item, ref);
+		assertEquals(Boolean.TRUE, again.get("duplicate"));
+		assertEquals(80, ((Number) again.get("balance")).intValue());
+		assertEquals(item, again.get("item_id"));
+		assertEquals(80, balance(user));
+		int purchases = jdbc.sql("select count(*) from public.diamond_ledger where user_id = :u and reason = 'purchase'")
+				.param("u", user).query(Integer.class).single();
+		assertEquals(1, purchases);
+	}
+
+	@Test
+	void secondBuyWithNewRefIsRefused() {
+		UUID user = newUser();
+		giveDiamonds(user, 300);
+		UUID item = newItem(uniqueName(), 120);
+		buy(user, item, ref());
+
+		DataAccessException error = assertThrows(DataAccessException.class, () -> buy(user, item, ref()));
+		assertTrue(rootMessage(error).contains("já tem este item"), rootMessage(error));
+		assertEquals(180, balance(user));
+	}
+
+	@Test
+	void insufficientBalanceIsRefused() {
+		UUID user = newUser();
+		giveDiamonds(user, 50);
+		UUID item = newItem(uniqueName(), 120);
+
+		DataAccessException error = assertThrows(DataAccessException.class, () -> buy(user, item, ref()));
+		assertTrue(rootMessage(error).contains("Diamantes insuficientes"), rootMessage(error));
+		assertEquals(50, balance(user));
+		assertTrue(myItems(user).isEmpty());
+	}
+
+	@Test
+	void notOnSaleOrOutsideWindowIsRefused() {
+		UUID user = newUser();
+		giveDiamonds(user, 1000);
+		List<String> changes = List.of(
+				"status = 'draft'",
+				"status = 'off_sale'",
+				"available_until = now() - interval '1 minute'",
+				"available_from = now() + interval '1 day'",
+				"stock = 3, sold = 3");
+		for (String change : changes) {
+			UUID item = newItem(uniqueName(), 120);
+			jdbc.sql("update public.shop_items set " + change + " where id = :id").param("id", item).update();
+
+			DataAccessException error = assertThrows(DataAccessException.class, () -> buy(user, item, ref()), change);
+			assertTrue(rootMessage(error).contains("indisponível"), change + ": " + rootMessage(error));
+			var listed = asUser(user, () -> DbRows.list(jdbc, "select id, remaining from public.shop_catalog()", Map.of()))
+					.stream().filter(row -> item.equals(row.get("id"))).findFirst();
+			if (change.startsWith("stock")) {
+				// Esgotado continua na vitrine (dentro da janela), com remaining = 0.
+				assertEquals(0, ((Number) listed.orElseThrow().get("remaining")).intValue());
+			} else {
+				assertTrue(listed.isEmpty(), change + ": item fora de venda apareceu no catálogo");
+			}
+		}
+		assertEquals(1000, balance(user));
+	}
+
+	@Test
+	void catalogShowsOwnedAndRemaining() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		jdbc.sql("update public.shop_items set stock = 5 where id = :id").param("id", item).update();
+		buy(user, item, ref());
+
+		Map<String, Object> row = asUser(user, () -> DbRows.list(jdbc, "select * from public.shop_catalog()", Map.of()))
+				.stream().filter(r -> item.equals(r.get("id"))).findFirst().orElseThrow();
+		assertEquals(Boolean.TRUE, row.get("owned"));
+		assertEquals(Boolean.FALSE, row.get("equipped"));
+		assertEquals(4, ((Number) row.get("remaining")).intValue());
+	}
+
+	@Test
+	void pricePaidSurvivesPriceChange() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		buy(user, item, ref());
+		jdbc.sql("update public.shop_items set price = 300 where id = :id").param("id", item).update();
+
+		assertEquals(120, ((Number) myItems(user).get(0).get("price_paid")).intValue());
+	}
+
+	@Test
+	void equipRequiresOwnership() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+
+		assertThrows(DataAccessException.class, () -> equip(user, "frame", item));
+
+		buy(user, item, ref());
+		JsonNode equipped = equip(user, "frame", item);
+		assertEquals("https://img.invalid/f.png", equipped.get("frame").get("image").asString());
+		assertEquals("common", equipped.get("frame").get("tier").asString());
+		assertTrue(equipped.get("badge").isNull());
+		assertEquals(Boolean.TRUE, myItems(user).get(0).get("equipped"));
+
+		JsonNode cleared = equip(user, "frame", null);
+		assertTrue(cleared.has("frame") && cleared.get("frame").isNull(), cleared.toString());
+		assertEquals(Boolean.FALSE, myItems(user).get(0).get("equipped"));
+	}
+
+	@Test
+	void equipRefusesWrongCategory() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		buy(user, item, ref());
+
+		assertThrows(DataAccessException.class, () -> equip(user, "badge", item));
+	}
+
+	@Test
+	void historyNamesTheItem() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		String name = uniqueName();
+		UUID item = newItem(name, 120);
+		buy(user, item, ref());
+
+		List<Map<String, Object>> history = asUser(user,
+				() -> DbRows.list(jdbc, "select * from public.my_diamond_history(10)", Map.of()));
+		Map<String, Object> purchase = history.stream().filter(row -> "purchase".equals(row.get("reason")))
+				.findFirst().orElseThrow();
+		assertEquals(name, purchase.get("item_name"));
+		Map<String, Object> adjustment = history.stream().filter(row -> "adjustment".equals(row.get("reason")))
+				.findFirst().orElseThrow();
+		assertNull(adjustment.get("item_name"));
+	}
+
+	@Test
+	void concurrentBuysChargeOnce() throws Exception {
+		UUID user = newUser();
+		giveDiamonds(user, 1000);
+		UUID item = newItem(uniqueName(), 120);
+
+		CountDownLatch start = new CountDownLatch(1);
+		ExecutorService pool = Executors.newFixedThreadPool(2);
+		try {
+			List<Future<Object>> futures = new ArrayList<>();
+			for (int i = 0; i < 2; i++) {
+				Callable<Object> task = () -> {
+					start.await();
+					try {
+						return buy(user, item, ref());
+					} catch (DataAccessException error) {
+						return error;
+					}
+				};
+				futures.add(pool.submit(task));
+			}
+			start.countDown();
+			int bought = 0;
+			int refused = 0;
+			for (Future<Object> future : futures) {
+				Object outcome = future.get();
+				if (outcome instanceof DataAccessException error) {
+					assertTrue(rootMessage(error).contains("já tem este item"), rootMessage(error));
+					refused++;
+				} else {
+					bought++;
+				}
+			}
+			assertEquals(1, bought);
+			assertEquals(1, refused);
+		} finally {
+			pool.shutdownNow();
+		}
+		assertEquals(880, balance(user));
+		assertEquals(1, myItems(user).size());
+		int sold = jdbc.sql("select sold from public.shop_items where id = :id").param("id", item).query(Integer.class).single();
+		assertEquals(1, sold);
+	}
+
+	@Test
+	void rpcExposesShopFunctions() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		// Nome colorido, para o catálogo devolver as cores (V55: só esse tipo leva cores).
+		UUID colored = jdbc.sql("""
+				insert into public.shop_items (category, tier, name, price, status, colors)
+				values ('name_color', 'common', :name, 50, 'on_sale', array['#ff0000', '#00ff00'])
+				returning id
+				""").param("name", uniqueName()).query(UUID.class).single();
+
+		@SuppressWarnings("unchecked")
+		List<Map<String, Object>> bought = (List<Map<String, Object>>) rpc.call(user, "buy_shop_item",
+				Map.of("item", item.toString(), "ref", ref()));
+		assertEquals(80, ((Number) bought.get(0).get("balance")).intValue());
+
+		@SuppressWarnings("unchecked")
+		List<Map<String, Object>> catalog = (List<Map<String, Object>>) rpc.call(user, "shop_catalog", Map.of());
+		Map<String, Object> listed = catalog.stream().filter(row -> colored.equals(row.get("id"))).findFirst().orElseThrow();
+		assertEquals(List.of("#ff0000", "#00ff00"), listed.get("colors"));
+
+		rpc.call(user, "buy_shop_item", Map.of("item", colored.toString(), "ref", ref()));
+		@SuppressWarnings("unchecked")
+		List<Map<String, Object>> mine = (List<Map<String, Object>>) rpc.call(user, "my_shop_items", Map.of());
+		Map<String, Object> mineColored = mine.stream().filter(row -> colored.equals(row.get("item_id"))).findFirst().orElseThrow();
+		assertEquals(List.of("#ff0000", "#00ff00"), mineColored.get("colors"));
+
+		JsonNode cosmetics = (JsonNode) rpc.call(user, "equip_shop_item", Map.of("category", "frame", "item", item.toString()));
+		assertEquals("https://img.invalid/f.png", cosmetics.get("frame").get("image").asString());
+
+		Map<String, Object> unequip = new HashMap<>();
+		unequip.put("category", "frame");
+		unequip.put("item", null);
+		JsonNode cleared = (JsonNode) rpc.call(user, "equip_shop_item", unequip);
+		assertTrue(cleared.get("frame").isNull());
+
+		AuthException refused = assertThrows(AuthException.class,
+				() -> rpc.call(user, "buy_shop_item", Map.of("item", item.toString(), "ref", ref())));
+		assertTrue(refused.getMessage().contains("já tem este item"), refused.getMessage());
+	}
+
+	/** Primeiro lote (V57): só os itens semeados, que apontam para /shop/ no site. */
+	@Test
+	void firstBatchIsOnSale() {
+		UUID user = newUser();
+		List<Map<String, Object>> batch = asUser(user, () -> DbRows.list(jdbc, "select * from public.shop_catalog()", Map.of()))
+				.stream().filter(row -> row.get("image_url") == null
+						? row.get("category").equals("name_color") && row.get("name").toString().startsWith("Nome ")
+						: row.get("image_url").toString().startsWith("/shop/"))
+				.toList();
+		java.util.function.Function<String, List<Map<String, Object>>> of = category ->
+				batch.stream().filter(row -> category.equals(row.get("category"))).toList();
+
+		List<Map<String, Object>> frames = of.apply("frame");
+		assertTrue(frames.size() >= 6, "molduras: " + frames.size());
+		List<Map<String, Object>> epics = frames.stream().filter(row -> "epic".equals(row.get("tier"))).toList();
+		assertEquals(1, epics.size());
+		assertNotNull(epics.get(0).get("animated_url"));
+		assertTrue(of.apply("badge").size() >= 6);
+		assertEquals(3, of.apply("cover").size());
+		List<Map<String, Object>> names = of.apply("name_color");
+		assertEquals(3, names.size());
+		for (Map<String, Object> row : names) {
+			@SuppressWarnings("unchecked")
+			List<String> colors = (List<String>) row.get("colors");
+			for (String color : colors) {
+				for (String background : List.of("#14110e", "#0e1612")) {
+					assertTrue(contrast(color, background) >= 4.5, row.get("name") + " " + color + " sobre " + background);
+				}
+			}
+		}
+	}
+
+	static double contrast(String a, String b) {
+		double la = luminance(a);
+		double lb = luminance(b);
+		return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+	}
+
+	static double luminance(String hex) {
+		int rgb = Integer.parseInt(hex.substring(1), 16);
+		return 0.2126 * channel((rgb >> 16) & 0xFF) + 0.7152 * channel((rgb >> 8) & 0xFF) + 0.0722 * channel(rgb & 0xFF);
+	}
+
+	static double channel(int value) {
+		double c = value / 255.0;
+		return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+	}
+
+	/** Insere direto como postgres (o caminho do admin), para provar as checks da tabela. */
+	void insertItem(String category, String tier, String imageUrl, String animatedUrl, String colors) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("category", category);
+		params.put("tier", tier);
+		params.put("image", imageUrl);
+		params.put("animated", animatedUrl);
+		params.put("colors", colors);
+		var spec = jdbc.sql("""
+				insert into public.shop_items (category, tier, name, price, image_url, animated_url, colors)
+				values (:category, :tier, 'Item de check', 10, :image, :animated, cast(:colors as text[]))
+				""");
+		for (var entry : params.entrySet()) {
+			spec = spec.param(entry.getKey(), entry.getValue());
+		}
+		spec.update();
+	}
+
+	void assertRejected(String constraint, Runnable insert) {
+		DataAccessException error = assertThrows(DataAccessException.class, insert::run);
+		assertTrue(rootMessage(error).contains(constraint), rootMessage(error));
+	}
+
+	@Test
+	void colorsCheckAcceptsOneToThreeHexColorsOnly() {
+		insertItem("name_color", "common", null, null, "{#ff0000}");
+		insertItem("name_color", "rare", null, null, "{#ff0000,#00FF00,#0000ff}");
+		insertItem("badge", "common", "https://img.invalid/b.png", null, null);
+
+		for (String bad : List.of("{}", "{#ff0000,#00ff00,#0000ff,#ffffff}", "{red}", "{#fff}",
+				"{\"#ff0000;background:url(x)\"}", "{#ff0000,NULL}", "{{#ff0000},{#00ff00}}")) {
+			assertRejected("shop_items_colors_check", () -> insertItem("name_color", "common", null, null, bad));
+		}
+	}
+
+	@Test
+	void nameColorNeedsColors() {
+		assertRejected("shop_items_name_color_needs_colors", () -> insertItem("name_color", "common", null, null, null));
+		insertItem("name_color", "common", null, null, "{#123abc}");
+	}
+
+	@Test
+	void epicFrameNeedsBothImages() {
+		assertRejected("shop_items_epic_frame_images",
+				() -> insertItem("frame", "epic", "https://img.invalid/f.png", null, null));
+		assertRejected("shop_items_epic_frame_images",
+				() -> insertItem("frame", "epic", null, "https://img.invalid/f.webp", null));
+		insertItem("frame", "epic", "https://img.invalid/f.png", "https://img.invalid/f.webp", null);
+		// Rascunho comum ainda pode ser salvo sem imagem.
+		insertItem("frame", "common", null, null, null);
+	}
+
+	@Test
+	void equippedCategoryIsRestricted() {
+		UUID user = newUser();
+		giveDiamonds(user, 200);
+		UUID item = newItem(uniqueName(), 120);
+		buy(user, item, ref());
+
+		assertRejected("shop_equipped_category_check", () -> jdbc.sql(
+				"insert into public.shop_equipped (user_id, category, item_id) values (:u, 'hat', :i)")
+				.param("u", user).param("i", item).update());
+	}
+}

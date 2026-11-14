@@ -46,12 +46,23 @@ public class StorageAccess {
         """).param("path", path).query(Boolean.class).single();
   }
 
+  /**
+   * Buckets que as pessoas gravam pelo storage genérico. `shop-items` fica de fora para todo mundo
+   * (inclusive superadmin): só o admin da loja grava lá, já com a imagem conferida.
+   */
+  public static void requireUserWritable(StorageBucket bucket) {
+    if (bucket == StorageBucket.SHOP_ITEMS)
+      throw new AuthException(403, "Sem permissão para gravar neste armazenamento.");
+  }
+
   public void assertWritable(StorageBucket bucket, String path) {
+    requireUserWritable(bucket);
     if (bucket == StorageBucket.COMMUNITY_BOOKS && exists(path, "true"))
       throw new AuthException(409, "O texto enviado para revisão é imutável. Envie uma nova versão.");
   }
 
   public boolean deletable(UUID user, StorageBucket bucket, String path) {
+    if (bucket == StorageBucket.SHOP_ITEMS) return false;
     com.storyverse.api.common.DbSession.setUser(jdbc, user);
     if (bucket == StorageBucket.CATALOG_BOOKS) return superadmin(user);
     if (bucket == StorageBucket.COMMUNITY_BOOKS) {
