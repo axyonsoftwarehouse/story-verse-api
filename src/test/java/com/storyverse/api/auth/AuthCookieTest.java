@@ -16,6 +16,9 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Map;
 
+import com.storyverse.api.controller.AuthController;
+import com.storyverse.api.service.AuthCookieService;
+import com.storyverse.api.service.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;

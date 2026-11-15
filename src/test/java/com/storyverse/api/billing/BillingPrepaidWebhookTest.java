@@ -19,12 +19,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.storyverse.api.service.BillingWebhookService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.MailService;
+import com.storyverse.api.service.MailService;
 import com.stripe.model.Charge;
 import com.stripe.model.checkout.Session;
 

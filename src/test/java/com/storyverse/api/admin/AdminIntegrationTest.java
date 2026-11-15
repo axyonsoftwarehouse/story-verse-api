@@ -10,6 +10,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+
+import com.storyverse.api.service.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -31,11 +33,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
 import com.storyverse.api.billing.BillingSeriesPoint;
 import com.storyverse.api.common.DbSession;
-import com.storyverse.api.catalog.CatalogImportService;
-import com.storyverse.api.community.CommunityService;
-import com.storyverse.api.feature.FeatureAccessService;
+import com.storyverse.api.service.CatalogImportService;
+import com.storyverse.api.service.CommunityService;
+import com.storyverse.api.service.FeatureAccessService;
 import com.storyverse.api.feature.FeatureUsersPage;
-import com.storyverse.api.rpc.RpcService;
 import com.storyverse.api.storage.*;
 
 /** Área do admin. Rode só contra um PostgreSQL descartável, nunca produção. */
@@ -69,12 +70,16 @@ class AdminIntegrationTest {
   @Autowired CommunityService community;
   @Autowired FeatureAccessService features;
   @Autowired SanctionService sanctions;
-  @Autowired AdminMetricsService metrics;
-  @Autowired com.storyverse.api.catalog.CatalogReadersService readers;
+  @Autowired
+  AdminMetricsService metrics;
+  @Autowired
+  CatalogReadersService readers;
   @Autowired CatalogImportService catalogImports;
-  @Autowired com.storyverse.api.billing.BillingAdminService billingAdmin;
+  @Autowired
+  BillingAdminService billingAdmin;
   @Autowired com.storyverse.api.billing.BillingSnapshotJob snapshotJob;
-  @Autowired AdminHealthService health;
+  @Autowired
+  AdminHealthService health;
   @Autowired AdminTrafficService traffic;
   @Autowired AdminVitalsService vitals;
   @Autowired SessionRepository sessions;
@@ -955,7 +960,8 @@ class AdminIntegrationTest {
     mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/features/catalog")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
   }
   // ---- visão geral ----
-  @Autowired AdminOverviewService overview;
+  @Autowired
+  AdminOverviewService overview;
   /** Outros testes contam denúncias pendentes no banco inteiro: quem insere aqui apaga depois. */
   UUID insertReport() {
     UUID reporter=id(user());
@@ -1039,7 +1045,8 @@ class AdminIntegrationTest {
     mvc.perform(MockMvcRequestBuilders.get("/api/v1/admin/overview")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
   }
   // ---- auditoria ----
-  @Autowired AdminAuditService auditService;
+  @Autowired
+  AdminAuditService auditService;
   AdminAuditService.Filter filter(String action, String actorId, String targetType, String targetId, String from, String to, String before) {
     return new AdminAuditService.Filter(action,actorId,targetType,targetId,from,to,before);
   }

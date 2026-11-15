@@ -5,13 +5,14 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
+import com.storyverse.api.service.BillingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.storyverse.api.auth.MailService;
+import com.storyverse.api.service.MailService;
 
 /**
  * Pix não renova sozinho: avisa uma vez quando a sequência paga termina em até 3 dias. Quem paga

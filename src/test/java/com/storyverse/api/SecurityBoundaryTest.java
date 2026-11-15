@@ -11,7 +11,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 import com.storyverse.api.common.RateLimits;
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.ai.AiService;
+import com.storyverse.api.service.AiService;
 
 @SpringBootTest @AutoConfigureMockMvc
 class SecurityBoundaryTest {

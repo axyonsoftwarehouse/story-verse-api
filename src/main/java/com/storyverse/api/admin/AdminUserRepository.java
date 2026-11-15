@@ -199,7 +199,7 @@ public class AdminUserRepository {
 				.param("id", userId).query(String.class).list();
 	}
 
-	static String escapeLike(String value) {
+	public static String escapeLike(String value) {
 		return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
 	}
 

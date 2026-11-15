@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.math.BigDecimal;
 import java.nio.file.*;
 import java.util.*;
+
+import com.storyverse.api.service.AuthService;
+import com.storyverse.api.service.LibraryService;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.function.Executable;
@@ -20,7 +23,7 @@ import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import com.storyverse.api.account.AccountService;
+import com.storyverse.api.service.AccountService;
 import com.storyverse.api.auth.*;
 
 /** Run only against a disposable PostgreSQL database, never production. */
@@ -41,9 +44,11 @@ class LibraryIntegrationTest {
     properties.add("app.rate-limit.persistent", () -> "true");
     properties.add("app.security.require-runtime-role", () -> "false");
   }
-  @Autowired AuthService auth;
+  @Autowired
+  AuthService auth;
   @Autowired JdbcClient jdbc;
-  @Autowired LibraryService library;
+  @Autowired
+  LibraryService library;
   @Autowired AccountService account;
   @Autowired MockMvc mvc;
 

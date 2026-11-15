@@ -8,11 +8,12 @@ import static org.mockito.Mockito.mock;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.storyverse.api.service.BillingService;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
-import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.service.AuthService;
 import com.storyverse.api.common.RequestPaths;
 
 class BillingAccessFilterTest {

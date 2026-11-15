@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.storyverse.api.service.AccountService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
@@ -26,13 +27,13 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.service.AuthService;
 import com.storyverse.api.auth.User;
 import com.storyverse.api.auth.UserRepository;
-import com.storyverse.api.billing.BillingService;
+import com.storyverse.api.service.BillingService;
 import com.storyverse.api.common.RateLimitGate;
 import com.storyverse.api.common.SecurityEvents;
-import com.storyverse.api.storage.StorageService;
+import com.storyverse.api.service.StorageService;
 
 /** S5: a exclusão da conta cancela a assinatura antes de apagar qualquer coisa. */
 class AccountServiceTest {

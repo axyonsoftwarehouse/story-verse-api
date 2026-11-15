@@ -3,6 +3,7 @@ package com.storyverse.api.audio;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.storyverse.api.service.CatalogAudioService;
 import org.junit.jupiter.api.Test;
 
 /** S4 da revisão de 09/11/2026: qual capítulo sai sem login. */

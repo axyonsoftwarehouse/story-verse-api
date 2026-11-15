@@ -3,6 +3,9 @@ package com.storyverse.api.forum;
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.*;
 import java.util.*;
+
+import com.storyverse.api.service.AuthService;
+import com.storyverse.api.service.ForumService;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.function.Executable;
@@ -29,8 +32,10 @@ class ForumIntegrationTest {
     properties.add("app.public-api-url", () -> "https://api.example.test");
     properties.add("app.security.require-runtime-role", () -> "false");
   }
-  @Autowired AuthService auth;
-  @Autowired ForumService forum;
+  @Autowired
+  AuthService auth;
+  @Autowired
+  ForumService forum;
   @Autowired JdbcClient jdbc;
 
   AuthResponse user() { return (AuthResponse) auth.signup(new SignupRequest(UUID.randomUUID()+"@example.invalid", "test-secret", "Leitor")); }
