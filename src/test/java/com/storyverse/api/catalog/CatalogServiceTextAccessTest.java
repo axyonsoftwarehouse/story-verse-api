@@ -14,14 +14,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.storyverse.api.service.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.AuthService;
-import com.storyverse.api.auth.AuthzService;
-import com.storyverse.api.billing.BillingService;
-import com.storyverse.api.storage.StorageService;
 
 /** S1 (defesa em profundidade): o texto integral confere a assinatura sem depender do filtro. */
 class CatalogServiceTextAccessTest {

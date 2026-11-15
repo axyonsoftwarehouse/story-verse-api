@@ -3,6 +3,7 @@ package com.storyverse.api.billing;
 import java.io.IOException;
 import java.util.UUID;
 
+import com.storyverse.api.service.BillingService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -10,7 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.service.AuthService;
 import com.storyverse.api.auth.AuthTokens;
 import com.storyverse.api.common.RequestPaths;
 

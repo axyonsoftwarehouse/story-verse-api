@@ -3,6 +3,9 @@ package com.storyverse.api.catalog;
 import java.util.List;
 import java.util.Map;
 
+import com.storyverse.api.service.CatalogCollectionService;
+import com.storyverse.api.service.CatalogReadersService;
+import com.storyverse.api.service.CatalogService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;

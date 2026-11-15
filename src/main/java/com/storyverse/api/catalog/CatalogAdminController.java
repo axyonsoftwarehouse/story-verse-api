@@ -3,6 +3,7 @@ package com.storyverse.api.catalog;
 import java.util.Map;
 import java.util.UUID;
 
+import com.storyverse.api.service.CatalogService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;

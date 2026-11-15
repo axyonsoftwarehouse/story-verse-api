@@ -3,6 +3,10 @@ package com.storyverse.api.billing;
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.*;
 import java.util.*;
+
+import com.storyverse.api.service.AuthService;
+import com.storyverse.api.service.BillingAdminService;
+import com.storyverse.api.service.BillingService;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,9 +33,12 @@ class BillingGrantIntegrationTest {
     properties.add("app.security.require-runtime-role", () -> "false");
     properties.add("app.billing.enabled", () -> "true");
   }
-  @Autowired AuthService auth;
-  @Autowired BillingAdminService admin;
-  @Autowired BillingService billing;
+  @Autowired
+  AuthService auth;
+  @Autowired
+  BillingAdminService admin;
+  @Autowired
+  BillingService billing;
   @Autowired JdbcClient jdbc;
 
   AuthResponse signup(String name) {

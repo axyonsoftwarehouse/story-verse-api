@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
 
+import com.storyverse.api.ai.AiMessage;
+import com.storyverse.api.service.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,13 +23,10 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import com.storyverse.api.push.PushService;
 import com.storyverse.api.push.PushTestKeys;
 
-import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthResponse;
-import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.SignupRequest;
 import com.storyverse.api.common.DbSession;
 
@@ -663,7 +662,7 @@ class GroupIntegrationTest {
 	@Test
 	void roleplayGroupOpensWithTheNarratorAndNarratesEveryThreeMessages() throws Exception {
 		java.util.concurrent.atomic.AtomicReference<String> lastSystem = new java.util.concurrent.atomic.AtomicReference<>();
-		java.util.concurrent.atomic.AtomicReference<List<com.storyverse.api.ai.AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
+		java.util.concurrent.atomic.AtomicReference<List<AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
 		narrator.useWriter((system, history) -> {
 			lastSystem.set(system);
 			lastHistory.set(history);
@@ -732,7 +731,7 @@ class GroupIntegrationTest {
 
 	@Test
 	void adminCallingTheNarratorByNameGetsAnAnswerRightAway() throws Exception {
-		java.util.concurrent.atomic.AtomicReference<List<com.storyverse.api.ai.AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
+		java.util.concurrent.atomic.AtomicReference<List<AiMessage>> lastHistory = new java.util.concurrent.atomic.AtomicReference<>();
 		narrator.useWriter((system, history) -> {
 			lastHistory.set(history);
 			return "*Um trovão ilumina a janela.* Atrás da porta há uma escada que desce.";

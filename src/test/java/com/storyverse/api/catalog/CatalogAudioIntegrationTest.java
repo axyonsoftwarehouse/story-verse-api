@@ -31,7 +31,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.jayway.jsonpath.JsonPath;
 import com.storyverse.api.auth.AuthResponse;
-import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.service.AuthService;
 import com.storyverse.api.auth.SignupRequest;
 import com.storyverse.api.common.DbSession;
 

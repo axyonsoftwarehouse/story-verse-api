@@ -18,13 +18,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.storyverse.api.service.BillingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.AuthzService;
+import com.storyverse.api.service.AuthzService;
 
 /** S5 da revisão de 09/11: excluir a conta não pode deixar assinatura sendo cobrada. */
 class BillingServiceCancelTest {

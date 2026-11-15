@@ -5,6 +5,9 @@ import java.nio.file.*;
 import java.time.*;
 import java.util.*;
 import java.util.function.Supplier;
+
+import com.storyverse.api.service.AdminActiveService;
+import com.storyverse.api.service.AuthService;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.function.Executable;
@@ -40,8 +43,10 @@ class AdminActiveIntegrationTest {
     properties.add("app.security.require-runtime-role", () -> "false");
   }
   @Autowired MockMvc mvc;
-  @Autowired AuthService auth;
-  @Autowired AdminActiveService active;
+  @Autowired
+  AuthService auth;
+  @Autowired
+  AdminActiveService active;
   @Autowired JdbcClient jdbc;
   @Autowired PlatformTransactionManager transactions;
 

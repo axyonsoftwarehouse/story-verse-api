@@ -5,6 +5,11 @@ import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+
+import com.storyverse.api.ai.AiBudget;
+import com.storyverse.api.ai.AiCache;
+import com.storyverse.api.ai.AiMetrics;
+import com.storyverse.api.service.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,12 +20,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.storyverse.api.auth.*;
-import com.storyverse.api.account.AccountService;
-import com.storyverse.api.feature.FeatureAccessService;
-import com.storyverse.api.community.CommunityService;
+import com.storyverse.api.service.FeatureAccessService;
+import com.storyverse.api.service.CommunityService;
 import com.storyverse.api.forum.*;
 import com.storyverse.api.storage.*;
-import com.storyverse.api.rpc.RpcService;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.common.RateLimitGate;
 
@@ -45,21 +48,28 @@ class SecurityIntegrationTest {
     // runtime é validado pelo Compose/VPS, não por este teste.
     properties.add("app.security.require-runtime-role", () -> "false");
   }
-  @Autowired AuthService auth;
+  @Autowired
+  AuthService auth;
   @Autowired EmailTokenRepository emailTokens;
-  @Autowired TokenService tokenService;
+  @Autowired
+  TokenService tokenService;
   @Autowired StorageService storage;
   @Autowired CommunityService community;
   @Autowired ForumService forum;
-  @Autowired AuthzService authz;
+  @Autowired
+  AuthzService authz;
   @Autowired RpcService rpc;
   @Autowired JdbcClient jdbc;
   @Autowired PlatformTransactionManager transactions;
   @Autowired javax.sql.DataSource dataSource;
-  @Autowired com.storyverse.api.ai.AiBudget aiBudget;
-  @Autowired com.storyverse.api.ai.AiMetrics aiMetrics;
-  @Autowired com.storyverse.api.ai.AiCache aiCache;
-  @Autowired com.storyverse.api.reading.ReadingStateService readingState;
+  @Autowired
+  AiBudget aiBudget;
+  @Autowired
+  AiMetrics aiMetrics;
+  @Autowired
+  AiCache aiCache;
+  @Autowired
+  ReadingStateService readingState;
   @Autowired RateLimitGate rateLimits;
   @Autowired AccountService account;
   @Autowired SessionRepository sessions;
@@ -344,7 +354,7 @@ class SecurityIntegrationTest {
       assertEquals(1,aiBudget.quota(uid).used());
       aiMetrics.record(uid,"chat","qa","qa-model","ok",12,10,5,false,null,"free",0);
       assertEquals(1,jdbc.sql("select count(*) from public.ai_usage_events where user_id=:uid").param("uid",uid).query(Integer.class).single());
-      String cacheKey=com.storyverse.api.ai.AiCache.key("qa",uid.toString());
+      String cacheKey= AiCache.key("qa",uid.toString());
       aiCache.put(cacheKey,"qa","{\"ok\":true}","qa-model",java.time.Duration.ofMinutes(5));
       assertTrue(aiCache.get(cacheKey).isPresent());
       assertEquals(4,((List<?>)rpc.call(uid,"gift_catalog",Map.of())).size());

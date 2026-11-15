@@ -17,7 +17,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.MailService;
+import com.storyverse.api.service.MailService;
 
 class PrepaidReminderJobTest {
 

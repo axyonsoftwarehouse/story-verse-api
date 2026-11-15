@@ -5,6 +5,10 @@ import java.nio.file.*;
 import java.sql.Timestamp;
 import java.time.*;
 import java.util.*;
+
+import com.storyverse.api.service.AuthService;
+import com.storyverse.api.service.BillingService;
+import com.storyverse.api.service.BillingWebhookService;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,9 +39,12 @@ class BillingPrepaidIntegrationTest {
     properties.add("app.security.require-runtime-role", () -> "false");
     properties.add("app.billing.enabled", () -> "true");
   }
-  @Autowired AuthService auth;
-  @Autowired BillingService billing;
-  @Autowired BillingWebhookService webhooks;
+  @Autowired
+  AuthService auth;
+  @Autowired
+  BillingService billing;
+  @Autowired
+  BillingWebhookService webhooks;
   @Autowired BillingRepository repository;
   @Autowired JdbcClient jdbc;
   @Autowired PlatformTransactionManager transactions;

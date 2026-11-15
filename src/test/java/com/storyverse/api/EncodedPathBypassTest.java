@@ -24,10 +24,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import com.storyverse.api.auth.AuthException;
-import com.storyverse.api.auth.AuthService;
-import com.storyverse.api.billing.BillingService;
-import com.storyverse.api.catalog.CatalogCollectionService;
-import com.storyverse.api.catalog.CatalogService;
+import com.storyverse.api.service.AuthService;
+import com.storyverse.api.service.BillingService;
+import com.storyverse.api.service.CatalogCollectionService;
+import com.storyverse.api.service.CatalogService;
 
 /**
  * S1 da revisão de 09/11/2026: os filtros decidiam pela URL crua e o MVC atendia a URL

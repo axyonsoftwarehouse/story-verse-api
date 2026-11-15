@@ -11,9 +11,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.storyverse.api.service.BillingWebhookService;
 import org.junit.jupiter.api.Test;
 
-import com.storyverse.api.auth.MailService;
+import com.storyverse.api.service.MailService;
 
 /** S5: evento de conta excluída é ignorado com 200, não vira 500 que o Stripe reenvia. */
 class BillingWebhookServiceTest {
