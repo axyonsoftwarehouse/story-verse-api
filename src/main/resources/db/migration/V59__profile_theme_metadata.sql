@@ -1,4 +1,5 @@
 -- Tema visual do perfil público: auth.users.raw_user_meta_data->>'profile_theme'
+-- V59 porque a V50 já é o perfil privado; versão repetida impede a API de subir.
 -- Valores permitidos: dourado (padrão), esmeralda, rosa, oceano, lavanda.
 
 update auth.users
