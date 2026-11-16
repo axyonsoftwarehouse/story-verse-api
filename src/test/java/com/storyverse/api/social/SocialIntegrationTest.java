@@ -117,6 +117,7 @@ class SocialIntegrationTest {
 		assertEquals(Boolean.TRUE, mutual.get("follows_me"));
 
 		assertEquals(Boolean.TRUE, social.profile(ana, anaId).get("is_me"));
+		assertEquals("dourado", social.profile(bia, anaId).get("profile_theme"));
 
 		List<Map<String, Object>> followers = social.followers(ana, biaId, null, null);
 		assertEquals(1, followers.size());
@@ -135,7 +136,7 @@ class SocialIntegrationTest {
 		String ana = person("Ana Bio"), bia = person("Bia Bio");
 		UUID anaId = idOf(ana);
 		assertNull(social.profile(bia, anaId).get("bio"));
-		auth.updateProfile(ana, new ProfileUpdateRequest("Ana Bio", null, null, null, "Leio de tudo um pouco"));
+		auth.updateProfile(ana, new ProfileUpdateRequest("Ana Bio", null, null, null, "Leio de tudo um pouco", null));
 		assertEquals("Leio de tudo um pouco", social.profile(bia, anaId).get("bio"));
 	}
 

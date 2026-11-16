@@ -248,6 +248,7 @@ public class AuthService {
 			if (bio.isEmpty()) metadata.remove("bio");
 			else metadata.put("bio", bio);
 		}
+		ProfileThemes.putIfPresent(metadata, request.profileTheme());
 		users.updateMetadata(user.id(), metadata);
 		User updated = users.findById(user.id()).orElseThrow(() -> new AuthException(401, "Sessão inválida."));
 		return UserResponse.from(updated);

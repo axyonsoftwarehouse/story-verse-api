@@ -3,6 +3,7 @@ package com.storyverse.api.auth;
 /**
  * Campos ausentes ({@code null}) em {@code avatar}, {@code photo} e {@code cover} apagam o valor;
  * {@code bio} ausente mantém a atual (apps antigos não a mandam) e vazia apaga.
+ * {@code profileTheme} ausente mantém o tema; vazio ou {@code dourado} volta ao padrão.
  */
-public record ProfileUpdateRequest(String name, String avatar, String photo, String cover, String bio) {
+public record ProfileUpdateRequest(String name, String avatar, String photo, String cover, String bio, String profileTheme) {
 }
