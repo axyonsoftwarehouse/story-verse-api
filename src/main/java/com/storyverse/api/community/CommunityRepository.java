@@ -81,6 +81,16 @@ public class CommunityRepository {
 				""", params);
 	}
 
+	public Optional<Map<String, Object>> updateDetails(UUID id, String title, String author) {
+		Map<String, Object> params = new java.util.HashMap<>();
+		params.put("id", id);
+		params.put("title", title);
+		params.put("author", author);
+		return DbRows.one(jdbc,
+				"update public.book_submissions set title = :title, author = :author where id = :id returning *",
+				params);
+	}
+
 	public Optional<Map<String, Object>> updateCover(UUID id, String coverUrl) {
 		return DbRows.one(jdbc,
 				"update public.book_submissions set cover_url = :cover where id = :id returning *",

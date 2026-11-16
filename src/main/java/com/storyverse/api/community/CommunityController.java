@@ -62,8 +62,11 @@ public class CommunityController {
 			@RequestBody Map<String, Object> body,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
 		String token = AuthTokens.bearer(authorization);
-		// Com "status" é revisão (admin); sem, é troca de capa (dono ou admin).
-		return body.containsKey("status") ? service.review(token, id, body) : service.updateCover(token, id, body);
+		// Com "status" é revisão (admin); com título ou autor, correção dos dados (admin);
+		// sem nenhum deles, é troca de capa (dono ou admin).
+		if (body.containsKey("status")) return service.review(token, id, body);
+		if (body.containsKey("title") || body.containsKey("author")) return service.updateDetails(token, id, body);
+		return service.updateCover(token, id, body);
 	}
 
 	@DeleteMapping("/{id}")
