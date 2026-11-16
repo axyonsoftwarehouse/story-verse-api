@@ -99,6 +99,10 @@ public class CommunityService {
 		if (textPath == null) {
 			throw new AuthException(400, "O arquivo do livro está faltando.");
 		}
+		// No envio só barra o nome de arquivo; o autor a moderação pode completar antes de aprovar.
+		if (SubmissionMetadata.looksLikeFileName(title)) {
+			throw new AuthException(400, "O título parece nome de arquivo. Escreva o título do livro.");
+		}
 		textPath = StorageService.requireOwn(userId, textPath);
 		access.lockCommunity(textPath);
 		access.assertWritable(StorageBucket.COMMUNITY_BOOKS, textPath);
@@ -142,6 +146,10 @@ public class CommunityService {
 		if (!"approved".equals(status) && !"rejected".equals(status)) {
 			throw new AuthException(400, "Situação inválida.");
 		}
+		if ("approved".equals(status)) {
+			String metadataProblem = SubmissionMetadata.problem(text(row.get("title")), text(row.get("author")));
+			if (metadataProblem != null) throw new AuthException(400, metadataProblem);
+		}
 		String note = limit(text(body.get("review_note")), 500);
 		Map<String, Object> params = new LinkedHashMap<>();
 		params.put("id", id);
@@ -158,6 +166,37 @@ public class CommunityService {
 			authz.audit(userId, "book_submission.review", "book_submission", id.toString(),
 					Map.of("status", status, "note", note == null ? "" : note));
 			return reviewed;
+		} catch (DataAccessException exception) {
+			throw new AuthException(400, DbErrors.message(exception));
+		}
+	}
+
+	/**
+	 * Título e autor corrigidos pela moderação, antes de aprovar ou já no acervo (U1). Um livro
+	 * publicado tem cópia em catalog_books: a cópia é atualizada na mesma transação.
+	 */
+	@Transactional
+	public Map<String, Object> updateDetails(String accessToken, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(accessToken);
+		if (!canModerate(userId)) {
+			throw new AuthException(403, "Sem permissão para editar envios.");
+		}
+		Map<String, Object> row = repository.findForUpdate(id).orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+		String title = limit(body.containsKey("title") ? text(body.get("title")) : text(row.get("title")), 120);
+		String author = limit(body.containsKey("author") ? text(body.get("author")) : text(row.get("author")), 120);
+		String metadataProblem = SubmissionMetadata.problem(title, author);
+		if (metadataProblem != null) throw new AuthException(400, metadataProblem);
+		try {
+			Map<String, Object> updated = repository.updateDetails(id, title, author)
+					.orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
+			if ("approved".equals(updated.get("status"))) {
+				catalog.promoteApproved(id);
+			}
+			Map<String, Object> metadata = new LinkedHashMap<>();
+			metadata.put("before", row.get("title") + " — " + row.get("author"));
+			metadata.put("after", title + " — " + author);
+			authz.audit(userId, "book_submission.details", "book_submission", id.toString(), metadata);
+			return updated;
 		} catch (DataAccessException exception) {
 			throw new AuthException(400, DbErrors.message(exception));
 		}

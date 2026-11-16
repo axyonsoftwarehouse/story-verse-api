@@ -156,7 +156,7 @@ class SecurityIntegrationTest {
     AuthResponse owner=user(), reader=user(), admin=user();
     String path=id(owner)+"/book.txt";
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","reviewed".getBytes());
-    var row=community.create(owner.accessToken(),Map.of("title","Book","text_path",path,"rights","own_work"));
+    var row=community.create(owner.accessToken(),Map.of("title","Book","author","Autora Teste","text_path",path,"rights","own_work"));
     assertThrows(AuthException.class,()->storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","changed".getBytes()));
     assertThrows(AuthException.class,()->storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path));
     jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
@@ -222,7 +222,7 @@ class SecurityIntegrationTest {
     AuthResponse owner=user(), reader=user(), admin=user();
     String path=id(owner)+"/s9.txt";
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","texto do envio".getBytes());
-    var row=community.create(owner.accessToken(),Map.of("title","S9","text_path",path,"rights","own_work"));
+    var row=community.create(owner.accessToken(),Map.of("title","S9","author","Autora Teste","text_path",path,"rights","own_work"));
     UUID submission=UUID.fromString(row.get("id").toString());
     assertThrows(AuthException.class,()->community.text(reader.accessToken(),submission),"pendente: só dono e moderação");
     assertEquals("texto do envio",community.text(owner.accessToken(),submission));
@@ -304,7 +304,7 @@ class SecurityIntegrationTest {
   @Test void deleteWaitingForAnApprovalCannotRemoveTheApprovedSubmission() throws Exception {
     AuthResponse owner=user();String path=id(owner)+"/approval.txt";
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","text".getBytes());
-    var submission=community.create(owner.accessToken(),Map.of("title","Book","text_path",path,"rights","own_work"));
+    var submission=community.create(owner.accessToken(),Map.of("title","Book","author","Autora Teste","text_path",path,"rights","own_work"));
     UUID submissionId=UUID.fromString(submission.get("id").toString());
     try(var connection=dataSource.getConnection();ExecutorService executor=Executors.newSingleThreadExecutor()) {
       connection.setAutoCommit(false);
@@ -331,7 +331,7 @@ class SecurityIntegrationTest {
     new TransactionTemplate(transactions).executeWithoutResult(status->{
       jdbc.sql("set local role storyverse_api").update();
       storage.write(uid,StorageBucket.COMMUNITY_BOOKS,path,"text/plain","runtime".getBytes());
-      var row=community.create(user.accessToken(),Map.of("title","Runtime","text_path",path,"rights","own_work"));
+      var row=community.create(user.accessToken(),Map.of("title","Runtime","author","Autora Teste","text_path",path,"rights","own_work"));
       assertEquals(uid.toString(),row.get("user_id").toString());
       assertTrue(storage.readFor(uid,StorageBucket.COMMUNITY_BOOKS,path).isPresent());
       assertEquals(0,((Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true))).intValue());
@@ -640,7 +640,7 @@ class SecurityIntegrationTest {
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","bye".getBytes());
     storage.write(id(owner),StorageBucket.PROFILE_MEDIA,coverPath,"image/jpeg",
         new byte[]{(byte)0xFF,(byte)0xD8,(byte)0xFF,0x00});
-    var submission=community.create(owner.accessToken(),Map.of("title","Bye","text_path",path,"rights","own_work","cover_url",coverUrl));
+    var submission=community.create(owner.accessToken(),Map.of("title","Bye","author","Autora Teste","text_path",path,"rights","own_work","cover_url",coverUrl));
     UUID submissionId=UUID.fromString(submission.get("id").toString());
     assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
     assertTrue(storage.readFor(id(owner),StorageBucket.PROFILE_MEDIA,coverPath).isPresent());

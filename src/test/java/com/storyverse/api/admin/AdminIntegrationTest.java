@@ -109,7 +109,7 @@ class AdminIntegrationTest {
   Submission pendingSubmission() {
     AuthResponse author=user(); String path=id(author)+"/"+UUID.randomUUID()+".txt";
     storage.write(id(author),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","pendente".getBytes());
-    var row=community.create(author.accessToken(),Map.of("title","Livro","text_path",path,"rights","own_work"));
+    var row=community.create(author.accessToken(),Map.of("title","Livro","author","Autora Teste","text_path",path,"rights","own_work"));
     return new Submission(author,path,UUID.fromString(row.get("id").toString()));
   }
 
@@ -125,6 +125,21 @@ class AdminIntegrationTest {
     assertTrue(storage.readFor(id(moderator),StorageBucket.COMMUNITY_BOOKS,submission.path()).isPresent());
     assertDoesNotThrow(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved")));
     assertEquals("approved",jdbc.sql("select status from public.book_submissions where id=:id").param("id",submission.id()).query(String.class).single());
+  }
+  @Test void approvalNeedsRealTitleAndAuthorAndEditsReachTheCatalog() {
+    Submission submission=pendingSubmission();
+    AuthResponse moderator=userWithRole("moderator");
+    // Título vindo do nome do arquivo e autor de uma letra: não publica (U1).
+    jdbc.sql("update public.book_submissions set title='Livro_FINAL.indd', author='V' where id=:id").param("id",submission.id()).update();
+    assertEquals(400,status(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved"))));
+    assertEquals(400,status(()->community.updateDetails(moderator.accessToken(),submission.id(),Map.of("title","Livro_FINAL.indd"))));
+    assertEquals(403,status(()->community.updateDetails(submission.author().accessToken(),submission.id(),Map.of("title","Livro Certo","author","Autora Certa"))));
+    community.updateDetails(moderator.accessToken(),submission.id(),Map.of("title","Livro Certo","author","Autora Certa"));
+    community.review(moderator.accessToken(),submission.id(),Map.of("status","approved"));
+    // Já publicado: a correção chega à cópia do catálogo.
+    community.updateDetails(moderator.accessToken(),submission.id(),Map.of("title","Livro Corrigido"));
+    assertEquals("Livro Corrigido — Autora Certa",jdbc.sql("select title||' — '||author from public.catalog_books where submission_id=:id")
+        .param("id",submission.id()).query(String.class).single());
   }
   @Test void supportCannotReviewSubmissions() {
     Submission submission=pendingSubmission();
@@ -175,7 +190,7 @@ class AdminIntegrationTest {
     String textPath=authorId+"/"+UUID.randomUUID()+".txt", coverPath=authorId+"/livros/c.png";
     storage.write(authorId,StorageBucket.COMMUNITY_BOOKS,textPath,"text/plain","aprovado".getBytes());
     storage.write(authorId,StorageBucket.PROFILE_MEDIA,coverPath,"image/png",PNG);
-    var row=community.create(author.accessToken(),Map.of("title","Livro","text_path",textPath,"rights","own_work","cover_url",coverUrl(coverPath)));
+    var row=community.create(author.accessToken(),Map.of("title","Livro","author","Autora Teste","text_path",textPath,"rights","own_work","cover_url",coverUrl(coverPath)));
     UUID submission=UUID.fromString(row.get("id").toString());
     AuthResponse moderator=userWithRole("moderator");
     community.review(moderator.accessToken(),submission,Map.of("status","approved"));
