@@ -75,7 +75,8 @@ public class CommunityRepository {
 				       review_note = :note,
 				       reviewed_at = now(),
 				       reviewed_by = :reviewed_by,
-				       cover_url = coalesce(:cover, cover_url)
+				       cover_url = coalesce(:cover, cover_url),
+				       rights_note = coalesce(:rights_note, rights_note)
 				 where id = :id
 				 returning *
 				""", params);

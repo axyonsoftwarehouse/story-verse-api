@@ -17,6 +17,7 @@ import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.catalog.CatalogRepository;
+import com.storyverse.api.catalog.RightsJustification;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.storage.StorageService;
@@ -150,6 +151,12 @@ public class CommunityService {
 			String metadataProblem = SubmissionMetadata.problem(text(row.get("title")), text(row.get("author")));
 			if (metadataProblem != null) throw new AuthException(400, metadataProblem);
 		}
+		// V1: o "direitos" de um envio é só declarado por quem envia; quem aprova escreve a justificativa.
+		String rightsNote = limit(text(body.get("rights_note")), 500);
+		if ("approved".equals(status)) {
+			String rightsProblem = RightsJustification.problem(rightsNote);
+			if (rightsProblem != null) throw new AuthException(400, rightsProblem);
+		}
 		String note = limit(text(body.get("review_note")), 500);
 		Map<String, Object> params = new LinkedHashMap<>();
 		params.put("id", id);
@@ -157,14 +164,22 @@ public class CommunityService {
 		params.put("note", note);
 		params.put("cover", covers.require(text(body.get("cover_url"))));
 		params.put("reviewed_by", userId);
+		params.put("rights_note", "approved".equals(status) ? rightsNote : null);
 		try {
 			Map<String, Object> reviewed = repository.review(params)
 					.orElseThrow(() -> new AuthException(404, "Envio não encontrado."));
 			if ("approved".equals(status)) {
 				catalog.promoteApproved(id);
 			}
-			authz.audit(userId, "book_submission.review", "book_submission", id.toString(),
-					Map.of("status", status, "note", note == null ? "" : note));
+			Map<String, Object> audit = new LinkedHashMap<>();
+			audit.put("status", status);
+			audit.put("note", note == null ? "" : note);
+			if ("approved".equals(status)) {
+				audit.put("rightsNote", rightsNote);
+				String declared = text(row.get("rights_note"));
+				audit.put("declaredRightsNote", declared == null ? "" : declared);
+			}
+			authz.audit(userId, "book_submission.review", "book_submission", id.toString(), audit);
 			return reviewed;
 		} catch (DataAccessException exception) {
 			throw new AuthException(400, DbErrors.message(exception));
