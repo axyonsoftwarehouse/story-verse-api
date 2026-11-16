@@ -1,5 +1,6 @@
 package com.storyverse.api.rpc;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -14,6 +15,7 @@ import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbRows;
 import com.storyverse.api.common.DbSession;
 
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -80,6 +82,14 @@ public class RpcService {
 						Map.of(
 								"pack", strArg(args, "p_pack"),
 								"ref", strArg(args, "p_ref")));
+				case "shop_catalog" -> DbRows.list(jdbc, "select * from public.shop_catalog()", Map.of());
+				case "buy_shop_item" -> DbRows.list(jdbc,
+						"select * from public.buy_shop_item(cast(:item as uuid), :ref)",
+						nullable("item", strArg(args, "item"), "ref", strArg(args, "ref")));
+				case "my_shop_items" -> DbRows.list(jdbc, "select * from public.my_shop_items()", Map.of());
+				case "equip_shop_item" -> json(scalar(
+						"select cast(public.equip_shop_item(:category, cast(:item as uuid)) as text)",
+						nullable("category", strArg(args, "category"), "item", strArg(args, "item"))));
 				case "my_ai_quota" -> DbRows.list(jdbc,
 						"select * from public.my_ai_quota(p_daily_limit => :limit)",
 						Map.of("limit", intArg(args, "p_daily_limit", 50)));
@@ -116,6 +126,18 @@ public class RpcService {
 			spec = spec.param(entry.getKey(), entry.getValue());
 		}
 		return spec.query((rs, rowNum) -> rs.getObject(1)).optional().orElse(null);
+	}
+
+	/** Map.of não aceita null; aqui um argumento ausente vira null no SQL (ex.: tirar o item equipado). */
+	private static Map<String, Object> nullable(String k1, Object v1, String k2, Object v2) {
+		Map<String, Object> params = new HashMap<>();
+		params.put(k1, v1);
+		params.put(k2, v2);
+		return params;
+	}
+
+	private static JsonNode json(Object text) {
+		return text == null ? null : MAPPER.readTree(String.valueOf(text));
 	}
 
 	private void voidCall(String sql, Map<String, Object> params) {

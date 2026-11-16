@@ -31,6 +31,11 @@ public class ApiExceptionHandler {
 				.body(new ApiError(exception.getMessage(), exception.code()));
 	}
 
+	@ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+	ResponseEntity<ApiError> handleUploadTooLarge() {
+		return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(new ApiError("Arquivo grande demais."));
+	}
+
 	@ExceptionHandler(AccountSanctionedException.class)
 	ResponseEntity<SanctionError> handleSanction(AccountSanctionedException exception) {
 		Sanction sanction = exception.sanction();

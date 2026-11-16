@@ -59,6 +59,14 @@ public class CatalogAdminController {
 		return service.create(AuthTokens.bearer(authorization), body);
 	}
 
+	/** Ocultar ou arquivar em lote: {"ids": [...], "status": "hidden" | "archived"}. */
+	@PostMapping("/bulk-status")
+	public Map<String, Object> bulkStatus(
+			@RequestBody Map<String, Object> body,
+			@RequestHeader(value = "Authorization", required = false) String authorization) {
+		return service.setStatusBulk(AuthTokens.bearer(authorization), body);
+	}
+
 	@PatchMapping("/{id}")
 	public Map<String, Object> update(
 			@PathVariable UUID id,

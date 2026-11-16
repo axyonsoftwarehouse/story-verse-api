@@ -28,6 +28,7 @@ import com.storyverse.api.common.RateLimitGate;
 @SpringBootTest
 @EnabledIfEnvironmentVariable(named="STORYVERSE_TEST_DB_URL", matches=".+")
 class SecurityIntegrationTest {
+  static final String RIGHTS_OK="Obra própria, enviada pela autora";
   static final Path media;
   static { try { media = Files.createTempDirectory("storyverse-security-it-"); } catch (Exception e) { throw new RuntimeException(e); } }
   @DynamicPropertySource static void configure(DynamicPropertyRegistry properties) {
@@ -156,12 +157,12 @@ class SecurityIntegrationTest {
     AuthResponse owner=user(), reader=user(), admin=user();
     String path=id(owner)+"/book.txt";
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","reviewed".getBytes());
-    var row=community.create(owner.accessToken(),Map.of("title","Book","text_path",path,"rights","own_work"));
+    var row=community.create(owner.accessToken(),Map.of("title","Book","author","Autora Teste","text_path",path,"rights","own_work"));
     assertThrows(AuthException.class,()->storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","changed".getBytes()));
     assertThrows(AuthException.class,()->storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path));
     jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
     assertTrue(storage.readFor(id(admin),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
-    community.review(admin.accessToken(),UUID.fromString(row.get("id").toString()),Map.of("status","approved"));
+    community.review(admin.accessToken(),UUID.fromString(row.get("id").toString()),Map.of("status","approved","rights_note",RIGHTS_OK));
     assertEquals("reviewed",new String(storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path).orElseThrow()));
     assertThrows(AuthException.class,()->storage.delete(id(owner),StorageBucket.COMMUNITY_BOOKS,path));
     assertThrows(AuthException.class,()->community.delete(owner.accessToken(),UUID.fromString(row.get("id").toString())));
@@ -222,12 +223,12 @@ class SecurityIntegrationTest {
     AuthResponse owner=user(), reader=user(), admin=user();
     String path=id(owner)+"/s9.txt";
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","texto do envio".getBytes());
-    var row=community.create(owner.accessToken(),Map.of("title","S9","text_path",path,"rights","own_work"));
+    var row=community.create(owner.accessToken(),Map.of("title","S9","author","Autora Teste","text_path",path,"rights","own_work"));
     UUID submission=UUID.fromString(row.get("id").toString());
     assertThrows(AuthException.class,()->community.text(reader.accessToken(),submission),"pendente: só dono e moderação");
     assertEquals("texto do envio",community.text(owner.accessToken(),submission));
     jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
-    community.review(admin.accessToken(),submission,Map.of("status","approved"));
+    community.review(admin.accessToken(),submission,Map.of("status","approved","rights_note",RIGHTS_OK));
     var listed=community.list(null,"approved").stream().filter(r->submission.toString().equals(String.valueOf(r.get("id")))).findFirst().orElseThrow();
     assertFalse(listed.containsKey("user_id"));
     assertFalse(listed.containsKey("text_path"));
@@ -304,7 +305,7 @@ class SecurityIntegrationTest {
   @Test void deleteWaitingForAnApprovalCannotRemoveTheApprovedSubmission() throws Exception {
     AuthResponse owner=user();String path=id(owner)+"/approval.txt";
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","text".getBytes());
-    var submission=community.create(owner.accessToken(),Map.of("title","Book","text_path",path,"rights","own_work"));
+    var submission=community.create(owner.accessToken(),Map.of("title","Book","author","Autora Teste","text_path",path,"rights","own_work"));
     UUID submissionId=UUID.fromString(submission.get("id").toString());
     try(var connection=dataSource.getConnection();ExecutorService executor=Executors.newSingleThreadExecutor()) {
       connection.setAutoCommit(false);
@@ -331,7 +332,7 @@ class SecurityIntegrationTest {
     new TransactionTemplate(transactions).executeWithoutResult(status->{
       jdbc.sql("set local role storyverse_api").update();
       storage.write(uid,StorageBucket.COMMUNITY_BOOKS,path,"text/plain","runtime".getBytes());
-      var row=community.create(user.accessToken(),Map.of("title","Runtime","text_path",path,"rights","own_work"));
+      var row=community.create(user.accessToken(),Map.of("title","Runtime","author","Autora Teste","text_path",path,"rights","own_work"));
       assertEquals(uid.toString(),row.get("user_id").toString());
       assertTrue(storage.readFor(uid,StorageBucket.COMMUNITY_BOOKS,path).isPresent());
       assertEquals(0,((Number)rpc.call(uid,"reading_heartbeat",Map.of("p_active",true))).intValue());
@@ -353,7 +354,7 @@ class SecurityIntegrationTest {
       assertTrue(giftCounts.stream().noneMatch(giftRow -> uid.toString().equals(String.valueOf(giftRow.get("user_id")))));
       assertEquals(3,((List<?>)rpc.call(uid,"ai_pack_catalog",Map.of())).size());
       assertEquals(0,((Number)((List<Map<String,Object>>)rpc.call(uid,"my_ai_quota",Map.of("p_daily_limit",50))).get(0).get("credits")).intValue());
-      auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null,null));
+      auth.updateProfile(user.accessToken(),new ProfileUpdateRequest("Runtime","avatar-2",null,null,null,null));
       auth.logout(user.refreshToken(),user.accessToken());
     });
     assertThrows(AuthException.class,()->auth.authenticate(user.accessToken()));
@@ -474,7 +475,7 @@ class SecurityIntegrationTest {
         values(:id,:uid,'Stolen','own_work',:path,'pending')
         """).param("id",submissionId).param("uid",id(author)).param("path",path).update();
     AuthException rejected=assertThrows(AuthException.class,
-        () -> community.review(admin.accessToken(),submissionId,Map.of("status","approved")));
+        () -> community.review(admin.accessToken(),submissionId,Map.of("status","approved","rights_note",RIGHTS_OK)));
     assertEquals(409,rejected.status());
     assertEquals("pending",jdbc.sql("select status from public.book_submissions where id=:id").param("id",submissionId).query(String.class).single());
   }
@@ -547,27 +548,39 @@ class SecurityIntegrationTest {
   @Test void profileThemeMustBeAllowedAndCanBeCleared() {
     AuthResponse session = user();
     UserResponse themed = auth.updateProfile(session.accessToken(),
-        new ProfileUpdateRequest("Leitor", null, null, null, "rosa"));
+        new ProfileUpdateRequest("Leitor", null, null, null, null, "rosa"));
     assertEquals("rosa", themed.user_metadata().get("profile_theme"));
     assertThrows(AuthException.class,
-        () -> auth.updateProfile(session.accessToken(), new ProfileUpdateRequest("Leitor", null, null, null, "hex-ff00ff")));
+        () -> auth.updateProfile(session.accessToken(), new ProfileUpdateRequest("Leitor", null, null, null, null, "hex-ff00ff")));
     UserResponse gold = auth.updateProfile(session.accessToken(),
-        new ProfileUpdateRequest("Leitor", null, null, null, "dourado"));
+        new ProfileUpdateRequest("Leitor", null, null, null, null, "dourado"));
     assertFalse(gold.user_metadata().containsKey("profile_theme"));
     UserResponse unchanged = auth.updateProfile(session.accessToken(),
-        new ProfileUpdateRequest("Leitor", null, null, null, null));
+        new ProfileUpdateRequest("Leitor", null, null, null, null, null));
     assertFalse(unchanged.user_metadata().containsKey("profile_theme"));
   }
 
   @Test void profileUpdateKeepsUnchangedFieldsAndClearsRemovedOnes() {
     AuthResponse session=user();
     UserResponse updated=auth.updateProfile(session.accessToken(),
-        new ProfileUpdateRequest("Novo nome","avatar-1","https://example.test/photo","https://example.test/cover",null));
+        new ProfileUpdateRequest("Novo nome","avatar-1","https://example.test/photo","https://example.test/cover",null,null));
     assertEquals("Novo nome",updated.user_metadata().get("name"));
     assertEquals("avatar-1",updated.user_metadata().get("avatar"));
-    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null,null));
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null,null,null));
     assertFalse(updated.user_metadata().containsKey("photo"));
     assertFalse(updated.user_metadata().containsKey("cover"));
+  }
+  @Test void profileBioIsKeptWhenOmittedAndClearedWhenEmpty() {
+    AuthResponse session=user();
+    UserResponse updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Nome",null,null,null,"  Leitora  de fantasia  ",null));
+    assertEquals("Leitora de fantasia",updated.user_metadata().get("bio"));
+    // App antigo não manda a biografia: fica a que estava.
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Nome",null,null,null,null,null));
+    assertEquals("Leitora de fantasia",updated.user_metadata().get("bio"));
+    assertEquals(400,assertThrows(AuthException.class,()->auth.updateProfile(session.accessToken(),
+        new ProfileUpdateRequest("Nome",null,null,null,"a".repeat(161),null))).status());
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Nome",null,null,null," ",null));
+    assertFalse(updated.user_metadata().containsKey("bio"));
   }
   @Test void rolesDriveCapabilitiesAndAdminAudit() {
     AuthResponse user=user(); UUID userId=id(user);
@@ -643,7 +656,7 @@ class SecurityIntegrationTest {
     storage.write(id(owner),StorageBucket.COMMUNITY_BOOKS,path,"text/plain","bye".getBytes());
     storage.write(id(owner),StorageBucket.PROFILE_MEDIA,coverPath,"image/jpeg",
         new byte[]{(byte)0xFF,(byte)0xD8,(byte)0xFF,0x00});
-    var submission=community.create(owner.accessToken(),Map.of("title","Bye","text_path",path,"rights","own_work","cover_url",coverUrl));
+    var submission=community.create(owner.accessToken(),Map.of("title","Bye","author","Autora Teste","text_path",path,"rights","own_work","cover_url",coverUrl));
     UUID submissionId=UUID.fromString(submission.get("id").toString());
     assertTrue(storage.readFor(id(owner),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
     assertTrue(storage.readFor(id(owner),StorageBucket.PROFILE_MEDIA,coverPath).isPresent());

@@ -1,8 +1,12 @@
 package com.storyverse.api.common;
 
+import java.sql.Array;
 import java.sql.Date;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -11,10 +15,27 @@ import java.util.Optional;
 import org.springframework.jdbc.core.ColumnMapRowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-/** Ajuda a ler linhas como mapas (colunas em snake_case) com datas viram texto ISO. */
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * Ajuda a ler linhas como mapas (colunas em snake_case) com datas viram texto ISO. Colunas json/jsonb
+ * (ex.: {@code cosmetics}) viram mapas e listas comuns, para sair na resposta como objeto JSON.
+ */
 public final class DbRows {
 
-	private static final ColumnMapRowMapper MAPPER = new ColumnMapRowMapper();
+	private static final JsonMapper JSON = JsonMapper.builder().build();
+
+	private static final ColumnMapRowMapper MAPPER = new ColumnMapRowMapper() {
+		@Override
+		protected Object getColumnValue(ResultSet rs, int index) throws SQLException {
+			String type = rs.getMetaData().getColumnTypeName(index);
+			if ("jsonb".equals(type) || "json".equals(type)) {
+				String text = rs.getString(index);
+				return text == null ? null : JSON.readValue(text, Object.class);
+			}
+			return super.getColumnValue(rs, index);
+		}
+	};
 
 	private DbRows() {
 	}
@@ -49,6 +70,16 @@ public final class DbRows {
 		if (value instanceof Timestamp timestamp) return timestamp.toInstant().toString();
 		if (value instanceof Date date) return date.toLocalDate().toString();
 		if (value instanceof Time time) return time.toLocalTime().toString();
+		if (value instanceof Array array) return arrayToList(array);
 		return value;
+	}
+
+	/** Arrays do Postgres (ex.: text[]) viram listas, para o JSON sair como array. */
+	private static List<Object> arrayToList(Array array) {
+		try {
+			return Arrays.asList((Object[]) array.getArray());
+		} catch (SQLException exception) {
+			throw new IllegalStateException("Não foi possível ler um array do banco.", exception);
+		}
 	}
 }

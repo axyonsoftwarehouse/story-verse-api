@@ -24,6 +24,7 @@ import com.storyverse.api.account.AccountService;
 import com.storyverse.api.auth.AuthException;
 import com.storyverse.api.auth.AuthResponse;
 import com.storyverse.api.auth.AuthService;
+import com.storyverse.api.auth.ProfileUpdateRequest;
 import com.storyverse.api.auth.SignupRequest;
 import com.storyverse.api.common.DbSession;
 import com.storyverse.api.groups.GroupService;
@@ -131,6 +132,15 @@ class SocialIntegrationTest {
 	}
 
 	@Test
+	void profileShowsTheBio() {
+		String ana = person("Ana Bio"), bia = person("Bia Bio");
+		UUID anaId = idOf(ana);
+		assertNull(social.profile(bia, anaId).get("bio"));
+		auth.updateProfile(ana, new ProfileUpdateRequest("Ana Bio", null, null, null, "Leio de tudo um pouco", null));
+		assertEquals("Leio de tudo um pouco", social.profile(bia, anaId).get("bio"));
+	}
+
+	@Test
 	void cannotFollowSelfOrUnknown() {
 		String ana = person("Ana Sozinha");
 		assertEquals(400, assertThrows(AuthException.class, () -> social.follow(ana, idOf(ana))).status());
@@ -178,6 +188,46 @@ class SocialIntegrationTest {
 		assertEquals(List.of(), social.search(ana, "example.invalid"), "e-mail não é buscável");
 		assertEquals(List.of(), social.search(ana, "%"), "curinga do LIKE é texto comum");
 	}
+
+	@Test
+	void listsBringTheProfileCover() {
+		String tag = UUID.randomUUID().toString().substring(0, 8);
+		String ana = person("Ana Capa " + tag);
+		String bia = person("Bia Segue " + tag);
+		String caio = person("Caio Olha " + tag);
+		UUID anaId = idOf(ana);
+		String capa = "https://api.example.test/api/v1/storage/public/profile-media/" + anaId + "/cover.png";
+		setCover(anaId, capa);
+
+		assertEquals(capa, social.search(caio, tag).get(0).get("cover"), "a busca devolve a capa para o card");
+		assertNull(social.search(caio, tag).get(0).get("shop_cover"), "sem item da loja, nenhuma capa comprada");
+
+		social.follow(bia, anaId);
+		List<Map<String, Object>> seguindo = social.following(bia, idOf(bia), null, null);
+		assertEquals(capa, seguindo.get(0).get("cover"), "a lista de quem a pessoa segue também traz a capa");
+
+		// Arquivo fora da pasta da pessoa não vale: a capa tem de ser mídia dela.
+		setCover(anaId, "https://outro.example/qualquer.png");
+		assertNull(social.search(caio, tag).get(0).get("cover"), "capa de outro host é ignorada");
+
+		// Perfil privado: quem não segue não vê a capa; quem segue e a própria pessoa continuam vendo.
+		setCover(anaId, capa);
+		social.savePrivacy(ana, Map.of("private", true));
+		assertEquals(Boolean.TRUE, social.search(caio, tag).get(0).get("is_private"));
+		assertNull(social.search(caio, tag).get(0).get("cover"), "perfil privado esconde a capa de quem não segue");
+		assertEquals(capa, social.search(bia, tag).get(0).get("cover"), "quem segue continua vendo a capa");
+		assertEquals(capa, social.profile(ana, anaId).get("cover"), "o dono vê a própria capa no perfil");
+	}
+
+	/** Grava a capa enviada no metadado da conta, como o site faz pelo "Editar perfil". */
+	private void setCover(UUID userId, String url) {
+		jdbc.sql("""
+				update auth.users
+				   set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('cover', :url)
+				 where id = :id
+				""").param("url", url).param("id", userId).update();
+	}
+
 
 	@Test
 	void suggestionsComeFromSharedGroupsAndFollowers() {
@@ -318,5 +368,123 @@ class SocialIntegrationTest {
 		Map<String, Object> bell = groups.notifications(ana);
 		assertEquals(List.of(), bell.get("items"));
 		assertEquals(0, ((Number) bell.get("unread")).intValue());
+	}
+
+	@SuppressWarnings("unchecked")
+	List<Map<String, Object>> bellOf(String token, String kind) {
+		List<Map<String, Object>> items = (List<Map<String, Object>>) groups.notifications(token).get("items");
+		return items.stream().filter(n -> kind.equals(n.get("kind"))).toList();
+	}
+
+	@Test
+	void privateProfileTurnsFollowIntoRequest() {
+		String ana = person("Ana Privada"), bia = person("Bia Pede");
+		UUID anaId = idOf(ana), biaId = idOf(bia);
+		social.follow(person("Caio Antigo"), anaId);
+
+		Map<String, Object> saved = social.savePrivacy(ana, Map.of("private", true));
+		assertEquals(Boolean.TRUE, saved.get("is_private"));
+		assertEquals(Boolean.TRUE, saved.get("show_reading"), "mudar só o privado não mexe nas leituras");
+
+		Map<String, Object> asked = social.follow(bia, anaId);
+		assertEquals(Boolean.FALSE, asked.get("is_following"));
+		assertEquals(Boolean.TRUE, asked.get("requested"));
+		assertEquals(1L, number(asked, "followers"), "o pedido não conta como seguidor");
+		Map<String, Object> found = social.search(bia, "Ana Privada").get(0);
+		assertEquals(Boolean.TRUE, found.get("is_private"), "as listas já dizem que o perfil é privado");
+		assertEquals(Boolean.TRUE, found.get("requested"));
+		// Pedir de novo não duplica nem repete o aviso.
+		social.follow(bia, anaId);
+
+		Map<String, Object> seen = social.profile(bia, anaId);
+		assertEquals(Boolean.TRUE, seen.get("is_private"));
+		assertEquals(Boolean.FALSE, seen.get("content_visible"));
+		assertEquals(Boolean.TRUE, seen.get("reading_hidden"));
+		assertEquals(List.of(), social.followers(bia, anaId, null, null), "lista de seguidores fechada para quem não segue");
+		assertEquals(List.of(), social.following(bia, anaId, null, null));
+
+		assertEquals(1L, number(social.profile(ana, anaId), "pending_requests"));
+		assertEquals(List.of(biaId), social.requests(ana, null, null).stream().map(r -> r.get("id")).toList());
+		assertEquals(1, bellOf(ana, "follow_request").size());
+		assertTrue(bellOf(ana, "follow").stream().noneMatch(n -> biaId.equals(n.get("actor_id"))), "pedido não avisa como se já seguisse");
+
+		social.acceptRequest(ana, biaId);
+		Map<String, Object> after = social.profile(bia, anaId);
+		assertEquals(Boolean.TRUE, after.get("is_following"));
+		assertEquals(Boolean.FALSE, after.get("requested"));
+		assertEquals(Boolean.TRUE, after.get("content_visible"));
+		assertEquals(2, social.followers(bia, anaId, null, null).size());
+		assertEquals(0, bellOf(ana, "follow_request").size(), "o aviso do pedido sai do sininho");
+		assertEquals(1, bellOf(bia, "follow_accepted").size());
+		assertEquals(404, assertThrows(AuthException.class, () -> social.acceptRequest(ana, biaId)).status());
+	}
+
+	@Test
+	void requestCanBeDeclinedOrCancelled() {
+		String ana = person("Ana Recusa"), bia = person("Bia Recusada");
+		UUID anaId = idOf(ana), biaId = idOf(bia);
+		social.savePrivacy(ana, Map.of("private", true));
+
+		social.follow(bia, anaId);
+		social.declineRequest(ana, biaId);
+		assertEquals(List.of(), social.requests(ana, null, null));
+		assertEquals(Boolean.FALSE, social.profile(bia, anaId).get("requested"));
+		assertEquals(0, bellOf(bia, "follow_accepted").size(), "recusa não avisa");
+
+		social.follow(bia, anaId);
+		social.unfollow(bia, anaId);
+		assertEquals(List.of(), social.requests(ana, null, null), "deixar de seguir cancela o pedido");
+		assertEquals(0, bellOf(ana, "follow_request").size());
+	}
+
+	@Test
+	void goingPublicAcceptsPendingRequests() {
+		String ana = person("Ana Abre"), bia = person("Bia Espera");
+		UUID anaId = idOf(ana), biaId = idOf(bia);
+		social.savePrivacy(ana, Map.of("private", true));
+		social.follow(bia, anaId);
+
+		Map<String, Object> saved = social.savePrivacy(ana, Map.of("private", false));
+		assertEquals(Boolean.FALSE, saved.get("is_private"));
+		assertEquals(1, ((Number) saved.get("accepted_requests")).intValue());
+		assertEquals(Boolean.TRUE, social.profile(bia, anaId).get("is_following"));
+		assertEquals(List.of(), social.requests(ana, null, null));
+
+		// Público de novo: seguir é direto.
+		String caio = person("Caio Direto");
+		assertEquals(Boolean.TRUE, social.follow(caio, anaId).get("is_following"));
+		assertEquals(400, assertThrows(AuthException.class, () -> social.savePrivacy(ana, Map.of())).status());
+		assertEquals(400, assertThrows(AuthException.class, () -> social.savePrivacy(ana, Map.of("private", "sim"))).status());
+	}
+
+	@Test
+	void privateProfileCannotBeFollowedDirectlyInTheDatabase() {
+		String ana = person("Ana Tranca"), bia = person("Bia Fura");
+		UUID anaId = idOf(ana), biaId = idOf(bia);
+		social.savePrivacy(ana, Map.of("private", true));
+
+		assertThrows(RuntimeException.class, () -> asRuntime(() -> {
+			DbSession.setUser(jdbc, biaId);
+			return jdbc.sql("insert into public.user_follows (follower_id, followee_id) values (:f, :t)")
+					.param("f", biaId).param("t", anaId).update();
+		}));
+		// Nem cria pedido em nome de outra pessoa.
+		assertThrows(RuntimeException.class, () -> asRuntime(() -> {
+			DbSession.setUser(jdbc, biaId);
+			return jdbc.sql("insert into public.follow_requests (requester_id, target_id) values (:r, :t)")
+					.param("r", anaId).param("t", biaId).update();
+		}));
+		// Pedido próprio pode; aceitar é só da dona do perfil.
+		int created = asRuntime(() -> {
+			DbSession.setUser(jdbc, biaId);
+			return jdbc.sql("insert into public.follow_requests (requester_id, target_id) values (:r, :t)")
+					.param("r", biaId).param("t", anaId).update();
+		});
+		assertEquals(1, created);
+		boolean acceptedByBia = asRuntime(() -> {
+			DbSession.setUser(jdbc, biaId);
+			return jdbc.sql("select public.social_accept_follow_request(:r)").param("r", biaId).query(Boolean.class).single();
+		});
+		assertFalse(acceptedByBia);
 	}
 }
