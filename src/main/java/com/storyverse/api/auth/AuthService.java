@@ -243,6 +243,7 @@ public class AuthService {
 		putMetadata(metadata, "avatar", request.avatar(), 60);
 		putMetadata(metadata, "photo", request.photo(), MAX_URL);
 		putMetadata(metadata, "cover", request.cover(), MAX_URL);
+		ProfileThemes.putIfPresent(metadata, request.profileTheme());
 		users.updateMetadata(user.id(), metadata);
 		User updated = users.findById(user.id()).orElseThrow(() -> new AuthException(401, "Sessão inválida."));
 		return UserResponse.from(updated);

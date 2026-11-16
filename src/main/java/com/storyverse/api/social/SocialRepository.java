@@ -25,6 +25,12 @@ public class SocialRepository {
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 			       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
 			            then u.raw_user_meta_data->>'photo' end as photo,
+			       case
+			         when trim(coalesce(u.raw_user_meta_data->>'profile_theme', '')) = '' then 'dourado'
+			         when trim(u.raw_user_meta_data->>'profile_theme') in ('dourado', 'esmeralda', 'rosa', 'oceano', 'lavanda')
+			           then trim(u.raw_user_meta_data->>'profile_theme')
+			         else 'dourado'
+			       end as profile_theme,
 			       exists (select 1 from public.user_follows f where f.follower_id = :viewer and f.followee_id = u.id) as is_following,
 			       exists (select 1 from public.user_follows f where f.follower_id = u.id and f.followee_id = :viewer) as follows_me
 			""";

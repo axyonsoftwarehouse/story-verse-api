@@ -116,6 +116,7 @@ class SocialIntegrationTest {
 		assertEquals(Boolean.TRUE, mutual.get("follows_me"));
 
 		assertEquals(Boolean.TRUE, social.profile(ana, anaId).get("is_me"));
+		assertEquals("dourado", social.profile(bia, anaId).get("profile_theme"));
 
 		List<Map<String, Object>> followers = social.followers(ana, biaId, null, null);
 		assertEquals(1, followers.size());
