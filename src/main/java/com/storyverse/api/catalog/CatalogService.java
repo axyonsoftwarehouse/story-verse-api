@@ -29,6 +29,8 @@ import com.storyverse.api.storage.StorageService;
 @Service
 public class CatalogService {
 
+	static final int BULK_LIMIT = 200;
+
 	private final CatalogRepository repository;
 	private final AuthService auth;
 	private final AuthzService authz;
@@ -112,6 +114,7 @@ public class CatalogService {
 		String originalType = required(body, "originalContentType");
 		String rights = required(body, "rights");
 		validateRights(rights);
+		if ("published".equals(text(body, "status"))) requireJustification(text(body, "rightsNote"));
 		if (!originalPath.startsWith(actor + "/")) {
 			throw new AuthException(400, "O arquivo precisa estar na sua pasta do catálogo.");
 		}
@@ -182,6 +185,10 @@ public class CatalogService {
 		if (!List.of("draft", "published", "hidden", "archived").contains(status)) {
 			throw new AuthException(400, "Situação inválida.");
 		}
+		String rightsNote = value(body, "rightsNote", existingString(existing, "rights_note"));
+		if ("published".equals(status) && !"published".equals(existingString(existing, "status"))) {
+			requireJustification(rightsNote);
+		}
 		Timestamp publishedAt = timestamp(existing.get("published_at"));
 		if ("published".equals(status) && publishedAt == null) publishedAt = Timestamp.from(Instant.now());
 		Map<String, Object> params = new LinkedHashMap<>();
@@ -197,7 +204,7 @@ public class CatalogService {
 		params.put("page_count", body.containsKey("pageCount")
 				? integer(body, "pageCount", 0) : existing.get("page_count"));
 		params.put("rights", rights);
-		params.put("rights_note", value(body, "rightsNote", existingString(existing, "rights_note")));
+		params.put("rights_note", rightsNote);
 		params.put("text_path", existing.get("text_path"));
 		params.put("original_path", existing.get("original_path"));
 		params.put("original_content_type", existing.get("original_content_type"));
@@ -274,11 +281,55 @@ public class CatalogService {
 		if (!List.of("published", "hidden", "archived", "draft").contains(status)) {
 			throw new AuthException(400, "Situação inválida.");
 		}
+		if ("published".equals(status)) {
+			Map<String, Object> existing = repository.findById(id)
+					.orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
+			if (!"published".equals(existingString(existing, "status"))) {
+				requireJustification(existingString(existing, "rights_note"));
+			}
+		}
 		Map<String, Object> updated = repository.setStatus(id, status, "published".equals(status))
 				.orElseThrow(() -> new AuthException(404, "Livro não encontrado."));
 		authz.audit(actor, "catalog." + status, "catalog_book", id.toString(),
 				Map.of("bookKey", String.valueOf(updated.get("book_key"))));
 		return updated;
+	}
+
+	/**
+	 * Oculta ou arquiva vários livros de uma vez (V1): a curadoria filtra por autor ou origem na
+	 * lista do admin e aplica a todos. Publicar em lote não existe, porque cada livro exige
+	 * justificativa de direitos.
+	 */
+	@Transactional
+	public Map<String, Object> setStatusBulk(String token, Map<String, Object> body) {
+		UUID actor = moderator(token);
+		String status = text(body, "status");
+		if (!List.of("hidden", "archived").contains(status)) {
+			throw new AuthException(400, "Em lote, só dá para ocultar ou arquivar.");
+		}
+		if (!(body.get("ids") instanceof List<?> rawIds) || rawIds.isEmpty()) {
+			throw new AuthException(400, "Escolha ao menos um livro.");
+		}
+		if (rawIds.size() > BULK_LIMIT) {
+			throw new AuthException(400, "No máximo " + BULK_LIMIT + " livros por vez.");
+		}
+		java.util.LinkedHashSet<UUID> ids = new java.util.LinkedHashSet<>();
+		for (Object raw : rawIds) {
+			try {
+				ids.add(UUID.fromString(String.valueOf(raw)));
+			} catch (IllegalArgumentException exception) {
+				throw new AuthException(400, "Identificador de livro inválido.");
+			}
+		}
+		List<String> changed = new java.util.ArrayList<>();
+		for (UUID id : ids) {
+			repository.setStatus(id, status, false).ifPresent(updated -> {
+				changed.add(String.valueOf(updated.get("book_key")));
+				authz.audit(actor, "catalog." + status, "catalog_book", id.toString(),
+						Map.of("bookKey", String.valueOf(updated.get("book_key")), "bulk", true));
+			});
+		}
+		return Map.of("status", status, "changed", changed.size(), "requested", ids.size());
 	}
 
 	@Transactional
@@ -322,6 +373,11 @@ public class CatalogService {
 		storage.write(actor, StorageBucket.CATALOG_BOOKS, path, "text/plain",
 				extracted.text().getBytes(StandardCharsets.UTF_8));
 		return path;
+	}
+
+	private static void requireJustification(String note) {
+		String problem = RightsJustification.problem(note);
+		if (problem != null) throw new AuthException(400, problem);
 	}
 
 	private static void validateRights(String rights) {

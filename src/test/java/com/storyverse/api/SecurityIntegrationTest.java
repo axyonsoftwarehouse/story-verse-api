@@ -28,6 +28,7 @@ import com.storyverse.api.common.RateLimitGate;
 @SpringBootTest
 @EnabledIfEnvironmentVariable(named="STORYVERSE_TEST_DB_URL", matches=".+")
 class SecurityIntegrationTest {
+  static final String RIGHTS_OK="Obra própria, enviada pela autora";
   static final Path media;
   static { try { media = Files.createTempDirectory("storyverse-security-it-"); } catch (Exception e) { throw new RuntimeException(e); } }
   @DynamicPropertySource static void configure(DynamicPropertyRegistry properties) {
@@ -161,7 +162,7 @@ class SecurityIntegrationTest {
     assertThrows(AuthException.class,()->storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path));
     jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
     assertTrue(storage.readFor(id(admin),StorageBucket.COMMUNITY_BOOKS,path).isPresent());
-    community.review(admin.accessToken(),UUID.fromString(row.get("id").toString()),Map.of("status","approved"));
+    community.review(admin.accessToken(),UUID.fromString(row.get("id").toString()),Map.of("status","approved","rights_note",RIGHTS_OK));
     assertEquals("reviewed",new String(storage.readFor(id(reader),StorageBucket.COMMUNITY_BOOKS,path).orElseThrow()));
     assertThrows(AuthException.class,()->storage.delete(id(owner),StorageBucket.COMMUNITY_BOOKS,path));
     assertThrows(AuthException.class,()->community.delete(owner.accessToken(),UUID.fromString(row.get("id").toString())));
@@ -227,7 +228,7 @@ class SecurityIntegrationTest {
     assertThrows(AuthException.class,()->community.text(reader.accessToken(),submission),"pendente: só dono e moderação");
     assertEquals("texto do envio",community.text(owner.accessToken(),submission));
     jdbc.sql("insert into public.user_roles(user_id,role) values(:id,'superadmin')").param("id",id(admin)).update();
-    community.review(admin.accessToken(),submission,Map.of("status","approved"));
+    community.review(admin.accessToken(),submission,Map.of("status","approved","rights_note",RIGHTS_OK));
     var listed=community.list(null,"approved").stream().filter(r->submission.toString().equals(String.valueOf(r.get("id")))).findFirst().orElseThrow();
     assertFalse(listed.containsKey("user_id"));
     assertFalse(listed.containsKey("text_path"));
@@ -474,7 +475,7 @@ class SecurityIntegrationTest {
         values(:id,:uid,'Stolen','own_work',:path,'pending')
         """).param("id",submissionId).param("uid",id(author)).param("path",path).update();
     AuthException rejected=assertThrows(AuthException.class,
-        () -> community.review(admin.accessToken(),submissionId,Map.of("status","approved")));
+        () -> community.review(admin.accessToken(),submissionId,Map.of("status","approved","rights_note",RIGHTS_OK)));
     assertEquals(409,rejected.status());
     assertEquals("pending",jdbc.sql("select status from public.book_submissions where id=:id").param("id",submissionId).query(String.class).single());
   }

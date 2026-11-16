@@ -60,7 +60,9 @@ class AdminIntegrationTest {
     // runtime é validado pelo Compose/VPS, não por este teste.
     properties.add("app.security.require-runtime-role", () -> "false");
   }
+  static final String RIGHTS_OK="Obra própria, enviada pela autora";
   @Autowired MockMvc mvc;
+  @Autowired com.storyverse.api.catalog.CatalogService catalog;
   @Autowired AuthService auth;
   @Autowired AuthzService authz;
   @Autowired RpcService rpc;
@@ -123,7 +125,7 @@ class AdminIntegrationTest {
     Submission submission=pendingSubmission();
     AuthResponse moderator=userWithRole("moderator");
     assertTrue(storage.readFor(id(moderator),StorageBucket.COMMUNITY_BOOKS,submission.path()).isPresent());
-    assertDoesNotThrow(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved")));
+    assertDoesNotThrow(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved","rights_note",RIGHTS_OK)));
     assertEquals("approved",jdbc.sql("select status from public.book_submissions where id=:id").param("id",submission.id()).query(String.class).single());
   }
   @Test void approvalNeedsRealTitleAndAuthorAndEditsReachTheCatalog() {
@@ -131,20 +133,60 @@ class AdminIntegrationTest {
     AuthResponse moderator=userWithRole("moderator");
     // Título vindo do nome do arquivo e autor de uma letra: não publica (U1).
     jdbc.sql("update public.book_submissions set title='Livro_FINAL.indd', author='V' where id=:id").param("id",submission.id()).update();
-    assertEquals(400,status(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved"))));
+    assertEquals(400,status(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved","rights_note",RIGHTS_OK))));
     assertEquals(400,status(()->community.updateDetails(moderator.accessToken(),submission.id(),Map.of("title","Livro_FINAL.indd"))));
     assertEquals(403,status(()->community.updateDetails(submission.author().accessToken(),submission.id(),Map.of("title","Livro Certo","author","Autora Certa"))));
     community.updateDetails(moderator.accessToken(),submission.id(),Map.of("title","Livro Certo","author","Autora Certa"));
-    community.review(moderator.accessToken(),submission.id(),Map.of("status","approved"));
+    community.review(moderator.accessToken(),submission.id(),Map.of("status","approved","rights_note",RIGHTS_OK));
     // Já publicado: a correção chega à cópia do catálogo.
     community.updateDetails(moderator.accessToken(),submission.id(),Map.of("title","Livro Corrigido"));
     assertEquals("Livro Corrigido — Autora Certa",jdbc.sql("select title||' — '||author from public.catalog_books where submission_id=:id")
         .param("id",submission.id()).query(String.class).single());
   }
+  @Test void approvalNeedsRightsJustificationAndCopiesItToTheCatalog() {
+    Submission submission=pendingSubmission();
+    AuthResponse moderator=userWithRole("moderator");
+    // V1: sem justificativa (ou curta demais) não publica.
+    assertEquals(400,status(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved"))));
+    assertEquals(400,status(()->community.review(moderator.accessToken(),submission.id(),Map.of("status","approved","rights_note","ok"))));
+    // Recusar não pede justificativa.
+    Submission other=pendingSubmission();
+    assertDoesNotThrow(()->community.review(moderator.accessToken(),other.id(),Map.of("status","rejected")));
+    community.review(moderator.accessToken(),submission.id(),Map.of("status","approved","rights_note",RIGHTS_OK));
+    assertEquals(RIGHTS_OK,jdbc.sql("select rights_note from public.catalog_books where submission_id=:id")
+        .param("id",submission.id()).query(String.class).single());
+  }
+  @Test void catalogBulkHidesAndPublishingNeedsJustification() {
+    String tag=UUID.randomUUID().toString().substring(0,8);
+    UUID a=UUID.randomUUID(), b=UUID.randomUUID();
+    insertPublicBook(a,"cat:"+a,"Lote A "+tag,OffsetDateTime.now());
+    insertPublicBook(b,"cat:"+b,"Lote B "+tag,OffsetDateTime.now());
+    AuthResponse moderator=userWithRole("moderator");
+    AuthResponse reader=user();
+    try {
+      assertEquals(403,status(()->catalog.setStatusBulk(reader.accessToken(),Map.of("ids",List.of(a.toString()),"status","hidden"))));
+      assertEquals(400,status(()->catalog.setStatusBulk(moderator.accessToken(),Map.of("ids",List.of(a.toString()),"status","published"))));
+      assertEquals(400,status(()->catalog.setStatusBulk(moderator.accessToken(),Map.of("ids",List.of(),"status","hidden"))));
+      assertEquals(400,status(()->catalog.setStatusBulk(moderator.accessToken(),Map.of("ids",List.of("x"),"status","hidden"))));
+      var result=catalog.setStatusBulk(moderator.accessToken(),
+          Map.of("ids",List.of(a.toString(),b.toString(),UUID.randomUUID().toString()),"status","hidden"));
+      assertEquals(2,result.get("changed"));
+      assertEquals(2,jdbc.sql("select count(*) from public.catalog_books where id in (:a,:b) and status='hidden'")
+          .param("a",a).param("b",b).query(Integer.class).single());
+      // Voltar a publicar um a um exige justificativa de direitos.
+      assertEquals(400,status(()->catalog.setStatus(moderator.accessToken(),a,"published")));
+      jdbc.sql("update public.catalog_books set rights_note=:n where id=:id").param("n",RIGHTS_OK).param("id",a).update();
+      assertEquals("published",catalog.setStatus(moderator.accessToken(),a,"published").get("status"));
+      // Editar um livro já publicado continua possível sem justificativa nova.
+      assertDoesNotThrow(()->catalog.update(moderator.accessToken(),a,Map.of("title","Lote A editado "+tag)));
+    } finally {
+      jdbc.sql("delete from public.catalog_books where id=:a or id=:b").param("a",a).param("b",b).update();
+    }
+  }
   @Test void supportCannotReviewSubmissions() {
     Submission submission=pendingSubmission();
     AuthResponse support=userWithRole("support");
-    assertEquals(403,status(()->community.review(support.accessToken(),submission.id(),Map.of("status","approved"))));
+    assertEquals(403,status(()->community.review(support.accessToken(),submission.id(),Map.of("status","approved","rights_note",RIGHTS_OK))));
     assertThrows(AuthException.class,()->storage.readFor(id(support),StorageBucket.COMMUNITY_BOOKS,submission.path()));
   }
   @Test void moderatorSeesOthersPendingUnderRls() {
@@ -193,7 +235,7 @@ class AdminIntegrationTest {
     var row=community.create(author.accessToken(),Map.of("title","Livro","author","Autora Teste","text_path",textPath,"rights","own_work","cover_url",coverUrl(coverPath)));
     UUID submission=UUID.fromString(row.get("id").toString());
     AuthResponse moderator=userWithRole("moderator");
-    community.review(moderator.accessToken(),submission,Map.of("status","approved"));
+    community.review(moderator.accessToken(),submission,Map.of("status","approved","rights_note",RIGHTS_OK));
     assertDoesNotThrow(()->community.delete(moderator.accessToken(),submission));
     assertEquals(0,jdbc.sql("select count(*) from public.book_submissions where id=:id").param("id",submission).query(Integer.class).single());
     assertEquals(1,jdbc.sql("select count(*) from public.admin_audit_log where action='book_submission.delete' and target_id=:id and actor_id=:actor")
@@ -1378,7 +1420,7 @@ class AdminIntegrationTest {
       case "forum.replies" -> getStatus(bearer, "/api/v1/admin/forum/replies");
       case "acervo.review" -> {
         UUID submission = pendingSubmission().id();
-        yield patchStatus(bearer, "/api/v1/community/submissions/" + submission, "{\"status\":\"approved\"}");
+        yield patchStatus(bearer, "/api/v1/community/submissions/" + submission, "{\"status\":\"approved\",\"rights_note\":\"" + RIGHTS_OK + "\"}");
       }
       default -> throw new IllegalArgumentException(endpoint);
     };
