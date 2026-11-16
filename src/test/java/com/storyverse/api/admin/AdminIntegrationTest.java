@@ -1420,7 +1420,7 @@ class AdminIntegrationTest {
       case "forum.replies" -> getStatus(bearer, "/api/v1/admin/forum/replies");
       case "acervo.review" -> {
         UUID submission = pendingSubmission().id();
-        yield patchStatus(bearer, "/api/v1/community/submissions/" + submission, "{\"status\":\"approved\"}");
+        yield patchStatus(bearer, "/api/v1/community/submissions/" + submission, "{\"status\":\"approved\",\"rights_note\":\"" + RIGHTS_OK + "\"}");
       }
       default -> throw new IllegalArgumentException(endpoint);
     };
