@@ -1145,13 +1145,16 @@ class GroupIntegrationTest {
 	}
 
 	@Test
-	void editingIsOnlyForRoleplayAndStopsWhenTheStoryBecomesABook() {
+	void editingWorksInAnyGroupAndStopsWhenTheStoryBecomesABook() {
 		narrator.useWriter((system, history) -> "*Silêncio.*");
 		try {
+			// Chat comum: o autor corrige o próprio texto (era 400 "só no roleplay" antes do cartão).
 			String owner = member();
 			UUID chat = id(newGroup(owner, "public"));
 			long inChat = messageId(send(owner, chat, "Oi, pessoal"));
-			assertEquals(400, assertThrows(AuthException.class, () -> groups.editMessage(owner, inChat, Map.of("body", "Olá"))).status());
+			Map<String, Object> editedChat = groups.editMessage(owner, inChat, Map.of("body", "Olá, pessoal"));
+			assertEquals("Olá, pessoal", editedChat.get("body"));
+			assertNotNull(editedChat.get("edited_at"), "quem edita no chat comum também vê \"editada\"");
 
 			UUID roleplay = roleplayGroup(owner);
 			long line = messageId(send(owner, roleplay, "*O conde acende a lareira.*"));

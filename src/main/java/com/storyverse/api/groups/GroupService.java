@@ -748,9 +748,7 @@ public class GroupService {
 			throw new AuthException(403, "Só quem escreveu a mensagem pode editar.");
 		}
 		activeMembership(groupId, userId);
-		if (!"roleplay".equals(visibleGroup(userId, groupId).get("mode"))) {
-			throw new AuthException(400, "Só dá para editar mensagens no roleplay.");
-		}
+		// Vale em qualquer grupo (chat comum ou roleplay): a regra do cartão não separa os dois.
 		if (state.get("media_kind") != null) throw new AuthException(400, "Fotos e áudios não podem ser editados.");
 		if (Boolean.TRUE.equals(state.get("edit_expired"))) throw new AuthException(409, "Só dá para editar até 7 dias depois de enviar.");
 		if (books.book(groupId).isPresent()) throw new AuthException(409, "A história já virou livro: as mensagens não mudam mais.");
