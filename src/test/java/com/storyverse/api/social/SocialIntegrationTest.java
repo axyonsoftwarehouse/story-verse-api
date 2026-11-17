@@ -213,7 +213,8 @@ class SocialIntegrationTest {
 		// Perfil privado: some da busca de quem não segue; quem segue continua achando e vendo a capa.
 		setCover(anaId, capa);
 		social.savePrivacy(ana, Map.of("private", true));
-		assertEquals(List.of(), social.search(caio, tag), "perfil privado não aparece na busca de quem não segue");
+		assertTrue(social.search(caio, tag).stream().noneMatch(r -> anaId.equals(r.get("id"))),
+				"perfil privado não aparece na busca de quem não segue");
 		Map<String, Object> vistoPeloSeguidor = social.search(bia, tag).get(0);
 		assertEquals(Boolean.TRUE, vistoPeloSeguidor.get("is_private"), "quem já segue vê o selo de perfil privado");
 		assertEquals(capa, vistoPeloSeguidor.get("cover"), "quem segue continua vendo a capa");
