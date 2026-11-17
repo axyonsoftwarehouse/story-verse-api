@@ -118,13 +118,19 @@ public class SocialRepository {
 				""", Map.of("viewer", viewer, "user", userId, "media", media, "limit", limit, "offset", offset));
 	}
 
-	/** Busca por parte do nome (sem e-mail: ninguém é achado pelo endereço). */
+	/** Busca por parte do nome (sem e-mail: ninguém é achado pelo endereço).
+	 * Perfil privado fica fora da busca — só quem já segue continua achando (critério do cartão de privacidade). */
 	public List<Map<String, Object>> search(UUID viewer, String query, int limit) {
 		String pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
 		return DbRows.list(jdbc, PERSON + """
 				  from auth.users u
 				 where u.id <> :viewer
 				   and coalesce(u.raw_user_meta_data->>'name', '') ilike :pattern
+				   and not (
+				         public.social_is_private(u.id)
+				     and not exists (select 1 from public.user_follows f
+				                      where f.follower_id = :viewer and f.followee_id = u.id)
+				   )
 				 order by (select count(*) from public.user_follows f where f.followee_id = u.id) desc,
 				          u.raw_user_meta_data->>'name', u.id
 				 limit :limit
