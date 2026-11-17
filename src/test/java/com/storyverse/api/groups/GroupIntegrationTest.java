@@ -225,6 +225,39 @@ class GroupIntegrationTest {
 		assertThrows(AuthException.class, () -> groups.joinByInvite(stranger, oldCode));
 	}
 
+	/** Link com prazo e limite de entradas: o contador é consumido no banco, não depois. */
+	@Test
+	void inviteLinkCanExpireAndLimitTheNumberOfEntries() {
+		String owner = member(), friend = member(), late = member();
+		UUID groupId = id(newGroup(owner, "private"));
+
+		// Uso único: entra a primeira pessoa e o link morre.
+		Map<String, Object> single = groups.rotateInvite(owner, groupId, Map.of("maxUses", 1));
+		String singleCode = String.valueOf(single.get("invite_code"));
+		assertEquals(1, ((Number) single.get("invite_max_uses")).intValue());
+		assertNull(single.get("invite_expires_at"), "sem prazo pedido, o link não vence");
+		groups.joinByInvite(friend, singleCode);
+		AuthException used = assertThrows(AuthException.class, () -> groups.joinByInvite(late, singleCode));
+		assertEquals(404, used.status());
+		assertTrue(used.getMessage().contains("já foi utilizado ou expirou"), used.getMessage());
+		assertNull(groups.group(owner, groupId).get("invite_code"), "link de uso único some do grupo depois de usado");
+
+		// Prazo: vencido no banco, o mesmo código deixa de entrar.
+		Map<String, Object> timed = groups.rotateInvite(owner, groupId, Map.of("expiresInDays", 7, "maxUses", 3));
+		assertNotNull(timed.get("invite_expires_at"));
+		String timedCode = String.valueOf(timed.get("invite_code"));
+		jdbc.sql("update public.chat_groups set invite_expires_at = now() - interval '1 minute' where id = :id")
+				.param("id", groupId).update();
+		AuthException expired = assertThrows(AuthException.class, () -> groups.joinByInvite(late, timedCode));
+		assertEquals(404, expired.status());
+
+		// Rotacionar zera o contador e o limite inválido é recusado.
+		Map<String, Object> fresh = groups.rotateInvite(owner, groupId, Map.of("maxUses", 2));
+		assertEquals(0, ((Number) fresh.get("invite_uses")).intValue());
+		assertEquals(400, assertThrows(AuthException.class,
+				() -> groups.rotateInvite(owner, groupId, Map.of("maxUses", 900))).status());
+	}
+
 	@Test
 	void removedMemberCannotComeBackAndRolesAreEnforced() {
 		String owner = member(), mod = member(), troll = member();

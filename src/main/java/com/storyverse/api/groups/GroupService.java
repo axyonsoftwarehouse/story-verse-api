@@ -202,16 +202,50 @@ public class GroupService {
 		if (code == null || !INVITE.matcher(code).matches()) throw new AuthException(404, "Convite inválido ou expirado.");
 		Map<String, Object> state = repository.groupByInvite(code)
 				.orElseThrow(() -> new AuthException(404, "Convite inválido ou expirado."));
-		return enter(userId, UUID.fromString(String.valueOf(state.get("id"))));
+		UUID groupId = UUID.fromString(String.valueOf(state.get("id")));
+		// Quem já está dentro (link reaberto) não gasta uma entrada do link.
+		boolean alreadyIn = repository.membership(groupId, userId)
+				.filter(m -> m.get("banned_at") == null)
+				.isPresent();
+		if (!alreadyIn) {
+			// Prazo e limite valem na própria atualização do banco (nada de checar antes e usar depois).
+			repository.consumeInvite(code)
+					.orElseThrow(() -> new AuthException(404, "Este link de convite já foi utilizado ou expirou."));
+		}
+		return enter(userId, groupId);
 	}
 
 	@Transactional
 	public Map<String, Object> rotateInvite(String token, UUID id) {
+		return rotateInvite(token, id, null);
+	}
+
+	/**
+	 * Gera um link novo e, se pedido no corpo, dá prazo (1 a 90 dias) e limite de entradas
+	 * (1 a 500). Sem os campos, o link continua como antes: sem prazo e sem limite.
+	 */
+	@Transactional
+	public Map<String, Object> rotateInvite(String token, UUID id, Map<String, Object> body) {
 		UUID userId = requireUser(token);
 		Map<String, Object> current = visibleGroup(userId, id);
 		requireOwnerOrStaff(userId, current);
-		repository.rotateInvite(id, newInviteCode());
+		int days = intField(body, "expiresInDays");
+		int maxUses = intField(body, "maxUses");
+		if (days < 0 || days > 90) throw new AuthException(400, "O prazo do link fica entre 1 e 90 dias (0 = sem prazo).");
+		if (maxUses < 0 || maxUses > 500) throw new AuthException(400, "O limite de entradas fica entre 1 e 500 (0 = sem limite).");
+		repository.rotateInvite(id, newInviteCode(), days, maxUses);
 		return group(userId, id);
+	}
+
+	private static int intField(Map<String, Object> body, String key) {
+		if (body == null) return 0;
+		Object value = body.get(key);
+		if (value == null || "".equals(value)) return 0;
+		try {
+			return Integer.parseInt(String.valueOf(value).trim());
+		} catch (NumberFormatException e) {
+			throw new AuthException(400, "Valor inválido para " + key + ".");
+		}
 	}
 
 	@Transactional
