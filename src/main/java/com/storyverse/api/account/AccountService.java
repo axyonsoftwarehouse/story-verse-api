@@ -79,6 +79,10 @@ public class AccountService {
 				  left join public.chat_groups g on g.id = x.group_id
 				 where x.author_id = :uid order by x.id
 				""", Map.of("uid", userId)));
+		out.put("groupInvitesReceived", DbRows.list(jdbc, """
+				select group_id, invited_by, created_at from public.chat_invites
+				 where user_id = :uid order by created_at
+				""", Map.of("uid", userId)));
 		// Rede social: quem a conta segue e quem segue a conta.
 		out.put("following", DbRows.list(jdbc, """
 				select followee_id as user_id, created_at from public.user_follows
@@ -88,8 +92,16 @@ public class AccountService {
 				select follower_id as user_id, created_at from public.user_follows
 				 where followee_id = :uid order by created_at
 				""", Map.of("uid", userId)));
+		out.put("followRequestsSent", DbRows.list(jdbc, """
+				select target_id as user_id, created_at from public.follow_requests
+				 where requester_id = :uid order by created_at
+				""", Map.of("uid", userId)));
+		out.put("followRequestsReceived", DbRows.list(jdbc, """
+				select requester_id as user_id, created_at from public.follow_requests
+				 where target_id = :uid order by created_at
+				""", Map.of("uid", userId)));
 		out.put("profileShowcase", DbRows.one(jdbc, """
-				select show_reading, badges::text as badges, badges_total, stats::text as stats, updated_at
+				select show_reading, is_private, badges::text as badges, badges_total, stats::text as stats, updated_at
 				  from public.profile_showcase where user_id = :uid
 				""", Map.of("uid", userId)).orElse(null));
 		return out;

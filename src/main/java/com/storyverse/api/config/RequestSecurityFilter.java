@@ -37,7 +37,9 @@ public class RequestSecurityFilter extends OncePerRequestFilter {
       }
       if (!path.startsWith("/api/v1/storage/")) {
         // O estado de leitura carrega o snapshot inteiro da conta (livros, conversas, destaques).
-        long limit = path.equals("/api/v1/me/reading-state") ? 5L * 1024 * 1024 : 1_048_576;
+        // A moldura animada da loja vai até 3 MB (mais a embalagem do multipart).
+        long limit = path.equals("/api/v1/me/reading-state") ? 5L * 1024 * 1024
+            : path.equals("/api/v1/admin/shop/images") ? 4L * 1024 * 1024 : 1_048_576;
         if (request.getContentLengthLong() > limit) throw new AuthException(413, "Requisição grande demais.");
         request = new LimitedRequest(request, limit);
       }

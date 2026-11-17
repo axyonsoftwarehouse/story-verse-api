@@ -75,10 +75,21 @@ public class CommunityRepository {
 				       review_note = :note,
 				       reviewed_at = now(),
 				       reviewed_by = :reviewed_by,
-				       cover_url = coalesce(:cover, cover_url)
+				       cover_url = coalesce(:cover, cover_url),
+				       rights_note = coalesce(:rights_note, rights_note)
 				 where id = :id
 				 returning *
 				""", params);
+	}
+
+	public Optional<Map<String, Object>> updateDetails(UUID id, String title, String author) {
+		Map<String, Object> params = new java.util.HashMap<>();
+		params.put("id", id);
+		params.put("title", title);
+		params.put("author", author);
+		return DbRows.one(jdbc,
+				"update public.book_submissions set title = :title, author = :author where id = :id returning *",
+				params);
 	}
 
 	public Optional<Map<String, Object>> updateCover(UUID id, String coverUrl) {

@@ -144,7 +144,8 @@ class CatalogAudioIntegrationTest {
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
 								{"language":"pt","narrator":"Karen Savage","source":"librivox",
-								 "rights":"public_domain","licenseNote":"LibriVox"}
+								 "rights":"public_domain","licenseNote":"LibriVox",
+								 "rightsNote":"LibriVox; autora morreu em 1890"}
 								"""))
 				.andExpect(status().isCreated())
 				.andExpect(jsonPath("$.status").value("draft"))
@@ -351,7 +352,7 @@ class CatalogAudioIntegrationTest {
 		mvc.perform(post("/api/v1/admin/catalog/audio/{audioId}/publish", audioId)
 						.header("Authorization", bearer(moderator)))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.error").value("Explique por que este áudio pode ser publicado."));
+				.andExpect(jsonPath("$.error").value("Explique por que este áudio pode ser publicado: fonte, ano de morte do autor ou licença."));
 
 		mvc.perform(patch("/api/v1/admin/catalog/audio/{audioId}", audioId)
 						.header("Authorization", bearer(moderator))

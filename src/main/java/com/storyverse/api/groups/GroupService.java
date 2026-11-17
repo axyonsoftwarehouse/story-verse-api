@@ -467,6 +467,11 @@ public class GroupService {
 		Map<String, Object> row = repository.mediaFile(messageId).orElse(null);
 		if (row == null) return Optional.empty();
 		activeMembership(UUID.fromString(String.valueOf(row.get("group_id"))), userId);
+		// Oculta por denúncias: só quem enviou ainda abre o arquivo (como no texto da mensagem).
+		if (!userId.toString().equals(String.valueOf(row.get("author_id")))
+				&& ((Number) row.get("reports")).intValue() >= GroupRepository.AUTO_HIDE_REPORTS) {
+			return Optional.empty();
+		}
 		return media.file(String.valueOf(row.get("media_path"))).map(path -> Map.entry(path, String.valueOf(row.get("media_mime"))));
 	}
 
@@ -501,31 +506,117 @@ public class GroupService {
 		narrator.requestNow(id, userId);
 	}
 
+	/* ------------------------------ Convites ------------------------------ */
+
 	/**
-	 * Quem administra o grupo adiciona uma pessoa pelo e-mail da conta dela. A pessoa recebe o
-	 * aviso no sininho. E-mail exato (sem busca) e com limite por hora, para não virar varredura.
+	 * Antigo "adicionar pelo e-mail": agora manda convite (a pessoa aceita ou recusa). Fica para
+	 * a versão do site que ainda chama esta rota.
 	 */
 	@Transactional
 	public Map<String, Object> addByEmail(String token, UUID id, Map<String, Object> body) {
 		UUID userId = requireUser(token);
-		Map<String, Object> membership = activeMembership(id, userId);
-		String role = String.valueOf(membership.get("role"));
-		if (!"owner".equals(role) && !"moderator".equals(role)) throw new AuthException(403, "Só quem administra o grupo adiciona pessoas.");
+		requireManager(id, userId);
 		String email = text(body.get("email"));
 		if (email == null || email.length() > 254 || !email.contains("@")) throw new AuthException(400, "Digite o e-mail da conta da pessoa.");
-		limits.check("group-add:" + userId, 30, Duration.ofHours(1));
 		UUID target = users.findByEmail(email.trim().toLowerCase(java.util.Locale.ROOT)).map(com.storyverse.api.auth.User::id)
 				.orElseThrow(() -> new AuthException(404, "Não encontramos uma conta com esse e-mail."));
+		sendInvite(userId, id, target);
+		return group(userId, id);
+	}
+
+	/** Quem administra procura pelo nome (ou e-mail exato) quem convidar. */
+	@Transactional(readOnly = true)
+	public List<Map<String, Object>> inviteCandidates(String token, UUID id, String query) {
+		UUID userId = requireUser(token);
+		requireManager(id, userId);
+		String q = text(query);
+		if (q == null || q.length() < 2) return List.of();
+		if (q.length() > 80) throw new AuthException(400, "Busca grande demais.");
+		limits.check("group-invite-search:" + userId, 60, Duration.ofMinutes(1));
+		return repository.inviteCandidates(userId, id, q, 20);
+	}
+
+	/** Convida uma pessoa; ela recebe o aviso no sininho e o convite na lista de grupos. */
+	@Transactional
+	public List<Map<String, Object>> invite(String token, UUID id, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		requireManager(id, userId);
+		UUID target = uuid(body.get("userId"));
+		if (target == null || users.findById(target).isEmpty()) throw new AuthException(404, "Pessoa não encontrada.");
+		sendInvite(userId, id, target);
+		return repository.groupInvites(id);
+	}
+
+	private void sendInvite(UUID userId, UUID id, UUID target) {
+		if (target.equals(userId)) throw new AuthException(400, "Você já está no grupo.");
 		var existing = repository.membership(id, target);
 		if (existing.isPresent() && existing.get().get("banned_at") == null) throw new AuthException(409, "Essa pessoa já está no grupo.");
 		if (repository.countMembers(id) >= MAX_MEMBERS) throw new AuthException(409, "Este grupo está cheio.");
-		if (!repository.addMemberByManager(id, target)) throw new AuthException(403, "Só quem administra o grupo adiciona pessoas.");
-		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(target)).toList();
-		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", target));
-		notifyUser(target, "member_added", id, null, null);
-		stream.publish(List.of(target), "group", Map.of("groupId", id, "type", "added"));
+		limits.check("group-invite:" + userId, 30, Duration.ofHours(1));
+		repository.insertInvite(id, target, userId);
+		try {
+			if (repository.notifyInvite(target, id)) stream.publish(List.of(target), "notification", Map.of("kind", "group_invite"));
+		} catch (RuntimeException exception) {
+			// Aviso é extra: o convite já está feito.
+		}
+		stream.publish(List.of(target), "group", Map.of("groupId", id, "type", "invited"));
+	}
+
+	/** Convites esperando resposta (só quem administra vê). */
+	@Transactional(readOnly = true)
+	public List<Map<String, Object>> groupInvites(String token, UUID id) {
+		UUID userId = requireUser(token);
+		requireManager(id, userId);
+		return repository.groupInvites(id);
+	}
+
+	@Transactional
+	public void cancelInvite(String token, UUID id, UUID target) {
+		UUID userId = requireUser(token);
+		requireManager(id, userId);
+		if (repository.deleteInvite(id, target)) stream.publish(List.of(target), "group", Map.of("groupId", id, "type", "invite_cancelled"));
+	}
+
+	/** Convites que a conta recebeu e ainda não respondeu. */
+	@Transactional(readOnly = true)
+	public List<Map<String, Object>> myInvites(String token) {
+		return repository.myInvites(requireUser(token));
+	}
+
+	@Transactional
+	public Map<String, Object> acceptInvite(String token, UUID id) {
+		UUID userId = requireUser(token);
+		var membership = repository.membership(id, userId);
+		if (membership.isPresent() && membership.get().get("banned_at") == null) {
+			repository.deleteInvite(id, userId);
+			return group(userId, id);
+		}
+		if (repository.countMemberships(userId) >= MAX_GROUPS_PER_ACCOUNT) {
+			throw new AuthException(409, "Você já está no número máximo de grupos.");
+		}
+		if (repository.countMembers(id) >= MAX_MEMBERS) throw new AuthException(409, "Este grupo está cheio.");
+		UUID inviter = repository.acceptInvite(id)
+				.orElseThrow(() -> new AuthException(404, "Este convite não existe mais."));
+		// Só depois de entrar a conta enxerga os outros membros (RLS) para avisá-los.
+		List<UUID> others = repository.activeMemberIds(id).stream().filter(member -> !member.equals(userId)).toList();
+		stream.publish(others, "group", Map.of("groupId", id, "type", "member_joined", "userId", userId));
+		notifyUser(inviter, "member_joined", id, null, null);
+		UUID owner = repository.ownerOf(id);
+		if (owner != null && !owner.equals(inviter)) notifyUser(owner, "member_joined", id, null, null);
 		return group(userId, id);
 	}
+
+	@Transactional
+	public void declineInvite(String token, UUID id) {
+		UUID userId = requireUser(token);
+		repository.deleteInvite(id, userId);
+	}
+
+	private void requireManager(UUID groupId, UUID userId) {
+		String role = String.valueOf(activeMembership(groupId, userId).get("role"));
+		if (!"owner".equals(role) && !"moderator".equals(role)) throw new AuthException(403, "Só quem administra o grupo convida pessoas.");
+	}
+
 
 	/** "Encerrar e virar livro": só quem criou o grupo (a IA usa a cota dele). */
 	@Transactional
@@ -606,6 +697,38 @@ public class GroupService {
 			authz.audit(userId, "group.message.delete", "chat_message", String.valueOf(messageId), Map.of("groupId", groupId.toString()));
 		}
 		stream.publish(repository.activeMemberIds(groupId), "message_deleted", Map.of("groupId", groupId, "id", messageId));
+	}
+
+	/**
+	 * Roleplay: quem escreveu corrige a própria mensagem de texto (até 24 h, antes de virar livro e
+	 * se ninguém denunciou). Todos veem a mensagem nova com "editada".
+	 */
+	@Transactional
+	public Map<String, Object> editMessage(String token, long messageId, Map<String, Object> body) {
+		UUID userId = requireUser(token);
+		Map<String, Object> state = repository.messageState(messageId)
+				.filter(m -> m.get("deleted_at") == null)
+				.orElseThrow(() -> new AuthException(404, "Mensagem não encontrada."));
+		UUID groupId = UUID.fromString(String.valueOf(state.get("group_id")));
+		if (!userId.equals(state.get("author_id")) || !"user".equals(state.get("kind"))) {
+			throw new AuthException(403, "Só quem escreveu a mensagem pode editar.");
+		}
+		activeMembership(groupId, userId);
+		if (!"roleplay".equals(visibleGroup(userId, groupId).get("mode"))) {
+			throw new AuthException(400, "Só dá para editar mensagens no roleplay.");
+		}
+		if (state.get("media_kind") != null) throw new AuthException(400, "Fotos e áudios não podem ser editados.");
+		if (Boolean.TRUE.equals(state.get("edit_expired"))) throw new AuthException(409, "Só dá para editar até 24 horas depois de enviar.");
+		if (books.book(groupId).isPresent()) throw new AuthException(409, "A história já virou livro: as mensagens não mudam mais.");
+		if (Boolean.TRUE.equals(state.get("reported"))) throw new AuthException(409, "Esta mensagem foi denunciada e não pode mais ser editada.");
+		String text = text(body.get("body"));
+		if (text == null || text.length() > 2000) throw new AuthException(400, "A mensagem precisa ter entre 1 e 2000 caracteres.");
+		limits.check("group-edit:" + userId, 30, Duration.ofMinutes(1));
+		if (!repository.editMessage(messageId, text)) throw new AuthException(409, "Não foi possível editar esta mensagem.");
+		Map<String, Object> message = repository.message(userId, messageId)
+				.orElseThrow(() -> new AuthException(500, "Mensagem não encontrada."));
+		stream.publish(repository.activeMemberIds(groupId), "message_edited", publicView(message));
+		return message;
 	}
 
 	@Transactional

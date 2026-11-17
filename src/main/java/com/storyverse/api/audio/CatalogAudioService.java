@@ -17,6 +17,7 @@ import com.storyverse.api.auth.AuthService;
 import com.storyverse.api.auth.AuthzService;
 import com.storyverse.api.billing.BillingService;
 import com.storyverse.api.catalog.CatalogRepository;
+import com.storyverse.api.catalog.RightsJustification;
 import com.storyverse.api.common.DbErrors;
 import com.storyverse.api.common.DbSession;
 
@@ -399,9 +400,10 @@ public class CatalogAudioService {
 				&& chapters.stream().noneMatch(chapter -> chapter.get("text_chapter_index") != null)) {
 			throw new AuthException(400, "Nenhum capítulo está ligado ao texto.");
 		}
-		if (!"public_domain".equals(existingString(existing, "rights"))
-				&& blank(existingString(existing, "rights_note"))) {
-			throw new AuthException(400, "Explique por que este áudio pode ser publicado.");
+		// V1: "domínio público" também precisa de justificativa; foi assim que um livro protegido
+		// entrou como "LibriVox · domínio público".
+		if (RightsJustification.problem(existingString(existing, "rights_note")) != null) {
+			throw new AuthException(400, "Explique por que este áudio pode ser publicado: fonte, ano de morte do autor ou licença.");
 		}
 		repository.setStatus(audioId, "published", true)
 				.orElseThrow(() -> new AuthException(404, "Audiolivro não encontrado."));
@@ -603,10 +605,6 @@ public class CatalogAudioService {
 	private static String existingString(Map<String, Object> row, String key) {
 		Object value = row.get(key);
 		return value instanceof String string ? string : null;
-	}
-
-	private static boolean blank(String value) {
-		return value == null || value.isBlank();
 	}
 
 	private static UUID uuid(Object value) {

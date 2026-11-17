@@ -39,18 +39,19 @@ public class GroupRepository {
 			       else 0 end as unread,
 			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_code end as invite_code,
 			       lm.id as last_message_id, lm.author_name as last_author_name, lm.media_kind as last_media_kind, lm.kind as last_kind,
-			       case when lm.spoiler_chapter is not null then null else left(lm.body, 120) end as last_body
+			       case when lm.spoiler_chapter is not null or lm.hidden then null else left(lm.body, 120) end as last_body
 			  from public.chat_groups g
 			  left join public.chat_members m on m.group_id = g.id and m.user_id = :viewer
 			  left join lateral (
-			    select x.id, x.body, x.spoiler_chapter, x.media_kind, x.kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name
+			    select x.id, x.body, x.spoiler_chapter, x.media_kind, x.kind, coalesce(u.raw_user_meta_data->>'name', 'Leitor') as author_name,
+			           (x.author_id <> :viewer and public.chat_message_report_count(x.id) >= %d) as hidden
 			      from public.chat_messages x
 			      join auth.users u on u.id = x.author_id
 			     where x.group_id = g.id and x.deleted_at is null
 			     order by x.id desc
 			     limit 1
 			  ) lm on m.user_id is not null and m.banned_at is null
-			""";
+			""".formatted(AUTO_HIDE_REPORTS);
 
 	private static final String MESSAGE_ROW = """
 			select x.id, x.group_id, x.author_id,
@@ -58,6 +59,9 @@ public class GroupRepository {
 			       coalesce(u.raw_user_meta_data->>'avatar', '') as author_avatar,
 			       case when starts_with(u.raw_user_meta_data->>'photo', :media || x.author_id::text || '/')
 			            then u.raw_user_meta_data->>'photo' end as author_photo,
+			       case when x.kind = 'user'
+			             and not exists (select 1 from public.chat_groups rp where rp.id = x.group_id and rp.mode = 'roleplay')
+			            then public.user_cosmetics(x.author_id) end as author_cosmetics,
 			       case when x.deleted_at is not null then null
 			            when x.author_id <> :viewer and hidden.n >= %d then null
 			            else x.body end as body,
@@ -66,13 +70,11 @@ public class GroupRepository {
 			       (x.media_path is not null and x.deleted_at is null
 			        and not (x.author_id <> :viewer and hidden.n >= %d)) as media_available,
 			       x.deleted_at is not null as deleted,
+			       case when x.deleted_at is null then x.edited_at end as edited_at,
 			       (x.deleted_at is null and x.author_id <> :viewer and hidden.n >= %d) as hidden
 			  from public.chat_messages x
 			  join auth.users u on u.id = x.author_id
-			  cross join lateral (
-			    select count(distinct r.reporter_id) as n from public.chat_reports r
-			     where r.message_id = x.id and r.status = 'pending'
-			  ) hidden
+			  cross join lateral (select public.chat_message_report_count(x.id) as n) hidden
 			""".formatted(AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS, AUTO_HIDE_REPORTS);
 
 	private final JdbcClient jdbc;
@@ -250,6 +252,95 @@ public class GroupRepository {
 				.param("group", groupId).param("user", userId).update();
 	}
 
+	/* ------------------------------ Convites (V51) ------------------------------ */
+
+	private static final String FACE = """
+			       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as name,
+			       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
+			       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
+			            then u.raw_user_meta_data->>'photo' end as photo,
+			       public.user_cosmetics(u.id) as cosmetics
+			""";
+
+	/**
+	 * Pessoas para convidar: parte do nome ou o e-mail exato da conta. Diz quem já está no grupo
+	 * e quem já tem convite esperando.
+	 */
+	public List<Map<String, Object>> inviteCandidates(UUID viewer, UUID groupId, String query, int limit) {
+		String pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+		return DbRows.list(jdbc, "select u.id,\n" + FACE + """
+				       , exists (select 1 from public.chat_members m
+				                  where m.group_id = :group and m.user_id = u.id and m.banned_at is null) as is_member,
+				         exists (select 1 from public.chat_invites i where i.group_id = :group and i.user_id = u.id) as invited
+				  from auth.users u
+				 where u.id <> :viewer
+				   and (coalesce(u.raw_user_meta_data->>'name', '') ilike :pattern or lower(u.email) = lower(:query))
+				 order by lower(u.email) = lower(:query) desc,
+				          (select count(*) from public.user_follows f where f.followee_id = u.id) desc,
+				          u.raw_user_meta_data->>'name', u.id
+				 limit :limit
+				""", Map.of("viewer", viewer, "group", groupId, "pattern", pattern, "query", query, "media", media, "limit", limit));
+	}
+
+	/** Cria o convite (a RLS confere quem convida). false se já havia convite esperando. */
+	public boolean insertInvite(UUID groupId, UUID userId, UUID invitedBy) {
+		return jdbc.sql("""
+				insert into public.chat_invites (group_id, user_id, invited_by)
+				values (:group, :user, :by)
+				on conflict (group_id, user_id) do nothing
+				""").param("group", groupId).param("user", userId).param("by", invitedBy).update() > 0;
+	}
+
+	public boolean deleteInvite(UUID groupId, UUID userId) {
+		return jdbc.sql("delete from public.chat_invites where group_id = :group and user_id = :user")
+				.param("group", groupId).param("user", userId).update() > 0;
+	}
+
+	/** Aceita o convite da conta da sessão; devolve quem convidou (vazio se não havia convite). */
+	public Optional<UUID> acceptInvite(UUID groupId) {
+		return jdbc.sql("select public.chat_accept_invite(:group)")
+				.param("group", groupId).query(UUID.class).optional();
+	}
+
+	public boolean notifyInvite(UUID userId, UUID groupId) {
+		return jdbc.sql("select public.chat_notify_invite(:user, :group)")
+				.param("user", userId).param("group", groupId)
+				.query((rs, rowNum) -> rs.getObject(1)).optional().filter(java.util.Objects::nonNull).isPresent();
+	}
+
+	/** Convites esperando resposta num grupo (para quem administra). */
+	public List<Map<String, Object>> groupInvites(UUID groupId) {
+		return DbRows.list(jdbc, "select u.id as user_id, i.created_at,\n" + FACE + """
+				       , coalesce(b.raw_user_meta_data->>'name', 'Leitor') as invited_by_name
+				  from public.chat_invites i
+				  join auth.users u on u.id = i.user_id
+				  join auth.users b on b.id = i.invited_by
+				 where i.group_id = :group
+				 order by i.created_at desc
+				 limit 200
+				""", Map.of("group", groupId, "media", media));
+	}
+
+	/** Convites que a conta recebeu, com o grupo e quem convidou. */
+	public List<Map<String, Object>> myInvites(UUID viewer) {
+		return DbRows.list(jdbc, """
+				select g.id as group_id, g.name as group_name, g.photo_url as group_photo, g.visibility, g.mode,
+				       g.book_title, i.created_at, i.invited_by,
+				       public.chat_member_count(g.id) as member_count,
+				       coalesce(u.raw_user_meta_data->>'name', 'Leitor') as invited_by_name,
+				       coalesce(u.raw_user_meta_data->>'avatar', '') as invited_by_avatar,
+				       case when starts_with(u.raw_user_meta_data->>'photo', :media || u.id::text || '/')
+				            then u.raw_user_meta_data->>'photo' end as invited_by_photo,
+				       public.user_cosmetics(u.id) as invited_by_cosmetics
+				  from public.chat_invites i
+				  join public.chat_groups g on g.id = i.group_id and g.deleted_at is null
+				  join auth.users u on u.id = i.invited_by
+				 where i.user_id = :viewer
+				 order by i.created_at desc
+				 limit 50
+				""", Map.of("viewer", viewer, "media", media));
+	}
+
 	public void banMember(UUID groupId, UUID userId) {
 		jdbc.sql("""
 				update public.chat_members set banned_at = now(), role = 'member'
@@ -317,6 +408,7 @@ public class GroupRepository {
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as actor_avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || n.actor_id::text || '/')
 				            then u.raw_user_meta_data->>'photo' end as actor_photo,
+				       public.user_cosmetics(n.actor_id) as actor_cosmetics,
 				       case when x.deleted_at is null and x.spoiler_chapter is null then left(x.body, 100) end as message_body,
 				       x.media_kind as message_media_kind
 				  from public.user_notifications n
@@ -369,6 +461,7 @@ public class GroupRepository {
 				       coalesce(u.raw_user_meta_data->>'avatar', '') as avatar,
 				       case when starts_with(u.raw_user_meta_data->>'photo', :media || m.user_id::text || '/')
 				            then u.raw_user_meta_data->>'photo' end as photo,
+				       public.user_cosmetics(m.user_id) as cosmetics,
 				       e.progress_percent, e.status as book_status
 				  from public.chat_members m
 				  join auth.users u on u.id = m.user_id
@@ -520,7 +613,10 @@ public class GroupRepository {
 
 	public Optional<Map<String, Object>> messageState(long id) {
 		return DbRows.one(jdbc, """
-				select id, group_id, author_id, deleted_at from public.chat_messages where id = :id
+				select id, group_id, author_id, deleted_at, kind, media_kind,
+				       created_at < now() - interval '24 hours' as edit_expired,
+				       public.chat_message_reported(id) as reported
+				  from public.chat_messages where id = :id
 				""", Map.of("id", id));
 	}
 
@@ -563,6 +659,12 @@ public class GroupRepository {
 		return id;
 	}
 
+	/** Troca o texto da mensagem da conta da sessão; a função do banco confere as regras (V52). */
+	public boolean editMessage(long id, String body) {
+		return Boolean.TRUE.equals(jdbc.sql("select public.chat_edit_message(:id, :body)")
+				.param("id", id).param("body", body).query(Boolean.class).single());
+	}
+
 	public void softDeleteMessage(long id, UUID by) {
 		jdbc.sql("""
 				update public.chat_messages set deleted_at = now(), deleted_by = :by, media_path = null
@@ -573,7 +675,9 @@ public class GroupRepository {
 	/** Arquivo da foto/áudio de uma mensagem (vazio: sem mídia, apagada ou vencida). */
 	public Optional<Map<String, Object>> mediaFile(long id) {
 		return DbRows.one(jdbc, """
-				select group_id, author_id, media_path, media_mime, deleted_at from public.chat_messages
+				select group_id, author_id, media_path, media_mime, deleted_at,
+				       public.chat_message_report_count(id) as reports
+				  from public.chat_messages
 				 where id = :id and media_path is not null and deleted_at is null
 				""", Map.of("id", id));
 	}

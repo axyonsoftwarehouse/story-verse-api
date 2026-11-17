@@ -73,6 +73,7 @@ public class StorageService {
 	 */
 	public void write(UUID userId, StorageBucket bucket, String path, String contentType,
 			java.io.InputStream input, long declaredLength) {
+		StorageAccess.requireUserWritable(bucket);
 		String own = requireOwn(userId, path);
 		String type = normalizeType(contentType, own);
 		if (!bucket.allowedTypes().contains(type)) {
@@ -116,6 +117,45 @@ public class StorageService {
 			throw new UncheckedIOException("Falha ao gravar o arquivo", exception);
 		} finally {
 			if (running.decrementAndGet() <= 0) uploadsInFlight.remove(userId, running);
+			if (temporary != null) {
+				try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+			}
+		}
+	}
+
+	/**
+	 * Grava uma imagem da loja (bucket {@code shop-items}), fora da pasta de qualquer pessoa e sem
+	 * cota de conta. Quem chama já conferiu permissão e conteúdo (ShopImageCheck); aqui o tipo, o
+	 * tamanho e a assinatura são conferidos de novo antes da troca atômica.
+	 */
+	public void writeShopImage(String path, String contentType, byte[] bytes) {
+		StorageBucket bucket = StorageBucket.SHOP_ITEMS;
+		String cleaned = safePath(path);
+		String type = normalizeType(contentType, cleaned);
+		if (!bucket.allowedTypes().contains(type)) {
+			throw new AuthException(415, "Formato de arquivo não aceito.");
+		}
+		if (bytes.length == 0) {
+			throw new AuthException(400, "Arquivo vazio.");
+		}
+		if (bytes.length > bucket.maxBytes()) {
+			throw new AuthException(413, "Arquivo grande demais.");
+		}
+		Path target = resolve(bucket, cleaned);
+		Path temporary = null;
+		try {
+			Path temporaryDir = baseDir.resolve(".tmp");
+			Files.createDirectories(temporaryDir);
+			temporary = Files.createTempFile(temporaryDir, ".upload-", ".tmp");
+			Files.write(temporary, bytes, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+			validateContent(temporary, type);
+			Files.createDirectories(target.getParent());
+			Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+					java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			temporary = null;
+		} catch (IOException exception) {
+			throw new UncheckedIOException("Falha ao gravar o arquivo", exception);
+		} finally {
 			if (temporary != null) {
 				try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
 			}
