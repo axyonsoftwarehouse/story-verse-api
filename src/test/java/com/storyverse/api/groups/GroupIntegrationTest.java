@@ -147,6 +147,21 @@ class GroupIntegrationTest {
 		assertEquals("nova", after.get(0).get("body"));
 	}
 
+	/**
+	 * Conta comum criando grupo privado pelo papel de runtime (RLS valendo). O "insert ... returning"
+	 * exigia enxergar o grupo antes de o dono virar membro, e dava 500 ("new row violates row-level
+	 * security policy"); só a equipe conseguia.
+	 */
+	@Test
+	void regularAccountCreatesPrivateGroupUnderRls() {
+		String owner = member();
+		Map<String, Object> group = asRuntimeUser(idOf(owner), () -> newGroup(owner, "private"));
+		assertEquals("private", group.get("visibility"));
+		UUID groupId = id(group);
+		assertTrue(asRuntimeUser(idOf(owner), () -> groups.myGroups(owner)).stream()
+				.anyMatch(g -> groupId.toString().equals(String.valueOf(g.get("id")))));
+	}
+
 	@Test
 	void typingOnlyForMembers() {
 		String owner = member(), stranger = member();
@@ -208,6 +223,41 @@ class GroupIntegrationTest {
 		groups.rotateInvite(owner, groupId);
 		String stranger = member();
 		assertThrows(AuthException.class, () -> groups.joinByInvite(stranger, oldCode));
+	}
+
+	/** Link com prazo e limite de entradas: o contador é consumido no banco, não depois. */
+	@Test
+	void inviteLinkCanExpireAndLimitTheNumberOfEntries() {
+		String owner = member(), friend = member(), late = member();
+		UUID groupId = id(newGroup(owner, "private"));
+
+		// Uso único: entra a primeira pessoa e o link morre.
+		Map<String, Object> single = groups.rotateInvite(owner, groupId, Map.of("maxUses", 1));
+		String singleCode = String.valueOf(single.get("invite_code"));
+		assertEquals(1, ((Number) single.get("invite_max_uses")).intValue());
+		assertNull(single.get("invite_expires_at"), "sem prazo pedido, o link não vence");
+		groups.joinByInvite(friend, singleCode);
+		AuthException used = assertThrows(AuthException.class, () -> groups.joinByInvite(late, singleCode));
+		assertEquals(404, used.status());
+		assertTrue(used.getMessage().contains("já foi utilizado ou expirou"), used.getMessage());
+		Map<String, Object> afterUse = groups.group(owner, groupId);
+		assertEquals(1, ((Number) afterUse.get("invite_uses")).intValue(), "o painel mostra que a entrada foi gasta");
+		assertEquals(1, ((Number) afterUse.get("invite_max_uses")).intValue());
+
+		// Prazo: vencido no banco, o mesmo código deixa de entrar.
+		Map<String, Object> timed = groups.rotateInvite(owner, groupId, Map.of("expiresInDays", 7, "maxUses", 3));
+		assertNotNull(timed.get("invite_expires_at"));
+		String timedCode = String.valueOf(timed.get("invite_code"));
+		jdbc.sql("update public.chat_groups set invite_expires_at = now() - interval '1 minute' where id = :id")
+				.param("id", groupId).update();
+		AuthException expired = assertThrows(AuthException.class, () -> groups.joinByInvite(late, timedCode));
+		assertEquals(404, expired.status());
+
+		// Rotacionar zera o contador e o limite inválido é recusado.
+		Map<String, Object> fresh = groups.rotateInvite(owner, groupId, Map.of("maxUses", 2));
+		assertEquals(0, ((Number) fresh.get("invite_uses")).intValue());
+		assertEquals(400, assertThrows(AuthException.class,
+				() -> groups.rotateInvite(owner, groupId, Map.of("maxUses", 900))).status());
 	}
 
 	@Test
@@ -1076,8 +1126,11 @@ class GroupIntegrationTest {
 					() -> asRuntimeUser(idOf(ana), () -> groups.editMessage(ana, reported, Map.of("body", "Trocada"))));
 			assertEquals(409, blocked.status());
 
-			// Mais de 24 horas: não edita.
-			jdbc.sql("update public.chat_messages set created_at = now() - interval '25 hours' where id = :id").param("id", mine).update();
+			// Até 7 dias edita (também pela função do banco, com a RLS valendo); depois, não.
+			jdbc.sql("update public.chat_messages set created_at = now() - interval '6 days' where id = :id").param("id", mine).update();
+			assertEquals("*Mina abre a porta devagar.*",
+					asRuntimeUser(idOf(ana), () -> groups.editMessage(ana, mine, Map.of("body", "*Mina abre a porta devagar.*"))).get("body"));
+			jdbc.sql("update public.chat_messages set created_at = now() - interval '8 days' where id = :id").param("id", mine).update();
 			assertEquals(409, assertThrows(AuthException.class, () -> groups.editMessage(ana, mine, Map.of("body", "tarde"))).status());
 
 			// A função do banco é a garantia: a conta não edita a mensagem de outra pessoa direto por ela.
@@ -1092,13 +1145,16 @@ class GroupIntegrationTest {
 	}
 
 	@Test
-	void editingIsOnlyForRoleplayAndStopsWhenTheStoryBecomesABook() {
+	void editingWorksInAnyGroupAndStopsWhenTheStoryBecomesABook() {
 		narrator.useWriter((system, history) -> "*Silêncio.*");
 		try {
+			// Chat comum: o autor corrige o próprio texto (era 400 "só no roleplay" antes do cartão).
 			String owner = member();
 			UUID chat = id(newGroup(owner, "public"));
 			long inChat = messageId(send(owner, chat, "Oi, pessoal"));
-			assertEquals(400, assertThrows(AuthException.class, () -> groups.editMessage(owner, inChat, Map.of("body", "Olá"))).status());
+			Map<String, Object> editedChat = groups.editMessage(owner, inChat, Map.of("body", "Olá, pessoal"));
+			assertEquals("Olá, pessoal", editedChat.get("body"));
+			assertNotNull(editedChat.get("edited_at"), "quem edita no chat comum também vê \"editada\"");
 
 			UUID roleplay = roleplayGroup(owner);
 			long line = messageId(send(owner, roleplay, "*O conde acende a lareira.*"));

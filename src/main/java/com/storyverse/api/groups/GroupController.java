@@ -115,8 +115,9 @@ public class GroupController {
 	@PostMapping("/{id}/invite/rotate")
 	public Map<String, Object> rotateInvite(
 			@PathVariable UUID id,
+			@RequestBody(required = false) Map<String, Object> body,
 			@RequestHeader(value = "Authorization", required = false) String authorization) {
-		return service.rotateInvite(AuthTokens.bearer(authorization), id);
+		return service.rotateInvite(AuthTokens.bearer(authorization), id, body);
 	}
 
 	@PostMapping("/{id}/mute")

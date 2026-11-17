@@ -38,6 +38,9 @@ public class GroupRepository {
 			                                 limit 100) unread)
 			       else 0 end as unread,
 			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_code end as invite_code,
+			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_expires_at end as invite_expires_at,
+			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_max_uses end as invite_max_uses,
+			       case when m.role in ('owner', 'moderator') and m.banned_at is null then g.invite_uses end as invite_uses,
 			       lm.id as last_message_id, lm.author_name as last_author_name, lm.media_kind as last_media_kind, lm.kind as last_kind,
 			       case when lm.spoiler_chapter is not null or lm.hidden then null else left(lm.body, 120) end as last_body
 			  from public.chat_groups g
@@ -128,6 +131,17 @@ public class GroupRepository {
 				""", Map.of("code", code));
 	}
 
+	/**
+	 * Consome uma entrada do link de convite. A checagem de prazo e de limite acontece na
+	 * própria atualização (atômica): duas pessoas com o mesmo link no mesmo segundo não passam
+	 * do limite. Vazio = não consumiu (expirado, esgotado ou código inexistente).
+	 */
+	public Optional<Map<String, Object>> consumeInvite(String code) {
+		return DbRows.one(jdbc, """
+				select id, visibility from public.chat_consume_invite(:code)
+				""", Map.of("code", code));
+	}
+
 	/** Estado da conta no grupo, inclusive removida (banned_at). Vazio: nunca entrou. */
 	public Optional<Map<String, Object>> membership(UUID groupId, UUID userId) {
 		return DbRows.one(jdbc, """
@@ -170,13 +184,16 @@ public class GroupRepository {
 	}
 
 	public UUID insertGroup(UUID owner, GroupFields fields, String inviteCode) {
-		UUID id = jdbc.sql("""
+		// O id nasce aqui, sem "returning": o RETURNING passa pela política de leitura, e o grupo
+		// privado só fica visível depois que o dono entra em chat_members (logo abaixo).
+		UUID id = UUID.randomUUID();
+		jdbc.sql("""
 				insert into public.chat_groups
-				  (name, description, photo_url, background, visibility, owner_id, book_key, book_title, book_cover, goal_chapter, goal_until, invite_code)
-				values (:name, :description, :photo_url, :background, :visibility, :owner, :book_key, :book_title, :book_cover, :goal_chapter,
+				  (id, name, description, photo_url, background, visibility, owner_id, book_key, book_title, book_cover, goal_chapter, goal_until, invite_code)
+				values (:id, :name, :description, :photo_url, :background, :visibility, :owner, :book_key, :book_title, :book_cover, :goal_chapter,
 				        cast(:goal_until as date), :invite)
-				returning id
 				""")
+				.param("id", id)
 				.param("name", fields.name())
 				.param("description", fields.description())
 				.param("photo_url", fields.photoUrl())
@@ -189,7 +206,7 @@ public class GroupRepository {
 				.param("goal_chapter", fields.goalChapter())
 				.param("goal_until", fields.goalUntil())
 				.param("invite", inviteCode)
-				.query(UUID.class).single();
+				.update();
 		jdbc.sql("insert into public.chat_members (group_id, user_id, role) values (:group, :owner, 'owner')")
 				.param("group", id).param("owner", owner).update();
 		return id;
@@ -223,8 +240,25 @@ public class GroupRepository {
 	}
 
 	public void rotateInvite(UUID id, String code) {
-		jdbc.sql("update public.chat_groups set invite_code = :code, updated_at = now() where id = :id")
-				.param("id", id).param("code", code).update();
+		rotateInvite(id, code, 0, 0);
+	}
+
+	/**
+	 * Código novo com o contador zerado. {@code expiresInDays} 0 = sem prazo; {@code maxUses} 0 =
+	 * sem limite. Usa 0 em vez de null para não depender de parâmetro nulo no Postgres.
+	 */
+	public void rotateInvite(UUID id, String code, int expiresInDays, int maxUses) {
+		jdbc.sql("""
+				update public.chat_groups
+				   set invite_code = :code,
+				       invite_uses = 0,
+				       invite_expires_at = case when :days > 0 then now() + make_interval(days => :days) else null end,
+				       invite_max_uses = case when :max > 0 then :max else null end,
+				       updated_at = now()
+				 where id = :id
+				""")
+				.param("id", id).param("code", code).param("days", expiresInDays).param("max", maxUses)
+				.update();
 	}
 
 	/** Quem administra adiciona outra pessoa (função do banco confere o papel; ver V45). */
@@ -614,7 +648,7 @@ public class GroupRepository {
 	public Optional<Map<String, Object>> messageState(long id) {
 		return DbRows.one(jdbc, """
 				select id, group_id, author_id, deleted_at, kind, media_kind,
-				       created_at < now() - interval '24 hours' as edit_expired,
+				       created_at < now() - interval '7 days' as edit_expired,
 				       public.chat_message_reported(id) as reported
 				  from public.chat_messages where id = :id
 				""", Map.of("id", id));
