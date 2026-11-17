@@ -210,12 +210,13 @@ class SocialIntegrationTest {
 		setCover(anaId, "https://outro.example/qualquer.png");
 		assertNull(social.search(caio, tag).get(0).get("cover"), "capa de outro host é ignorada");
 
-		// Perfil privado: quem não segue não vê a capa; quem segue e a própria pessoa continuam vendo.
+		// Perfil privado: some da busca de quem não segue; quem segue continua achando e vendo a capa.
 		setCover(anaId, capa);
 		social.savePrivacy(ana, Map.of("private", true));
-		assertEquals(Boolean.TRUE, social.search(caio, tag).get(0).get("is_private"));
-		assertNull(social.search(caio, tag).get(0).get("cover"), "perfil privado esconde a capa de quem não segue");
-		assertEquals(capa, social.search(bia, tag).get(0).get("cover"), "quem segue continua vendo a capa");
+		assertEquals(List.of(), social.search(caio, tag), "perfil privado não aparece na busca de quem não segue");
+		Map<String, Object> vistoPeloSeguidor = social.search(bia, tag).get(0);
+		assertEquals(Boolean.TRUE, vistoPeloSeguidor.get("is_private"), "quem já segue vê o selo de perfil privado");
+		assertEquals(capa, vistoPeloSeguidor.get("cover"), "quem segue continua vendo a capa");
 		assertEquals(capa, social.profile(ana, anaId).get("cover"), "o dono vê a própria capa no perfil");
 	}
 
@@ -390,9 +391,7 @@ class SocialIntegrationTest {
 		assertEquals(Boolean.FALSE, asked.get("is_following"));
 		assertEquals(Boolean.TRUE, asked.get("requested"));
 		assertEquals(1L, number(asked, "followers"), "o pedido não conta como seguidor");
-		Map<String, Object> found = social.search(bia, "Ana Privada").get(0);
-		assertEquals(Boolean.TRUE, found.get("is_private"), "as listas já dizem que o perfil é privado");
-		assertEquals(Boolean.TRUE, found.get("requested"));
+		assertEquals(List.of(), social.search(bia, "Ana Privada"), "perfil privado não aparece na busca de quem não segue");
 		// Pedir de novo não duplica nem repete o aviso.
 		social.follow(bia, anaId);
 
@@ -409,6 +408,9 @@ class SocialIntegrationTest {
 		assertTrue(bellOf(ana, "follow").stream().noneMatch(n -> biaId.equals(n.get("actor_id"))), "pedido não avisa como se já seguisse");
 
 		social.acceptRequest(ana, biaId);
+		Map<String, Object> achada = social.search(bia, "Ana Privada").get(0);
+		assertEquals(Boolean.TRUE, achada.get("is_private"), "quem já segue acha o perfil privado e vê o selo");
+		assertEquals(Boolean.TRUE, achada.get("is_following"));
 		Map<String, Object> after = social.profile(bia, anaId);
 		assertEquals(Boolean.TRUE, after.get("is_following"));
 		assertEquals(Boolean.FALSE, after.get("requested"));
