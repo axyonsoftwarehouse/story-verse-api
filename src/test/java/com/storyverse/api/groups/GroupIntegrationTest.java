@@ -147,6 +147,21 @@ class GroupIntegrationTest {
 		assertEquals("nova", after.get(0).get("body"));
 	}
 
+	/**
+	 * Conta comum criando grupo privado pelo papel de runtime (RLS valendo). O "insert ... returning"
+	 * exigia enxergar o grupo antes de o dono virar membro, e dava 500 ("new row violates row-level
+	 * security policy"); só a equipe conseguia.
+	 */
+	@Test
+	void regularAccountCreatesPrivateGroupUnderRls() {
+		String owner = member();
+		Map<String, Object> group = asRuntimeUser(idOf(owner), () -> newGroup(owner, "private"));
+		assertEquals("private", group.get("visibility"));
+		UUID groupId = id(group);
+		assertTrue(asRuntimeUser(idOf(owner), () -> groups.myGroups(owner)).stream()
+				.anyMatch(g -> groupId.toString().equals(String.valueOf(g.get("id")))));
+	}
+
 	@Test
 	void typingOnlyForMembers() {
 		String owner = member(), stranger = member();
@@ -1076,8 +1091,11 @@ class GroupIntegrationTest {
 					() -> asRuntimeUser(idOf(ana), () -> groups.editMessage(ana, reported, Map.of("body", "Trocada"))));
 			assertEquals(409, blocked.status());
 
-			// Mais de 24 horas: não edita.
-			jdbc.sql("update public.chat_messages set created_at = now() - interval '25 hours' where id = :id").param("id", mine).update();
+			// Até 7 dias edita (também pela função do banco, com a RLS valendo); depois, não.
+			jdbc.sql("update public.chat_messages set created_at = now() - interval '6 days' where id = :id").param("id", mine).update();
+			assertEquals("*Mina abre a porta devagar.*",
+					asRuntimeUser(idOf(ana), () -> groups.editMessage(ana, mine, Map.of("body", "*Mina abre a porta devagar.*"))).get("body"));
+			jdbc.sql("update public.chat_messages set created_at = now() - interval '8 days' where id = :id").param("id", mine).update();
 			assertEquals(409, assertThrows(AuthException.class, () -> groups.editMessage(ana, mine, Map.of("body", "tarde"))).status());
 
 			// A função do banco é a garantia: a conta não edita a mensagem de outra pessoa direto por ela.

@@ -718,7 +718,7 @@ public class GroupService {
 			throw new AuthException(400, "Só dá para editar mensagens no roleplay.");
 		}
 		if (state.get("media_kind") != null) throw new AuthException(400, "Fotos e áudios não podem ser editados.");
-		if (Boolean.TRUE.equals(state.get("edit_expired"))) throw new AuthException(409, "Só dá para editar até 24 horas depois de enviar.");
+		if (Boolean.TRUE.equals(state.get("edit_expired"))) throw new AuthException(409, "Só dá para editar até 7 dias depois de enviar.");
 		if (books.book(groupId).isPresent()) throw new AuthException(409, "A história já virou livro: as mensagens não mudam mais.");
 		if (Boolean.TRUE.equals(state.get("reported"))) throw new AuthException(409, "Esta mensagem foi denunciada e não pode mais ser editada.");
 		String text = text(body.get("body"));

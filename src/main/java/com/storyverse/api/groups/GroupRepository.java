@@ -170,13 +170,16 @@ public class GroupRepository {
 	}
 
 	public UUID insertGroup(UUID owner, GroupFields fields, String inviteCode) {
-		UUID id = jdbc.sql("""
+		// O id nasce aqui, sem "returning": o RETURNING passa pela política de leitura, e o grupo
+		// privado só fica visível depois que o dono entra em chat_members (logo abaixo).
+		UUID id = UUID.randomUUID();
+		jdbc.sql("""
 				insert into public.chat_groups
-				  (name, description, photo_url, background, visibility, owner_id, book_key, book_title, book_cover, goal_chapter, goal_until, invite_code)
-				values (:name, :description, :photo_url, :background, :visibility, :owner, :book_key, :book_title, :book_cover, :goal_chapter,
+				  (id, name, description, photo_url, background, visibility, owner_id, book_key, book_title, book_cover, goal_chapter, goal_until, invite_code)
+				values (:id, :name, :description, :photo_url, :background, :visibility, :owner, :book_key, :book_title, :book_cover, :goal_chapter,
 				        cast(:goal_until as date), :invite)
-				returning id
 				""")
+				.param("id", id)
 				.param("name", fields.name())
 				.param("description", fields.description())
 				.param("photo_url", fields.photoUrl())
@@ -189,7 +192,7 @@ public class GroupRepository {
 				.param("goal_chapter", fields.goalChapter())
 				.param("goal_until", fields.goalUntil())
 				.param("invite", inviteCode)
-				.query(UUID.class).single();
+				.update();
 		jdbc.sql("insert into public.chat_members (group_id, user_id, role) values (:group, :owner, 'owner')")
 				.param("group", id).param("owner", owner).update();
 		return id;
@@ -614,7 +617,7 @@ public class GroupRepository {
 	public Optional<Map<String, Object>> messageState(long id) {
 		return DbRows.one(jdbc, """
 				select id, group_id, author_id, deleted_at, kind, media_kind,
-				       created_at < now() - interval '24 hours' as edit_expired,
+				       created_at < now() - interval '7 days' as edit_expired,
 				       public.chat_message_reported(id) as reported
 				  from public.chat_messages where id = :id
 				""", Map.of("id", id));
