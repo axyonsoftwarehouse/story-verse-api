@@ -240,7 +240,9 @@ class GroupIntegrationTest {
 		AuthException used = assertThrows(AuthException.class, () -> groups.joinByInvite(late, singleCode));
 		assertEquals(404, used.status());
 		assertTrue(used.getMessage().contains("já foi utilizado ou expirou"), used.getMessage());
-		assertNull(groups.group(owner, groupId).get("invite_code"), "link de uso único some do grupo depois de usado");
+		Map<String, Object> afterUse = groups.group(owner, groupId);
+		assertEquals(1, ((Number) afterUse.get("invite_uses")).intValue(), "o painel mostra que a entrada foi gasta");
+		assertEquals(1, ((Number) afterUse.get("invite_max_uses")).intValue());
 
 		// Prazo: vencido no banco, o mesmo código deixa de entrar.
 		Map<String, Object> timed = groups.rotateInvite(owner, groupId, Map.of("expiresInDays", 7, "maxUses", 3));
