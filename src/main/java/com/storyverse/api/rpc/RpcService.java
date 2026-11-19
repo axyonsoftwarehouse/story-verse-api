@@ -102,6 +102,11 @@ public class RpcService {
 					yield null;
 				}
 				case "is_admin" -> scalar("select public.is_admin()", Map.of());
+				// Só superadmin: a própria função confere o papel e recusa os outros (V63).
+				case "admin_grant_diamonds" -> DbRows.list(jdbc,
+						"select * from public.admin_grant_diamonds(:email, :amount, :note)",
+						nullableParams("email", strArg(args, "p_email"), "amount", intArg(args, "p_amount", 0),
+								"note", strArg(args, "p_note")));
 				case "set_submission_cover" -> {
 					voidCall("select public.set_submission_cover(cast(:id as uuid), cast(:cover as text))",
 							Map.of("id", strArg(args, "submission_id"), "cover", strArg(args, "new_cover")));
@@ -126,6 +131,12 @@ public class RpcService {
 			spec = spec.param(entry.getKey(), entry.getValue());
 		}
 		return spec.query((rs, rowNum) -> rs.getObject(1)).optional().orElse(null);
+	}
+
+	private static Map<String, Object> nullableParams(String k1, Object v1, String k2, Object v2, String k3, Object v3) {
+		Map<String, Object> params = nullable(k1, v1, k2, v2);
+		params.put(k3, v3);
+		return params;
 	}
 
 	/** Map.of não aceita null; aqui um argumento ausente vira null no SQL (ex.: tirar o item equipado). */
