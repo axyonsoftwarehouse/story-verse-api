@@ -362,8 +362,12 @@ public class AuthService {
 				SanctionNotice.from(sanctions.warning(user.id())));
 	}
 
+	/** Ausente ({@code null}) mantém. Vazio apaga. Assim trocar só o tema não derruba foto e capa. */
 	private static void putMetadata(Map<String, Object> metadata, String key, String value, int maxLength) {
-		if (value == null || value.isBlank()) {
+		if (value == null) {
+			return;
+		}
+		if (value.isBlank()) {
 			metadata.remove(key);
 			return;
 		}

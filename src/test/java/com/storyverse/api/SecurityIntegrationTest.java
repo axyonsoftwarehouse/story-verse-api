@@ -547,9 +547,13 @@ class SecurityIntegrationTest {
   }
   @Test void profileThemeMustBeAllowedAndCanBeCleared() {
     AuthResponse session = user();
+    auth.updateProfile(session.accessToken(),
+        new ProfileUpdateRequest("Leitor", null, "https://example.test/photo", "https://example.test/cover", null, null));
     UserResponse themed = auth.updateProfile(session.accessToken(),
         new ProfileUpdateRequest("Leitor", null, null, null, null, "rosa"));
     assertEquals("rosa", themed.user_metadata().get("profile_theme"));
+    assertEquals("https://example.test/photo", themed.user_metadata().get("photo"));
+    assertEquals("https://example.test/cover", themed.user_metadata().get("cover"));
     assertThrows(AuthException.class,
         () -> auth.updateProfile(session.accessToken(), new ProfileUpdateRequest("Leitor", null, null, null, null, "hex-ff00ff")));
     UserResponse gold = auth.updateProfile(session.accessToken(),
@@ -567,8 +571,12 @@ class SecurityIntegrationTest {
     assertEquals("Novo nome",updated.user_metadata().get("name"));
     assertEquals("avatar-1",updated.user_metadata().get("avatar"));
     updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome",null,null,null,null,null));
+    assertEquals("https://example.test/photo",updated.user_metadata().get("photo"));
+    assertEquals("https://example.test/cover",updated.user_metadata().get("cover"));
+    updated=auth.updateProfile(session.accessToken(),new ProfileUpdateRequest("Novo nome","","","",null,null));
     assertFalse(updated.user_metadata().containsKey("photo"));
     assertFalse(updated.user_metadata().containsKey("cover"));
+    assertFalse(updated.user_metadata().containsKey("avatar"));
   }
   @Test void profileBioIsKeptWhenOmittedAndClearedWhenEmpty() {
     AuthResponse session=user();
