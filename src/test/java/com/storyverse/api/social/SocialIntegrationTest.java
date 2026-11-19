@@ -301,6 +301,9 @@ class SocialIntegrationTest {
 		UUID anaId = idOf(ana), biaId = idOf(bia);
 		shelf(anaId, "gb:1342", "gutenberg", "finished", "Orgulho e Preconceito");
 		shelf(anaId, "gb:84", "gutenberg", "reading", "Frankenstein");
+		jdbc.sql("update public.library_entries set progress_percent = 12 where user_id = :u and book_key = 'gb:84'")
+				.param("u", anaId).update();
+		shelf(anaId, "gb:1661", "gutenberg", "reading", "Sherlock");
 		shelf(anaId, "gb:11", "gutenberg", "want_to_read", "Alice");
 		shelf(anaId, "local:-5", "local", "finished", "Arquivo particular");
 		jdbc.sql("insert into public.user_gifts (from_user, to_user, gift_id, week_start, ref) values (:f, :t, 'flor', current_date, :r)")
@@ -316,8 +319,9 @@ class SocialIntegrationTest {
 		assertEquals(Boolean.FALSE, seen.get("reading_hidden"));
 		List<Map<String, Object>> books = (List<Map<String, Object>>) seen.get("books");
 		assertEquals(List.of("Frankenstein", "Orgulho e Preconceito"), books.stream().map(b -> b.get("title")).toList(),
-				"lendo primeiro; sem 'quero ler' nem livro importado do aparelho");
+				"lendo com progresso primeiro; sem livro só aberto, 'quero ler' ou importado do aparelho");
 		Map<String, Object> counts = (Map<String, Object>) seen.get("reading_counts");
+		assertEquals(1, ((Number) counts.get("reading")).intValue());
 		assertEquals(1, ((Number) counts.get("finished")).intValue());
 		List<Map<String, Object>> badges = (List<Map<String, Object>>) seen.get("badges");
 		assertEquals(1, badges.size(), "item fora do formato é descartado");

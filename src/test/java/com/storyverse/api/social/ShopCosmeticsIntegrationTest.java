@@ -291,9 +291,10 @@ class ShopCosmeticsIntegrationTest {
 		UUID a = newUser("Sem itens"), b = newUser("Quem olha");
 		Map<String, Object> profile = asUser(b, () -> social.profile(b, a)).orElseThrow();
 		Map<String, Object> cosmetics = map(profile.get("cosmetics"));
-		assertEquals(3, cosmetics.size());
+		assertEquals(4, cosmetics.size());
 		assertTrue(cosmetics.containsKey("frame") && cosmetics.get("frame") == null);
 		assertTrue(cosmetics.containsKey("badge") && cosmetics.get("badge") == null);
+		assertEquals(List.of(), cosmetics.get("badges"));
 		assertTrue(cosmetics.containsKey("name_color") && cosmetics.get("name_color") == null);
 		assertNull(profile.get("shop_cover"));
 		assertEquals(List.of(), profile.get("badge_shelf"));
