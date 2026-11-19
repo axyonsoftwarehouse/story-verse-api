@@ -387,12 +387,12 @@ class ShopIntegrationTest {
 		List<Map<String, Object>> frames = of.apply("frame");
 		assertTrue(frames.size() >= 6, "molduras: " + frames.size());
 		List<Map<String, Object>> epics = frames.stream().filter(row -> "epic".equals(row.get("tier"))).toList();
-		assertEquals(1, epics.size());
-		assertNotNull(epics.get(0).get("animated_url"));
-		assertTrue(of.apply("badge").size() >= 6);
-		assertEquals(3, of.apply("cover").size());
+		assertEquals(2, epics.size());
+		assertTrue(epics.stream().allMatch(row -> row.get("animated_url") != null));
+		assertTrue(of.apply("badge").size() >= 11);
+		assertEquals(7, of.apply("cover").size());
 		List<Map<String, Object>> names = of.apply("name_color");
-		assertEquals(3, names.size());
+		assertEquals(6, names.size());
 		for (Map<String, Object> row : names) {
 			@SuppressWarnings("unchecked")
 			List<String> colors = (List<String>) row.get("colors");
@@ -402,6 +402,33 @@ class ShopIntegrationTest {
 				}
 			}
 		}
+	}
+
+	@Test
+	void fourBadgesBesideTheName() {
+		UUID user = newUser();
+		giveDiamonds(user, 500);
+		List<UUID> badges = new ArrayList<>();
+		for (int i = 0; i < 5; i++) {
+			UUID id = jdbc.sql("""
+					insert into public.shop_items (category, tier, name, description, price, status, image_url)
+					values ('badge', 'common', :name, 'Insígnia de teste', 10, 'on_sale', :image)
+					returning id
+					""").param("name", "Selo " + i + " " + UUID.randomUUID().toString().substring(0, 4))
+					.param("image", "https://img.invalid/b" + i + ".png")
+					.query(UUID.class).single();
+			buy(user, id, ref());
+			badges.add(id);
+		}
+		for (int i = 0; i < 4; i++) {
+			JsonNode cosmetics = equip(user, "badge", badges.get(i));
+			assertEquals(i + 1, cosmetics.get("badges").size());
+		}
+		DataAccessException full = assertThrows(DataAccessException.class, () -> equip(user, "badge", badges.get(4)));
+		assertTrue(rootMessage(full).contains("4 insígnias"), rootMessage(full));
+		JsonNode after = equip(user, "badge", badges.get(0));
+		assertEquals(3, after.get("badges").size());
+		assertFalse(after.get("badge").isNull());
 	}
 
 	static double contrast(String a, String b) {
