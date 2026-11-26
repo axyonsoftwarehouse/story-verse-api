@@ -8,7 +8,7 @@ RUN chmod +x mvnw && ./mvnw -B dependency:go-offline
 COPY src/ src/
 RUN ./mvnw -B verify
 
-FROM eclipse-temurin:25-jre-noble@sha256:a98128a57de944a72bd31fbc79b898edd5a5864d3652071d5bbd2160ab7d7dce
+FROM eclipse-temurin:25-jre-noble@sha256:f3dd0838e69b881cc382237d5901e74ae3705b1056ad964b2e0e523b174fef99
 
 RUN useradd --system --uid 10001 --create-home app
 WORKDIR /app
